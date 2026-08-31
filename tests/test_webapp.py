@@ -2582,6 +2582,65 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         e = self.client.get(f"/edit/{next_job_id}")
         self.assertIn(b"mylogo.png", e.data)
 
+    def _generate_campaign(self, session_id, slot, color):
+        data = {
+            "session_id": session_id,
+            "campaign_slot": str(slot),
+            "product_name": "OffScrpt",
+            "market": "US",
+            "audience": "Runners",
+            "campaign_message": "Free cans",
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=color)), f"c{slot}.psd"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        return r
+
+    def test_download_campaigns_bundles_every_campaigns_zip(self):
+        # Each campaign card is its own job with its own zip, so grabbing
+        # a whole multi-campaign page otherwise means visiting each
+        # results page in turn. One zip of zips, under campaigns/.
+        session_id = "sess_download_all"
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        self._generate_campaign(session_id, 1, (10, 10, 200))
+        r2 = self._generate_campaign(session_id, 2, (200, 10, 10))
+
+        # The second campaign's page offers the bundle; the first one's
+        # didn't, since it was the only campaign at the time.
+        self.assertIn(b"Download all 2 campaigns", r2.data)
+
+        bundle = self.client.get(f"/download-campaigns/{session_id}")
+        self.assertEqual(bundle.status_code, 200)
+        with zipfile.ZipFile(io.BytesIO(bundle.data)) as zf:
+            names = sorted(zf.namelist())
+        self.assertEqual(
+            names,
+            [
+                "campaigns/OffScrpt_campaign1_creatives.zip",
+                "campaigns/OffScrpt_campaign2_creatives.zip",
+            ],
+        )
+        # And each one is a real, readable zip, not a truncated copy.
+        with zipfile.ZipFile(io.BytesIO(bundle.data)) as outer:
+            inner_bytes = outer.read("campaigns/OffScrpt_campaign2_creatives.zip")
+        with zipfile.ZipFile(io.BytesIO(inner_bytes)) as inner:
+            self.assertTrue(
+                any(n.startswith("OffScrpt/campaign2/") for n in inner.namelist()),
+                inner.namelist(),
+            )
+
+    def test_download_campaigns_404s_for_an_unknown_session(self):
+        self.assertEqual(self.client.get("/download-campaigns/nope").status_code, 404)
+
+    def test_single_campaign_page_does_not_offer_the_bundle(self):
+        # One campaign, so the bundle would just duplicate "Download all".
+        session_id = "sess_solo"
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        r = self._generate_campaign(session_id, 1, (10, 10, 200))
+        self.assertNotIn(b"campaigns (.zip)", r.data)
+
     def test_content_psd_wrong_extension_flashes(self):
         data = {
             "content_psd": (self._sample_image_bytes(), "content.png"),

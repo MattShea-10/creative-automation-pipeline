@@ -123,6 +123,9 @@
 
     <div class="actions">
       <a class="btn btn-primary" href="{{ url_for('download', job_id=job_id) }}">Download all (.zip)</a>
+      {% if session_campaign_count and session_campaign_count > 1 %}
+        <a class="btn" href="{{ url_for('download_campaigns', session_id=session_id) }}" title="One zip holding every campaign's own zip, under a campaigns/ folder">Download all {{ session_campaign_count }} campaigns (.zip)</a>
+      {% endif %}
       <a class="btn btn-secondary" href="{{ url_for('edit', job_id=job_id) }}">Edit</a>
       <a class="btn btn-secondary" href="{{ url_for('index') }}">Make another</a>
     </div>

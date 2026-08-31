@@ -21,6 +21,7 @@ then open http://127.0.0.1:5000 in a browser.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
@@ -494,6 +495,27 @@ def _load_session_campaigns(session_id, fallback_job_id):
             "edit_job_id": slot_job_id,
         })
     return campaigns or fallback
+
+
+def _session_campaign_jobs(session_id):
+    """[(slot, job_id), ...] for one session's campaigns, in slot order.
+
+    The session index is the only thing that knows a set of jobs belong
+    together -- each campaign card submits its own form and becomes its
+    own job, so without it a multi-campaign page is just unrelated jobs.
+    Slots are sorted the same way _load_session_campaigns() sorts them
+    (shorter key first, so 2 comes before 10, not after).
+    """
+    if not session_id:
+        return []
+    index_path = _session_index_path(session_id)
+    if not index_path.is_file():
+        return []
+    try:
+        slots = json.loads(index_path.read_text()).get("slots") or {}
+    except (OSError, ValueError):
+        return []
+    return [(slot, slots[slot]) for slot in sorted(slots, key=lambda k: (len(k), k))]
 
 
 @app.route("/", methods=["GET"])
@@ -1920,6 +1942,8 @@ def generate():
         build_stamp=BUILD_STAMP,
         product_name=product_name,
         campaign_slot=campaign_slot,
+        session_id=session_id,
+        session_campaign_count=len(_session_campaign_jobs(session_id)),
         market=market,
         audience=audience,
         campaign_message=campaign_message,
@@ -1952,6 +1976,39 @@ def serve_upload(job_id, filename):
     if not file_path.is_file():
         abort(404)
     return send_file(file_path)
+
+
+@app.route("/download-campaigns/<session_id>")
+def download_campaigns(session_id):
+    """Every campaign in this session, as one zip of zips.
+
+    Each campaign is its own job with its own zip, so grabbing a whole
+    multi-campaign page otherwise means clicking through each results
+    page in turn. The per-campaign zips go in unchanged, under a
+    `campaigns/` folder -- already-compressed archives, so they're stored
+    rather than deflated again.
+    """
+    session_id = secure_filename(session_id)
+    jobs = _session_campaign_jobs(session_id)
+    entries = []
+    for _slot, job_id in jobs:
+        zip_path = next(iter(sorted((JOBS_DIR / job_id).glob("*.zip"))), None)
+        if zip_path is not None and zip_path.is_file():
+            entries.append(zip_path)
+    if not entries:
+        abort(404)
+
+    bundle = io.BytesIO()
+    with zipfile.ZipFile(bundle, "w", zipfile.ZIP_STORED) as zf:
+        for zip_path in entries:
+            zf.write(zip_path, arcname=f"campaigns/{zip_path.name}")
+    bundle.seek(0)
+    return send_file(
+        bundle,
+        mimetype="application/zip",
+        as_attachment=True,
+        download_name="campaigns.zip",
+    )
 
 
 @app.route("/download/<job_id>")
