@@ -159,18 +159,6 @@
         <input type="file" id="content_psd" name="content_psd" accept=".psd">
         {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
-        <div class="field" style="margin-top: 0.9rem; margin-bottom: 0;">
-          <label for="header" style="font-weight: 400;">Update header/title</label>
-          <div class="hint">Shown in a banner across the top. Leave blank for no header.</div>
-          <input type="text" id="header" name="header" placeholder="e.g. HydroBoost Sports Drink" value="{{ prefill.get('header', '') }}">
-        </div>
-
-        <div class="field" style="margin-top: 0.9rem; margin-bottom: 0;">
-          <label for="description" style="font-weight: 400;">Update description/message</label>
-          <div class="hint">Shown in a banner across the bottom -- the ad's caption or call-to-action.</div>
-          <textarea id="description" name="description" placeholder="e.g. Feel the Fresh. Own Your Summer.">{{ prefill.get('description', '') }}</textarea>
-        </div>
-
         <div id="layer_overrides_section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
@@ -313,6 +301,18 @@
           sync();
         })();
       </script>
+
+      <div class="field">
+        <label for="header">Header / title</label>
+        <div class="hint">Shown in a banner across the top. Leave blank for no header.</div>
+        <input type="text" id="header" name="header" placeholder="e.g. HydroBoost Sports Drink" value="{{ prefill.get('header', '') }}">
+      </div>
+
+      <div class="field">
+        <label for="description">Description / message</label>
+        <div class="hint">Shown in a banner across the bottom -- the ad's caption or call-to-action.</div>
+        <textarea id="description" name="description" placeholder="e.g. Feel the Fresh. Own Your Summer.">{{ prefill.get('description', '') }}</textarea>
+      </div>
 
       <details>
         <summary>Advanced options</summary>
