@@ -2933,6 +2933,79 @@ class LayerOverrideHelpersTest(unittest.TestCase):
             self.assertNotIn("offcanvas", boxes)
 
 
+class LayerBackgroundOverrideHelperTest(unittest.TestCase):
+    """Direct tests of apply_layer_background_override() -- the
+    "background" layer's compositing is deliberately different from
+    apply_layer_image_override()'s (used for logo/CTA/product): it fills
+    its box completely rather than centering a smaller object within it
+    with margin around it."""
+
+    def test_fills_box_completely_no_margin(self):
+        from src.image_ops import apply_layer_background_override
+
+        base = Image.new("RGB", (200, 100), (255, 0, 0))
+        bbox = (20, 20, 180, 80)  # 160x60 box
+        replacement = Image.new("RGB", (60, 60), (0, 255, 0))  # square
+
+        out = apply_layer_background_override(base, bbox, replacement)
+        self.assertEqual(out.size, base.size)
+        # Unlike apply_layer_image_override(), every corner and the
+        # center of the box are the replacement color -- no red margin
+        # anywhere inside the box, since it's cropped to fill rather than
+        # fit-and-centered.
+        self.assertEqual(out.getpixel((21, 21))[:3], (0, 255, 0))
+        self.assertEqual(out.getpixel((178, 21))[:3], (0, 255, 0))
+        self.assertEqual(out.getpixel((21, 78))[:3], (0, 255, 0))
+        self.assertEqual(out.getpixel((178, 78))[:3], (0, 255, 0))
+        self.assertEqual(out.getpixel((100, 50))[:3], (0, 255, 0))
+        # Outside the box, the base is untouched.
+        self.assertEqual(out.getpixel((5, 50))[:3], (255, 0, 0))
+
+    def test_crops_a_wider_replacement_left_and_right(self):
+        from src.image_ops import apply_layer_background_override
+
+        base = Image.new("RGB", (100, 100), (255, 0, 0))
+        bbox = (0, 0, 40, 40)  # square box
+        # A much wider replacement -- half red, half blue, split down the
+        # middle -- center-cropping to a square should keep only a
+        # vertical strip out of the middle, discarding both edge colors.
+        replacement = Image.new("RGB", (200, 40), (0, 0, 255))
+        for x in range(200):
+            replacement.putpixel((x, 20), (255, 255, 0) if 80 <= x < 120 else (0, 0, 255))
+
+        out = apply_layer_background_override(base, bbox, replacement)
+        # The box is fully covered -- no gaps -- and shows content from
+        # the replacement's own center, not the base's original red.
+        for x, y in ((2, 2), (37, 2), (2, 37), (37, 37)):
+            self.assertNotEqual(out.getpixel((x, y))[:3], (255, 0, 0))
+
+    def test_does_not_trim_or_treat_alpha_specially(self):
+        # Unlike apply_layer_image_override(), a background replacement
+        # is treated as opaque full-frame content -- no alpha-based
+        # content-bbox trimming, even if the source happens to carry an
+        # alpha channel.
+        from src.image_ops import apply_layer_background_override
+
+        base = Image.new("RGB", (100, 100), (255, 0, 0))
+        bbox = (0, 0, 50, 50)
+        replacement = Image.new("RGBA", (50, 50), (0, 255, 0, 128))
+
+        out = apply_layer_background_override(base, bbox, replacement)
+        # Composited as opaque green (RGBA source flattened to RGB via
+        # convert("RGB"), not alpha-blended against the base) -- not a
+        # blend toward the base red, and not skipped as "mostly
+        # transparent".
+        self.assertEqual(out.getpixel((25, 25))[:3], (0, 255, 0))
+
+    def test_zero_area_box_is_a_no_op(self):
+        from src.image_ops import apply_layer_background_override
+
+        base = Image.new("RGB", (50, 50), (10, 20, 30))
+        replacement = Image.new("RGB", (20, 20), (200, 200, 200))
+        out = apply_layer_background_override(base, (10, 10, 10, 40), replacement)
+        self.assertEqual(list(out.getdata()), list(base.getdata()))
+
+
 class LayerOverrideIntegrationTest(unittest.TestCase):
     """End-to-end coverage of the "Update layers across all template
     sizes" fields against a project's real, actually-layered .psd
@@ -3052,6 +3125,81 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         self.assertNotIn(b"updated layer(s)", r.data)
+
+    def test_background_override_fills_its_layer_completely_on_saved_default_size(self):
+        # This is the actual feature request: a background-only change to
+        # one uploaded PSD should be pushable across every other saved
+        # default size too, the same way logo/CTA/product/description
+        # already are.
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"updated layer(s)", r.data)
+        self.assertIn(b"background", r.data)
+
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        from src.image_ops import get_psd_layer_boxes
+
+        box = get_psd_layer_boxes(staged_path).get("background")
+        self.assertIsNotNone(box, "staged real template has no 'background' layer -- can't verify placement")
+        x0, y0, x1, y1 = box
+        with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
+            # Several points spread across the box, not just its center --
+            # apply_layer_background_override() fills edge-to-edge, so
+            # every one of these should be the overridden green, unlike
+            # the centered-with-margin behavior logo/CTA/product use.
+            points = [
+                (x0 + 3, y0 + 3),
+                (x1 - 3, y0 + 3),
+                (x0 + 3, y1 - 3),
+                (x1 - 3, y1 - 3),
+                ((x0 + x1) // 2, (y0 + y1) // 2),
+            ]
+            pixels = [img.getpixel((max(0, min(px, img.width - 1)), max(0, min(py, img.height - 1))))[:3] for px, py in points]
+        for r_, g_, b_ in pixels:
+            self.assertGreater(g_, r_, pixels)
+            self.assertGreater(g_, b_, pixels)
+
+    def test_background_override_does_not_run_background_removal(self):
+        # auto_transparent_background() would be actively harmful here --
+        # it tries to strip an unwanted flat backdrop from a foreground
+        # cutout, but a background upload's flat color/gradient *is* the
+        # wanted content. A near-uniform light background upload (the
+        # kind auto_transparent_background() is most aggressive about)
+        # should still render solid, not full of holes.
+        (w, h), staged_path = self._stage_real_template()
+        near_white = Image.new("RGBA", (80, 80), (250, 250, 250, 255))
+        buf = io.BytesIO()
+        near_white.save(buf, format="PNG")
+        buf.seek(0)
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_background_image": (buf, "near_white_bg.png"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        from src.image_ops import get_psd_layer_boxes
+
+        box = get_psd_layer_boxes(staged_path).get("background")
+        cx, cy = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+        with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
+            r_, g_, b_ = img.getpixel((cx, cy))[:3]
+        # Still near-white -- not composited against whatever the
+        # template's own background used to be underneath, which would
+        # show through as a visibly different color if background
+        # removal had run.
+        self.assertGreater(r_, 200)
+        self.assertGreater(g_, 200)
+        self.assertGreater(b_, 200)
 
 
 if __name__ == "__main__":

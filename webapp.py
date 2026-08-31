@@ -46,6 +46,7 @@ from src.image_ops import (
     VALID_LOGO_POSITIONS,
     VALID_TEXT_ALIGNMENTS,
     VIDEO_EXTENSIONS,
+    apply_layer_background_override,
     apply_layer_image_override,
     apply_layer_text_override,
     auto_transparent_background,
@@ -825,12 +826,13 @@ def generate():
         request.form.get("layer_description_text_color"), default=(26, 26, 26)
     )
 
-    layer_image_overrides: dict = {}  # {"logo"/"cta"/"product": Image.Image}
+    layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
     layer_upload_paths: dict = {}  # {field_name: Path} -- for form_state.json, see below
     for layer_name, field_name in (
         ("logo", "layer_logo_image"),
         ("cta", "layer_cta_image"),
         ("product", "layer_product_image"),
+        ("background", "layer_background_image"),
     ):
         layer_file = request.files.get(field_name)
         layer_fresh = layer_file is not None and bool(layer_file.filename)
@@ -864,8 +866,12 @@ def generate():
         # removal -- logo, CTA image, and product image are all commonly
         # exported flat (a solid background behind the mark/product)
         # rather than as a proper cutout, and a flat rectangle looks wrong
-        # composited into any of these layers, not just the logo.
-        layer_image = auto_transparent_background(layer_image)
+        # composited into any of these layers, not just the logo. Not for
+        # "background" itself, though -- that upload IS the intended
+        # full-frame content, not a cutout with an unwanted backdrop to
+        # strip away.
+        if layer_name != "background":
+            layer_image = auto_transparent_background(layer_image)
         layer_image_overrides[layer_name] = layer_image
 
     # Uploading a template (or having a saved default) for a size not
@@ -1141,8 +1147,11 @@ def generate():
                     box = layer_boxes.get(layer_name)
                     if box is None:
                         continue
-                    _clean_layer_box(box, layer_name)
-                    final_image = apply_layer_image_override(final_image, box, override_image)
+                    if layer_name == "background":
+                        final_image = apply_layer_background_override(final_image, box, override_image)
+                    else:
+                        _clean_layer_box(box, layer_name)
+                        final_image = apply_layer_image_override(final_image, box, override_image)
                     applied_layers.append(layer_name)
                 if layer_description_text:
                     box = layer_boxes.get("description")

@@ -201,12 +201,14 @@
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
             template-covered size whose PSD has a matching named layer (<code>description</code>,
-            <code>logo</code>, <code>cta</code>, <code>product</code>), the new content is composited into
-            that layer's exact position for that size -- a different position/scale per size, since each
-            template has its own layout. A size whose PSD doesn't have a given layer just skips that one
-            update. Image layers are pasted in (contain-fit, centered); the description is painted over and
-            redrawn with your text, since Pillow can't edit a PSD's live text layer directly. These are PSD
-            updates only -- they don't affect the general hero-image tool below.
+            <code>logo</code>, <code>cta</code>, <code>product</code>, <code>background</code>), the new
+            content is composited into that layer's exact position for that size -- a different
+            position/scale per size, since each template has its own layout. A size whose PSD doesn't have a
+            given layer just skips that one update. The logo/CTA/product images are pasted in (contain-fit,
+            centered, background removed); the background image fills its layer completely (cropped to fit,
+            no cutout removal -- it's meant to be the full frame, not an object sitting within it); the
+            description is painted over and redrawn with your text, since Pillow can't edit a PSD's live text
+            layer directly. These are PSD updates only -- they don't affect the general hero-image tool below.
           </div>
           <div class="field" style="margin-top: 0.6rem; margin-bottom: 0.6rem;">
             <label for="layer_description_text" style="font-weight: 400;">Description text</label>
@@ -256,10 +258,14 @@
               <span style="white-space: nowrap;">Product image</span>
               <input type="file" id="layer_product_image" name="layer_product_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
+            <label for="layer_background_image" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Background image</span>
+              <input type="file" id="layer_background_image" name="layer_background_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
+            </label>
           </div>
-          {% if prefill_files.get('layer_logo_image') or prefill_files.get('layer_cta_image') or prefill_files.get('layer_product_image') %}
+          {% if prefill_files.get('layer_logo_image') or prefill_files.get('layer_cta_image') or prefill_files.get('layer_product_image') or prefill_files.get('layer_background_image') %}
             <div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>
-              Currently set{% if prefill_files.get('layer_logo_image') %} -- logo: <strong>{{ prefill_files.get('layer_logo_image') }}</strong>{% endif %}{% if prefill_files.get('layer_cta_image') %} -- CTA: <strong>{{ prefill_files.get('layer_cta_image') }}</strong>{% endif %}{% if prefill_files.get('layer_product_image') %} -- product: <strong>{{ prefill_files.get('layer_product_image') }}</strong>{% endif %}.
+              Currently set{% if prefill_files.get('layer_logo_image') %} -- logo: <strong>{{ prefill_files.get('layer_logo_image') }}</strong>{% endif %}{% if prefill_files.get('layer_cta_image') %} -- CTA: <strong>{{ prefill_files.get('layer_cta_image') }}</strong>{% endif %}{% if prefill_files.get('layer_product_image') %} -- product: <strong>{{ prefill_files.get('layer_product_image') }}</strong>{% endif %}{% if prefill_files.get('layer_background_image') %} -- background: <strong>{{ prefill_files.get('layer_background_image') }}</strong>{% endif %}.
               Choose a new file for any of these to replace it, or leave blank to keep it.
             </div>
           {% endif %}

@@ -1773,6 +1773,37 @@ def apply_layer_image_override(
     return canvas.convert("RGB")
 
 
+def apply_layer_background_override(
+    base_image: Image.Image,
+    bbox: Tuple[int, int, int, int],
+    replacement: Image.Image,
+) -> Image.Image:
+    """Return a copy of `base_image` with `replacement` filling `bbox`
+    completely -- center-cropped to the box's exact aspect ratio (see
+    center_crop_to_ratio()), then pasted in edge-to-edge.
+
+    Deliberately different from apply_layer_image_override() above: that
+    one is for a foreground object (a logo, a CTA button graphic, a
+    product cutout) that should sit centered within its box at its own
+    aspect ratio, with margin around it showing the real background
+    through -- it trims transparent edges and never covers the box
+    edge-to-edge unless the aspect ratios happen to match exactly. A
+    background image is the opposite: the whole file is wanted, full
+    frame, with no gaps -- so this crops-to-fill instead of fitting-with-
+    letterboxing, and doesn't trim/expect any transparency (a background
+    upload is typically a flat photo, not a cutout).
+    """
+    x0, y0, x1, y1 = bbox
+    box_w, box_h = x1 - x0, y1 - y0
+    if box_w <= 0 or box_h <= 0:
+        return base_image
+
+    canvas = base_image.convert("RGB").copy()
+    filled = center_crop_to_ratio(replacement.convert("RGB"), (box_w, box_h))
+    canvas.paste(filled, (x0, y0))
+    return canvas
+
+
 def _reconstruct_box_background(image: Image.Image, bbox: Tuple[int, int, int, int]) -> Image.Image:
     """Build an RGB patch, sized to `bbox`, that approximates "what was
     behind this box" as a smooth bilinear gradient between the colors
