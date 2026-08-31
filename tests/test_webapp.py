@@ -81,8 +81,13 @@ class WebAppSmokeTest(unittest.TestCase):
         # Redirect job output into a scratch dir so tests don't litter (or
         # depend on) the real outputs/web/ folder.
         self._orig_jobs_dir = webapp.JOBS_DIR
+        self._orig_downloads_dir = webapp.DOWNLOADS_DIR
         self.tmp_dir = tempfile.mkdtemp()
         webapp.JOBS_DIR = Path(self.tmp_dir)
+        # Every run drops a browsable copy of its zip in DOWNLOADS_DIR --
+        # pointed at the temp dir here so a test run never writes into
+        # the real project's downloads/ folder.
+        webapp.DOWNLOADS_DIR = Path(self.tmp_dir) / "downloads"
         # Point default_templates/ scanning at an empty scratch dir too --
         # otherwise these tests' output would depend on (and could be
         # broken by) whatever real .psd templates a user has saved for
@@ -93,6 +98,7 @@ class WebAppSmokeTest(unittest.TestCase):
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
+        webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
@@ -1606,8 +1612,13 @@ class PsdTemplateSectionTest(unittest.TestCase):
         webapp.app.config["TESTING"] = True
         self.client = _CampaignBriefAutoFillClient(webapp.app.test_client())
         self._orig_jobs_dir = webapp.JOBS_DIR
+        self._orig_downloads_dir = webapp.DOWNLOADS_DIR
         self.tmp_dir = tempfile.mkdtemp()
         webapp.JOBS_DIR = Path(self.tmp_dir)
+        # Every run drops a browsable copy of its zip in DOWNLOADS_DIR --
+        # pointed at the temp dir here so a test run never writes into
+        # the real project's downloads/ folder.
+        webapp.DOWNLOADS_DIR = Path(self.tmp_dir) / "downloads"
         # Isolate from whatever real .psd templates a user has saved in
         # their own project's default_templates/ folder.
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
@@ -1616,6 +1627,7 @@ class PsdTemplateSectionTest(unittest.TestCase):
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
+        webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
@@ -1937,8 +1949,13 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         webapp.app.config["TESTING"] = True
         self.client = _CampaignBriefAutoFillClient(webapp.app.test_client())
         self._orig_jobs_dir = webapp.JOBS_DIR
+        self._orig_downloads_dir = webapp.DOWNLOADS_DIR
         self.tmp_dir = tempfile.mkdtemp()
         webapp.JOBS_DIR = Path(self.tmp_dir)
+        # Every run drops a browsable copy of its zip in DOWNLOADS_DIR --
+        # pointed at the temp dir here so a test run never writes into
+        # the real project's downloads/ folder.
+        webapp.DOWNLOADS_DIR = Path(self.tmp_dir) / "downloads"
         # Point default_templates/ scanning at an empty scratch dir instead
         # of the real project folder -- these tests should never depend on
         # (or risk interfering with) a real user's saved templates.
@@ -1948,6 +1965,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
+        webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
@@ -2230,14 +2248,20 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         webapp.app.config["TESTING"] = True
         self.client = _CampaignBriefAutoFillClient(webapp.app.test_client())
         self._orig_jobs_dir = webapp.JOBS_DIR
+        self._orig_downloads_dir = webapp.DOWNLOADS_DIR
         self.tmp_dir = tempfile.mkdtemp()
         webapp.JOBS_DIR = Path(self.tmp_dir)
+        # Every run drops a browsable copy of its zip in DOWNLOADS_DIR --
+        # pointed at the temp dir here so a test run never writes into
+        # the real project's downloads/ folder.
+        webapp.DOWNLOADS_DIR = Path(self.tmp_dir) / "downloads"
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
         self.tmp_default_templates_dir = tempfile.mkdtemp()
         webapp.DEFAULT_TEMPLATES_DIR = Path(self.tmp_default_templates_dir)
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
+        webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
@@ -2630,6 +2654,39 @@ class ContentPsdQuickModeTest(unittest.TestCase):
                 any(n.startswith("OffScrpt/campaign2/") for n in inner.namelist()),
                 inner.namelist(),
             )
+
+    def test_every_run_leaves_a_named_zip_in_the_downloads_folder(self):
+        # A job folder is a random id under outputs/web/, which is fine
+        # for serving a page and useless for finding last Tuesday's
+        # campaign. Each run drops a copy of its zip somewhere browsable,
+        # named for the product and campaign it belongs to.
+        session_id = "sess_downloads_folder"
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        self._generate_campaign(session_id, 1, (10, 10, 200))
+        self._generate_campaign(session_id, 2, (200, 10, 10))
+
+        saved = sorted(p.name for p in webapp.DOWNLOADS_DIR.glob("*.zip"))
+        self.assertEqual(
+            saved,
+            ["OffScrpt_campaign1_creatives.zip", "OffScrpt_campaign2_creatives.zip"],
+        )
+        # A real archive, not a placeholder.
+        with zipfile.ZipFile(webapp.DOWNLOADS_DIR / saved[0]) as zf:
+            self.assertTrue(zf.namelist())
+
+    def test_rerunning_a_campaign_overwrites_its_own_download(self):
+        # Same product, same campaign -- one file, refreshed. Otherwise a
+        # few iterations bury the current one under near-identical
+        # archives.
+        session_id = "sess_downloads_rerun"
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        self._generate_campaign(session_id, 1, (10, 10, 200))
+        first = (webapp.DOWNLOADS_DIR / "OffScrpt_campaign1_creatives.zip").read_bytes()
+        self._generate_campaign(session_id, 1, (200, 10, 10))
+
+        self.assertEqual(len(list(webapp.DOWNLOADS_DIR.glob("*.zip"))), 1)
+        second = (webapp.DOWNLOADS_DIR / "OffScrpt_campaign1_creatives.zip").read_bytes()
+        self.assertNotEqual(first, second)
 
     def test_download_campaigns_404s_for_an_unknown_session(self):
         self.assertEqual(self.client.get("/download-campaigns/nope").status_code, 404)
@@ -3305,14 +3362,20 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         webapp.app.config["TESTING"] = True
         self.client = _CampaignBriefAutoFillClient(webapp.app.test_client())
         self._orig_jobs_dir = webapp.JOBS_DIR
+        self._orig_downloads_dir = webapp.DOWNLOADS_DIR
         self.tmp_dir = tempfile.mkdtemp()
         webapp.JOBS_DIR = Path(self.tmp_dir)
+        # Every run drops a browsable copy of its zip in DOWNLOADS_DIR --
+        # pointed at the temp dir here so a test run never writes into
+        # the real project's downloads/ folder.
+        webapp.DOWNLOADS_DIR = Path(self.tmp_dir) / "downloads"
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
         self.tmp_default_templates_dir = tempfile.mkdtemp()
         webapp.DEFAULT_TEMPLATES_DIR = Path(self.tmp_default_templates_dir)
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
+        webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)

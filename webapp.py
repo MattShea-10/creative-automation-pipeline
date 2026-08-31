@@ -91,6 +91,13 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 # Templates saved here are applied automatically to their matching output
 # size on every future /generate request -- no re-upload needed. See
 # _default_size_templates() below and default_templates/README.txt.
+# Every run's zip is copied here as well as kept in its job folder. A
+# job folder is named after a random id and lives under outputs/web/,
+# which is fine for serving a page but no good for finding last
+# Tuesday's campaign -- this is the browsable copy, named for the
+# product and campaign it belongs to.
+DOWNLOADS_DIR = BASE_DIR / "downloads"
+
 DEFAULT_TEMPLATES_DIR = BASE_DIR / "default_templates"
 DEFAULT_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1851,6 +1858,19 @@ def generate():
                     job_dir / creative["source_psd_filename"],
                     arcname=f"{zip_entry_prefix}{creative['source_psd_filename']}",
                 )
+
+    # A copy of the zip somewhere a person can actually find it, without
+    # going through the browser's download folder or digging through
+    # outputs/web/<random id>/. Re-running the same campaign overwrites
+    # its own file rather than accumulating near-identical archives.
+    # Best-effort: a failure here (a read-only checkout, say) must never
+    # sink a render that already succeeded -- the download button still
+    # works either way.
+    try:
+        DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(zip_path, DOWNLOADS_DIR / zip_path.name)
+    except OSError:
+        pass
 
     # Saved so the "Edit" button on the results page (see /edit/<job_id>)
     # can reload this form pre-filled, and so a file field the user
