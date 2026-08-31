@@ -34,6 +34,7 @@
     textarea { @apply resize-y min-h-[4.5rem]; }
     details { @apply border border-slate-700 rounded-md px-4 py-3 mb-5 bg-slate-800/40; }
     summary { @apply font-semibold cursor-pointer text-[0.92rem] text-slate-200; }
+    .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .checkbox-row { @apply flex items-start gap-2 my-[0.6rem]; }
     .checkbox-row input { @apply mt-[0.2rem]; }
     .checkbox-row span { @apply text-[0.88rem] text-slate-300; }
@@ -234,7 +235,7 @@
             <label><span class="psd-badge">PSD</span> Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
           <div class="hint">
             Upload a <code>.psd</code> file for a specific output size (e.g. <code>728x480</code>) and that size will
-            use the flattened PSD as its background instead of the general hero image (in Advanced options below) -- just the composite
+            use the flattened PSD as its background instead of the general hero image (in Manual Creative below) -- just the composite
             preview Pillow renders from the PSD, no layers or effects. A size you add here is automatically included
             in the batch even if it isn't checked/typed under "Output sizes" below. The hero image only needs to be
             provided if some requested size has no matching template.
@@ -306,8 +307,8 @@
         })();
       </script>
 
-      <details>
-        <summary>Advanced options</summary>
+      <details class="manual-creative-box">
+        <summary>Manual Creative</summary>
 
       <div class="field">
         <label for="hero_image"><span class="psd-badge">PSD</span> Hero image (or video) <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
