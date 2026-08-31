@@ -57,6 +57,11 @@
     .flash { @apply bg-red-950 border border-red-800 text-red-300 px-4 py-3 rounded-md mb-5 text-[0.9rem]; }
     footer { @apply text-slate-500 text-[0.8rem] mt-8 text-center; }
     code { @apply bg-slate-800 px-[0.35rem] py-[0.1rem] rounded text-[0.85em] text-slate-300; }
+    .ai-hero-callout { @apply border border-violet-700 bg-violet-950/40 rounded-md px-4 py-3; }
+    .ai-hero-callout .hint { @apply text-violet-200/70; }
+    .ai-badge {
+      @apply inline-block bg-violet-500 text-white text-[0.68rem] font-bold uppercase tracking-wide rounded px-[0.4rem] py-[0.05rem] mr-1 align-middle;
+    }
   </style>
 </head>
 <body>
@@ -240,26 +245,28 @@
         <input type="file" id="hero_image" name="hero_image">
         {% if prefill_files.get('hero_image') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
-        <div class="checkbox-row" style="margin-top: 0.7rem;">
-          <input type="checkbox" id="ai_hero_enabled" name="ai_hero_enabled" value="1" {% if prefill.get('ai_hero_enabled') %}checked{% endif %}>
-          <span>Generate a hero image with AI if no hero image ends up covering a size (uses a real GenAI image-generation provider -- can take up to ~40 seconds)</span>
-        </div>
-        <div id="ai_hero_options" hidden style="margin-top: 0.6rem;">
-          <label for="ai_hero_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
-          <input type="text" id="ai_hero_prompt" name="ai_hero_prompt" placeholder="Leave blank to auto-build from product name / header" value="{{ prefill.get('ai_hero_prompt', '') }}">
-          <div class="inline-controls" style="margin-top: 0.5rem;">
-            <label for="ai_hero_provider" style="font-weight: 400;">
-              <span style="white-space: nowrap;">Provider</span>
-              <select class="font-family-select" id="ai_hero_provider" name="ai_hero_provider">
-                <option value="pollinations" {% if prefill.get('ai_hero_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
-                <option value="huggingface" {% if prefill.get('ai_hero_provider') == 'huggingface' %}selected{% endif %}>Hugging Face SDXL (needs HUGGINGFACE_API_TOKEN in .env)</option>
-                <option value="mock" {% if prefill.get('ai_hero_provider') == 'mock' %}selected{% endif %}>Offline placeholder (no network, for testing)</option>
-              </select>
-            </label>
+        <div class="ai-hero-callout" style="margin-top: 0.7rem;">
+          <div class="checkbox-row" style="margin: 0;">
+            <input type="checkbox" id="ai_hero_enabled" name="ai_hero_enabled" value="1" {% if prefill.get('ai_hero_enabled') %}checked{% endif %}>
+            <span><span class="ai-badge">AI</span> Generate a hero image with AI if no hero image ends up covering a size (uses a real GenAI image-generation provider -- can take up to ~40 seconds)</span>
           </div>
-          <div class="hint" style="margin-top: 0.4rem;">
-            Generated once and reused for every size that needs it. If the chosen provider fails (free APIs
-            occasionally do), the offline placeholder is used instead and a warning explains why.
+          <div id="ai_hero_options" hidden style="margin-top: 0.6rem;">
+            <label for="ai_hero_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+            <input type="text" id="ai_hero_prompt" name="ai_hero_prompt" placeholder="Leave blank to auto-build from product name / header" value="{{ prefill.get('ai_hero_prompt', '') }}">
+            <div class="inline-controls" style="margin-top: 0.5rem;">
+              <label for="ai_hero_provider" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Provider</span>
+                <select class="font-family-select" id="ai_hero_provider" name="ai_hero_provider">
+                  <option value="pollinations" {% if prefill.get('ai_hero_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
+                  <option value="huggingface" {% if prefill.get('ai_hero_provider') == 'huggingface' %}selected{% endif %}>Hugging Face SDXL (needs HUGGINGFACE_API_TOKEN in .env)</option>
+                  <option value="mock" {% if prefill.get('ai_hero_provider') == 'mock' %}selected{% endif %}>Offline placeholder (no network, for testing)</option>
+                </select>
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.4rem;">
+              Generated once and reused for every size that needs it. If the chosen provider fails (free APIs
+              occasionally do), the offline placeholder is used instead and a warning explains why.
+            </div>
           </div>
         </div>
       </div>
