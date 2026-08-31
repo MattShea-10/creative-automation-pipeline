@@ -687,7 +687,7 @@
     (function () {
       var container = document.getElementById("campaigns-container");
       var addBtn = document.getElementById("add-campaign-btn");
-      var campaignCount = 1;
+      var campaignCount = container.querySelectorAll(".campaign-card").length;
 
       function renumberCampaigns() {
         var cards = container.querySelectorAll(".campaign-card");
@@ -697,8 +697,47 @@
           if (title) title.textContent = "Campaign " + (index + 1);
           var slotInput = card.querySelector('[name="campaign_slot"]');
           if (slotInput) slotInput.value = String(index + 1);
+          var removeBtn = card.querySelector(".remove-campaign-btn");
+          // Nothing to remove down to when there's only one campaign left --
+          // hidden rather than removed, so it's still there (and doesn't
+          // need re-creating) the moment a second campaign shows up.
+          if (removeBtn) removeBtn.hidden = cards.length <= 1;
         });
+        campaignCount = cards.length;
       }
+
+      // Creates (or re-creates) a card's Remove button, bound to *that*
+      // card via closure. Used both for a freshly cloned card and for
+      // every card already in the page on load -- including ones the
+      // server rendered directly (the very first blank card, and every
+      // campaign restored on an Edit page) which otherwise never got a
+      // Remove button at all, since that used to only happen inside
+      // addCampaignCard() below.
+      function attachRemoveButton(card) {
+        card.querySelectorAll(".remove-campaign-btn").forEach(function (el) {
+          el.remove();
+        });
+        var removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "remove-campaign-btn";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", function (event) {
+          // The button lives inside a <summary> (next to the "Campaign N"
+          // label) so its own click doesn't also toggle that <details>
+          // open/closed.
+          event.preventDefault();
+          event.stopPropagation();
+          card.remove();
+          renumberCampaigns();
+        });
+        var titleEl = card.querySelector(".campaign-card-title");
+        if (titleEl && titleEl.parentNode) titleEl.parentNode.appendChild(removeBtn);
+      }
+
+      container.querySelectorAll(".campaign-card").forEach(function (card) {
+        attachRemoveButton(card);
+      });
+      renumberCampaigns();
 
       function addCampaignCard() {
         var firstCard = container.querySelector(".campaign-card");
@@ -742,21 +781,7 @@
 
         remapIds(clone, "_c" + campaignCount);
 
-        var removeBtn = document.createElement("button");
-        removeBtn.type = "button";
-        removeBtn.className = "remove-campaign-btn";
-        removeBtn.textContent = "Remove";
-        removeBtn.addEventListener("click", function (event) {
-          // The button lives inside a <summary> (next to the "Campaign N"
-          // label) so its own click doesn't also toggle that <details>
-          // open/closed.
-          event.preventDefault();
-          event.stopPropagation();
-          clone.remove();
-          renumberCampaigns();
-        });
-        var titleEl = clone.querySelector(".campaign-card-title");
-        if (titleEl && titleEl.parentNode) titleEl.parentNode.appendChild(removeBtn);
+        attachRemoveButton(clone);
 
         container.appendChild(clone);
         initCreativeForm(clone);
