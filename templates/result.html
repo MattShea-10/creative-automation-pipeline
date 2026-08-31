@@ -4,138 +4,76 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Creative Automation -- Results</title>
-  <style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style type="text/tailwindcss">
     :root {
-      --brand-blue: #0057B8;
-      --ink: #1a1a1a;
-      --muted: #6b6b6b;
-      --border: #dcdcdc;
-      --bg: #fafafa;
+      --brand-blue: #3b82f6;
+      --ink: #f1f5f9;
+      --muted: #94a3b8;
+      --border: #334155;
+      --bg: #020617;
     }
+    html { color-scheme: dark; }
     * { box-sizing: border-box; }
     body {
+      @apply bg-slate-950 text-slate-100 m-0 px-6 py-10;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--ink);
-      margin: 0;
-      padding: 2.5rem 1.5rem;
     }
-    .wrap { max-width: 960px; margin: 0 auto; }
-    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
-    .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 1.75rem; font-size: 0.95rem; }
-    .actions { margin-bottom: 2rem; display: flex; gap: 0.75rem; }
-    .btn {
-      display: inline-block;
-      text-decoration: none;
-      padding: 0.6rem 1.2rem;
-      border-radius: 6px;
-      font-size: 0.92rem;
-      font-weight: 600;
-    }
-    .btn-primary { background: var(--brand-blue); color: #fff; }
-    .btn-secondary { background: #fff; color: var(--ink); border: 1px solid var(--border); }
+    .wrap { @apply max-w-[960px] mx-auto; }
+    h1 { @apply text-2xl font-semibold text-slate-50 mb-1; }
+    .subtitle { @apply text-slate-400 mt-0 mb-7 text-[0.95rem]; }
+    .actions { @apply mb-8 flex gap-3; }
+    .btn { @apply inline-block no-underline px-5 py-[0.6rem] rounded-md text-[0.92rem] font-semibold; }
+    .btn-primary { @apply bg-blue-500 text-white hover:bg-blue-400 transition-colors; }
+    .btn-secondary { @apply bg-slate-800 text-slate-100 border border-slate-700 hover:bg-slate-700; }
     .grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
-      gap: 1.25rem;
+      @apply gap-5;
     }
-    .card {
-      background: #fff;
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      overflow: hidden;
-    }
+    .card { @apply bg-slate-900 border border-slate-700 rounded-[10px] overflow-hidden; }
     .card .thumb {
-      background: repeating-conic-gradient(#eee 0% 25%, #f7f7f7 0% 50%) 50% / 16px 16px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      min-height: 140px;
-      padding: 0.5rem;
+      background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 16px 16px;
+      @apply flex items-center justify-center min-h-[140px] p-2;
     }
-    .card img { max-width: 100%; max-height: 220px; display: block; }
-    .card .meta { padding: 0.75rem 0.9rem; }
-    .card .meta .size { font-weight: 700; font-size: 0.9rem; }
-    .card .meta .name { color: var(--muted); font-size: 0.8rem; }
+    .card img { @apply max-w-full max-h-[220px] block; }
+    .card .meta { @apply px-[0.9rem] py-3; }
+    .card .meta .size { @apply font-bold text-[0.9rem] text-slate-100; }
+    .card .meta .name { @apply text-slate-400 text-[0.8rem]; }
     .card .meta .psd-link {
-      display: inline-block;
-      margin-top: 0.4rem;
-      font-size: 0.78rem;
-      color: var(--brand-blue);
-      text-decoration: none;
-      font-weight: 600;
+      @apply inline-block mt-[0.4rem] text-[0.78rem] text-blue-400 no-underline font-semibold hover:underline;
     }
-    .card .meta .psd-link:hover { text-decoration: underline; }
-    .notes-panel {
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.6rem;
-      margin-bottom: 1.5rem;
-      background: #fff;
-    }
-    .notes-panel.warning { border-color: #f3b3b3; background: #fffafa; }
+    .notes-panel { @apply border border-slate-700 rounded-lg p-[0.6rem] mb-6 bg-slate-900; }
+    .notes-panel.warning { @apply border-red-800 bg-red-950/40; }
     .adblock-notice {
-      border: 1px solid #f0d68a;
-      background: #fffbea;
-      border-radius: 8px;
-      padding: 0.75rem 0.9rem;
-      margin-bottom: 1.5rem;
-      font-size: 0.85rem;
-      color: #6b5700;
+      @apply border border-amber-700 bg-amber-950 rounded-lg px-[0.9rem] py-3 mb-6 text-[0.85rem] text-amber-300;
       line-height: 1.45;
     }
-    .adblock-notice strong { color: #4a3c00; }
+    .adblock-notice strong { @apply text-amber-200; }
     .notes-panel-label {
-      font-weight: 700;
-      font-size: 0.8rem;
-      text-transform: uppercase;
-      letter-spacing: 0.03em;
-      color: var(--muted);
-      padding: 0.15rem 0.3rem;
-      cursor: pointer;
+      @apply font-bold text-[0.8rem] uppercase tracking-wide text-slate-400 px-[0.3rem] py-[0.15rem] cursor-pointer;
     }
     .notes-panel[open] .notes-panel-label { margin-bottom: 0.35rem; }
-    .notes-panel.warning .notes-panel-label { color: #8a1f1f; }
+    .notes-panel.warning .notes-panel-label { @apply text-red-400; }
     .background-notes, .background-warnings {
-      list-style: none;
-      padding: 0;
-      margin: 0;
-      max-height: 220px;
-      overflow-y: auto;
+      @apply list-none p-0 m-0 max-h-[220px] overflow-y-auto;
     }
     .background-notes li {
-      background: #eef4ff;
-      border: 1px solid #cfe0fb;
-      color: var(--ink);
-      border-radius: 6px;
-      padding: 0.6rem 0.9rem;
-      font-size: 0.88rem;
-      margin-bottom: 0.5rem;
+      @apply bg-blue-950 border border-blue-800 text-slate-100 rounded-md px-[0.9rem] py-[0.6rem] text-[0.88rem] mb-2 last:mb-0;
     }
-    .background-notes li:last-child { margin-bottom: 0; }
     .background-warnings li {
-      background: #fff3f3;
-      border: 1px solid #f3b3b3;
-      color: #8a1f1f;
-      border-radius: 6px;
-      padding: 0.6rem 0.9rem;
-      font-size: 0.88rem;
-      font-weight: 600;
-      margin-bottom: 0.5rem;
+      @apply bg-red-950 border border-red-800 text-red-300 rounded-md px-[0.9rem] py-[0.6rem] text-[0.88rem] font-semibold mb-2 last:mb-0;
     }
-    .background-warnings li:last-child { margin-bottom: 0; }
-    footer { color: var(--muted); font-size: 0.8rem; margin-top: 2.5rem; text-align: center; }
-    .brief-summary {
-      background: #fff;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 0.9rem 1.1rem;
-      margin-bottom: 1.5rem;
+    footer { @apply text-slate-500 text-[0.8rem] mt-10 text-center; }
+    .brief-summary { @apply bg-slate-900 border border-slate-700 rounded-lg px-[1.1rem] py-[0.9rem] mb-6; }
+    .brief-summary-title { @apply font-bold text-[0.9rem] mb-2 text-slate-100; }
+    .brief-summary dl {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      @apply m-0 gap-x-3 gap-y-1;
     }
-    .brief-summary-title { font-weight: 700; font-size: 0.9rem; margin-bottom: 0.5rem; }
-    .brief-summary dl { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 0.25rem 0.75rem; }
-    .brief-summary dt { color: var(--muted); font-size: 0.82rem; font-weight: 600; }
-    .brief-summary dd { margin: 0; font-size: 0.88rem; }
+    .brief-summary dt { @apply text-slate-400 text-[0.82rem] font-semibold; }
+    .brief-summary dd { @apply m-0 text-[0.88rem] text-slate-200; }
   </style>
 </head>
 <body>

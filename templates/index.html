@@ -4,120 +4,59 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Creative Automation -- Quick Generate</title>
-  <style>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style type="text/tailwindcss">
     :root {
-      --brand-blue: #0057B8;
-      --ink: #1a1a1a;
-      --muted: #6b6b6b;
-      --border: #dcdcdc;
-      --bg: #fafafa;
+      --brand-blue: #3b82f6;
+      --ink: #f1f5f9;
+      --muted: #94a3b8;
+      --border: #334155;
+      --bg: #020617;
     }
+    html { color-scheme: dark; }
     * { box-sizing: border-box; }
     body {
+      @apply bg-slate-950 text-slate-100 m-0 px-6 py-10;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-      background: var(--bg);
-      color: var(--ink);
-      margin: 0;
-      padding: 2.5rem 1.5rem;
     }
-    .wrap { max-width: 640px; margin: 0 auto; }
-    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
-    .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 2rem; font-size: 0.95rem; }
-    form { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 1.75rem; }
-    label { display: block; font-weight: 600; margin-bottom: 0.35rem; font-size: 0.92rem; }
-    .hint { color: var(--muted); font-weight: 400; font-size: 0.82rem; margin-top: -0.1rem; margin-bottom: 0.4rem; }
-    .field { margin-bottom: 1.25rem; }
+    .wrap { @apply max-w-[640px] mx-auto; }
+    h1 { @apply text-2xl font-semibold text-slate-50 mb-1; }
+    .subtitle { @apply text-slate-400 mt-0 mb-8 text-[0.95rem]; }
+    form { @apply bg-slate-900 border border-slate-700 rounded-[10px] p-7; }
+    label { @apply block font-semibold mb-[0.35rem] text-[0.92rem] text-slate-200; }
+    .hint { @apply text-slate-400 font-normal text-[0.82rem] -mt-[0.1rem] mb-[0.4rem]; }
+    .field { @apply mb-5; }
     input[type="text"], input[type="number"], textarea, input[type="file"], select {
-      width: 100%;
-      padding: 0.55rem 0.65rem;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      font-size: 0.95rem;
+      @apply w-full px-[0.65rem] py-[0.55rem] border border-slate-700 rounded-md text-[0.95rem] bg-slate-800 text-slate-100 placeholder-slate-500 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-blue-500;
       font-family: inherit;
     }
-    select.font-family-select { width: auto; min-width: 9rem; }
-    textarea { resize: vertical; min-height: 4.5rem; }
-    details {
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.75rem 1rem;
-      margin-bottom: 1.25rem;
-      background: #fcfcfc;
-    }
-    summary { font-weight: 600; cursor: pointer; font-size: 0.92rem; }
-    .checkbox-row { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0.6rem 0; }
-    .checkbox-row input { margin-top: 0.2rem; }
-    .checkbox-row span { font-size: 0.88rem; }
-    .radio-row { display: flex; gap: 1.5rem; margin-top: 0.4rem; }
-    .radio-row label { font-weight: 400; display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0; }
-    .inline-controls { display: flex; align-items: center; gap: 1.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
-    .inline-controls label { font-weight: 400; margin-bottom: 0; display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }
-    input[type="color"] {
-      width: 2.4rem;
-      height: 2.4rem;
-      padding: 2px;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      cursor: pointer;
-      background: #fff;
-    }
-    .font-size-input { width: 5.5rem; }
+    select.font-family-select { @apply w-auto min-w-[9rem]; }
+    textarea { @apply resize-y min-h-[4.5rem]; }
+    details { @apply border border-slate-700 rounded-md px-4 py-3 mb-5 bg-slate-800/40; }
+    summary { @apply font-semibold cursor-pointer text-[0.92rem] text-slate-200; }
+    .checkbox-row { @apply flex items-start gap-2 my-[0.6rem]; }
+    .checkbox-row input { @apply mt-[0.2rem]; }
+    .checkbox-row span { @apply text-[0.88rem] text-slate-300; }
+    .radio-row { @apply flex gap-6 mt-[0.4rem]; }
+    .radio-row label { @apply font-normal flex items-center gap-[0.4rem] mb-0 text-slate-300; }
+    .inline-controls { @apply flex items-center gap-6 mt-2 flex-wrap; }
+    .inline-controls label { @apply font-normal mb-0 flex items-center gap-2 flex-none text-slate-300; }
+    input[type="checkbox"], input[type="radio"] { @apply accent-blue-500; }
+    input[type="color"] { @apply w-[2.4rem] h-[2.4rem] p-0.5 border border-slate-700 rounded-md cursor-pointer bg-slate-800; }
+    .font-size-input { @apply w-[5.5rem]; }
     .clear-btn {
-      background: none;
-      border: 1px solid var(--border);
-      border-radius: 50%;
-      width: 1.6rem;
-      height: 1.6rem;
-      line-height: 1;
-      font-size: 1rem;
-      color: var(--muted);
-      cursor: pointer;
-      flex: 0 0 auto;
-      padding: 0;
+      @apply bg-transparent border border-slate-700 rounded-full w-[1.6rem] h-[1.6rem] leading-none text-[1rem] text-slate-400 cursor-pointer flex-none p-0 hover:bg-slate-700 hover:text-slate-100;
     }
-    .clear-btn:hover { background: #f2f2f2; color: var(--ink); }
     button {
-      background: var(--brand-blue);
-      color: #fff;
-      border: none;
-      padding: 0.7rem 1.4rem;
-      border-radius: 6px;
-      font-size: 0.98rem;
-      font-weight: 600;
-      cursor: pointer;
+      @apply bg-blue-500 text-white border-0 px-6 py-[0.7rem] rounded-md text-[0.98rem] font-semibold cursor-pointer hover:bg-blue-400 transition-colors;
     }
-    button:hover { opacity: 0.92; }
-    .top-row {
-      display: flex;
-      align-items: flex-start;
-      justify-content: space-between;
-      gap: 1rem;
-    }
+    .top-row { @apply flex items-start justify-between gap-4; }
     .reset-link {
-      display: inline-block;
-      flex: 0 0 auto;
-      color: var(--muted);
-      font-size: 0.85rem;
-      font-weight: 600;
-      text-decoration: none;
-      border: 1px solid var(--border);
-      border-radius: 6px;
-      padding: 0.45rem 0.9rem;
-      white-space: nowrap;
-      margin-top: 0.15rem;
+      @apply inline-block flex-none text-slate-400 text-[0.85rem] font-semibold no-underline border border-slate-700 rounded-md px-[0.9rem] py-[0.45rem] whitespace-nowrap mt-[0.15rem] hover:bg-slate-800 hover:text-slate-100;
     }
-    .reset-link:hover { background: #f2f2f2; color: var(--ink); }
-    .flash {
-      background: #fff3f3;
-      border: 1px solid #f3b3b3;
-      color: #8a1f1f;
-      padding: 0.75rem 1rem;
-      border-radius: 6px;
-      margin-bottom: 1.25rem;
-      font-size: 0.9rem;
-    }
-    footer { color: var(--muted); font-size: 0.8rem; margin-top: 2rem; text-align: center; }
-    code { background: #f0f0f0; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
+    .flash { @apply bg-red-950 border border-red-800 text-red-300 px-4 py-3 rounded-md mb-5 text-[0.9rem]; }
+    footer { @apply text-slate-500 text-[0.8rem] mt-8 text-center; }
+    code { @apply bg-slate-800 px-[0.35rem] py-[0.1rem] rounded text-[0.85em] text-slate-300; }
   </style>
 </head>
 <body>
@@ -151,7 +90,7 @@
         <div class="hint" style="margin-bottom: 1rem;">Editing a previous batch -- any file field you don't change keeps its previous file automatically.</div>
       {% endif %}
 
-      <div class="field" style="border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; background: #fcfcfc;">
+      <div class="field" style="border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; background: #1e293b;">
         <label style="margin-bottom: 0.6rem;">Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></label>
         <div class="hint" style="margin-top: -0.3rem;">
           Context for this batch -- not composited into the creatives, just carried along with them on the
@@ -197,7 +136,7 @@
         </div>
       </div>
 
-      <div class="field" style="border: 1px solid var(--brand-blue); border-radius: 8px; padding: 1rem 1.1rem; background: #f4f8ff;">
+      <div class="field" style="border: 1px solid var(--brand-blue); border-radius: 8px; padding: 1rem 1.1rem; background: #172554;">
         <label for="content_psd">728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
         <div class="hint">
           Upload just this one <code>.psd</code>, sized 728x480, and every other size saved in your
@@ -208,7 +147,7 @@
         <input type="file" id="content_psd" name="content_psd" accept=".psd">
         {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
-        <div id="layer_overrides_section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #cddefc;">
+        <div id="layer_overrides_section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
             template-covered size whose PSD has a matching named layer (<code>description</code>,
