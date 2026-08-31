@@ -62,6 +62,9 @@
     .ai-badge {
       @apply inline-block bg-violet-500 text-white text-[0.68rem] font-bold uppercase tracking-wide rounded px-[0.4rem] py-[0.05rem] mr-1 align-middle;
     }
+    .psd-badge {
+      @apply inline-block bg-cyan-600 text-white text-[0.68rem] font-bold uppercase tracking-wide rounded px-[0.4rem] py-[0.05rem] mr-1 align-middle;
+    }
   </style>
 </head>
 <body>
@@ -142,7 +145,7 @@
       </div>
 
       <div class="field" style="border: 1px solid var(--brand-blue); border-radius: 8px; padding: 1rem 1.1rem; background: #172554;">
-        <label for="content_psd">728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
+        <label for="content_psd"><span class="psd-badge">PSD</span> 728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
         <div class="hint">
           Upload just this one <code>.psd</code>, sized 728x480, and every other size saved in your
           <code>default_templates/</code> folder is generated automatically alongside it. Using this field
@@ -240,7 +243,7 @@
       </script>
 
       <div class="field">
-        <label for="hero_image">Hero image (or video) <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+        <label for="hero_image"><span class="psd-badge">PSD</span> Hero image (or video) <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
         <div class="hint">PNG, JPG, WEBP, or TIFF, or a video (MP4, MOV, etc.) -- a frame is extracted automatically from video. Only required for sizes not already covered by an uploaded PSD template below.</div>
         <input type="file" id="hero_image" name="hero_image">
         {% if prefill_files.get('hero_image') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
@@ -283,7 +286,7 @@
       </script>
 
       <div class="field">
-        <label>Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+        <label><span class="psd-badge">PSD</span> Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
         <div class="hint">
           Upload a <code>.psd</code> file for a specific output size (e.g. <code>728x480</code>) and that size will
           use the flattened PSD as its background instead of the general hero image above -- just the composite
