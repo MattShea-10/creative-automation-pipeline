@@ -3095,6 +3095,72 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertLess(r_, 100)
         self.assertGreater(b_, 150)
 
+    def test_header_override_is_skipped_gracefully_when_template_has_no_header_layer(self):
+        # The real staged template doesn't have a "header" layer (that's
+        # a new addition a user might make on their own end) -- providing
+        # layer_header_text must not error, and the existing description
+        # override must keep working right alongside it.
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_header_text": "New headline text",
+            "layer_description_text": "New description text",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"updated layer(s)", r.data)
+        self.assertIn(b"description", r.data)
+        # "header" is skipped -- the field name is never named as an
+        # *applied* layer, since there's no matching layer to draw into.
+        self.assertNotIn(b": header debug", r.data)
+
+    def test_header_override_draws_new_text_into_a_named_header_layer(self):
+        # Built directly via psd-tools' write API rather than
+        # _stage_real_template() -- unlike description/logo/cta/product,
+        # none of the project's real shipped templates have a "header"
+        # layer yet, so this doesn't depend on one existing.
+        from psd_tools import PSDImage
+        from src.image_ops import get_psd_layer_boxes
+
+        size = (400, 300)
+        psd = PSDImage.new("RGBA", size)
+        psd.create_pixel_layer(Image.new("RGBA", size, (240, 240, 240, 255)), name="background", top=0, left=0)
+        psd.create_pixel_layer(Image.new("RGBA", (60, 40), (0, 0, 0, 255)), name="logo", top=0, left=0)
+        psd.create_pixel_layer(Image.new("RGBA", (60, 40), (0, 0, 0, 255)), name="product", top=240, left=0)
+        psd.create_pixel_layer(Image.new("RGBA", (60, 40), (0, 0, 0, 255)), name="cta", top=240, left=200)
+        psd.create_pixel_layer(
+            Image.new("RGBA", (300, 60), (240, 240, 240, 255)), name="header", top=10, left=50
+        )
+        psd.create_pixel_layer(
+            Image.new("RGBA", (300, 60), (240, 240, 240, 255)), name="description", top=100, left=50
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "with_header.psd"
+            psd.save(path)
+            data = {
+                "content_psd": (io.BytesIO(path.read_bytes()), "with_header.psd"),
+                "layer_header_text": "Summer Sale",
+                "header": "",
+                "description": "",
+            }
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn(b"updated layer(s)", r.data)
+            self.assertIn(b"header", r.data)
+
+            job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+            box = get_psd_layer_boxes(path).get("header")
+            self.assertIsNotNone(box)
+            with Image.open(webapp.JOBS_DIR / job_id / f"creative_{size[0]}x{size[1]}.png") as img:
+                region = img.crop(box).convert("L")
+            colors = region.getcolors(maxcolors=region.size[0] * region.size[1])
+            self.assertGreater(
+                len(colors), 1, "header box looks untouched (still a single flat color) -- no text was drawn"
+            )
+
     def test_override_with_no_matching_layer_is_skipped_not_errored(self):
         _, staged_path = self._stage_real_template()
         # "badge" isn't one of this template's named layers (it has

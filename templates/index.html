@@ -200,17 +200,54 @@
         <div id="layer_overrides_section" data-role="layer-overrides-section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
-            template-covered size whose PSD has a matching named layer (<code>description</code>,
-            <code>logo</code>, <code>cta</code>, <code>product</code>, <code>background</code>), the new
-            content is composited into that layer's exact position for that size -- a different
-            position/scale per size, since each template has its own layout. A size whose PSD doesn't have a
-            given layer just skips that one update. The logo/CTA/product images are pasted in (contain-fit,
-            centered, background removed); the background image fills its layer completely (cropped to fit,
-            no cutout removal -- it's meant to be the full frame, not an object sitting within it); the
-            description is painted over and redrawn with your text, since Pillow can't edit a PSD's live text
-            layer directly. These are PSD updates only -- they don't affect the general hero-image tool below.
+            template-covered size whose PSD has a matching named layer (<code>header</code>,
+            <code>description</code>, <code>logo</code>, <code>cta</code>, <code>product</code>,
+            <code>background</code>), the new content is composited into that layer's exact position for
+            that size -- a different position/scale per size, since each template has its own layout. A size
+            whose PSD doesn't have a given layer just skips that one update. The logo/CTA/product images are
+            pasted in (contain-fit, centered, background removed); the background image fills its layer
+            completely (cropped to fit, no cutout removal -- it's meant to be the full frame, not an object
+            sitting within it); header/description are painted over and redrawn with your text, since Pillow
+            can't edit a PSD's live text layer directly. These are PSD updates only -- they don't affect the
+            general hero-image tool below.
           </div>
           <div class="field" style="margin-top: 0.6rem; margin-bottom: 0.6rem;">
+            <label for="layer_header_text" style="font-weight: 400;">Header text</label>
+            <input type="text" id="layer_header_text" name="layer_header_text" placeholder="e.g. Summer Sale" value="{{ prefill.get('layer_header_text', '') }}">
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_header_font_family" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Font</span>
+              <select class="font-family-select" id="layer_header_font_family" name="layer_header_font_family">
+                <option value="" {% if prefill.get('layer_header_font_family', '') == '' %}selected{% endif %}>Match PSD</option>
+                <option value="sans" {% if prefill.get('layer_header_font_family') == 'sans' %}selected{% endif %}>Sans-serif</option>
+                <option value="serif" {% if prefill.get('layer_header_font_family') == 'serif' %}selected{% endif %}>Serif</option>
+                <option value="mono" {% if prefill.get('layer_header_font_family') == 'mono' %}selected{% endif %}>Monospace</option>
+                <option value="condensed" {% if prefill.get('layer_header_font_family') == 'condensed' %}selected{% endif %}>Condensed</option>
+              </select>
+            </label>
+            <label for="layer_header_font_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Font size (px)</span>
+              <input type="number" class="font-size-input" id="layer_header_font_size" name="layer_header_font_size" min="4" max="2000" placeholder="Match PSD" value="{{ prefill.get('layer_header_font_size', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_header_use_custom_color">
+              <input type="checkbox" id="layer_header_use_custom_color" name="layer_header_use_custom_color" value="1" {% if prefill.get('layer_header_use_custom_color') %}checked{% endif %}>
+              Custom text color
+            </label>
+            <label for="layer_header_text_color">
+              <input type="color" id="layer_header_text_color" name="layer_header_text_color" value="{{ prefill.get('layer_header_text_color', '#1a1a1a') }}">
+              Text color
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            By default the header text matches whatever font family, size, and color the PSD's own
+            <code>header</code> text layer was set to in Photoshop (when readable). Set the font/size above
+            to override it, and check "Custom text color" to override the color too -- for every template size.
+          </div>
+
+          <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_description_text" style="font-weight: 400;">Description text</label>
             <input type="text" id="layer_description_text" name="layer_description_text" placeholder="e.g. First 500 get free cans" value="{{ prefill.get('layer_description_text', '') }}">
           </div>

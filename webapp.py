@@ -139,6 +139,8 @@ EDIT_TEXT_FIELD_NAMES = (
     "logo_position", "logo_scale", "logo_opacity", "logo_offset_x", "logo_offset_y",
     "badge_position", "badge_scale", "badge_opacity",
     "video_frame_seconds",
+    "layer_header_text",
+    "layer_header_font_family", "layer_header_font_size", "layer_header_text_color",
     "layer_description_text",
     "layer_description_font_family", "layer_description_font_size", "layer_description_text_color",
     "psd_size_1", "psd_size_2", "psd_size_3", "psd_size_4",
@@ -148,6 +150,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "message_no_background", "message_glow",
     "cta_glow",
     "cta_above_message",
+    "layer_header_use_custom_color",
     "layer_description_use_custom_color",
     "brand_color_1_enabled", "brand_color_2_enabled", "brand_color_3_enabled",
     "ai_hero_enabled",
@@ -555,6 +558,7 @@ def generate():
         ("Header/title", (request.form.get("header") or "").strip()),
         ("Description/message", (request.form.get("description") or "").strip()),
         ("Call-to-action text", (request.form.get("cta_text") or "").strip()),
+        ("Header/title (update)", (request.form.get("layer_header_text") or "").strip()),
         ("Description/message (update)", (request.form.get("layer_description_text") or "").strip()),
     ]
     flagged_fields = [label for label, value in profanity_fields if value and check_profanity(value)]
@@ -808,6 +812,19 @@ def generate():
     # bbox). Only meaningful when there's at least one template-covered
     # size to apply them to; parsed once, applied per-size in the render
     # loop below via get_psd_layer_boxes()/apply_layer_*_override().
+    layer_header_text = (request.form.get("layer_header_text") or "").strip() or None
+    # Same idea as the description override just below -- these three let
+    # the user override the PSD's own font family/size/color for the
+    # "header" text layer specifically.
+    layer_header_font_family = (request.form.get("layer_header_font_family") or "").strip()
+    if layer_header_font_family not in VALID_FONT_FAMILIES:
+        layer_header_font_family = ""
+    layer_header_font_size = _parse_optional_font_size(request.form.get("layer_header_font_size"))
+    layer_header_use_custom_color = bool(request.form.get("layer_header_use_custom_color"))
+    layer_header_text_color = _parse_hex_color(
+        request.form.get("layer_header_text_color"), default=(26, 26, 26)
+    )
+
     layer_description_text = (request.form.get("layer_description_text") or "").strip() or None
     # By default the description override matches whatever font family,
     # size, and color the PSD's own "description" text layer was set to
@@ -1086,7 +1103,7 @@ def generate():
             # per size, since every template size has its own layout).
             # A size whose PSD doesn't have a given named layer just skips
             # that one override rather than erroring the whole request.
-            if (layer_description_text or layer_image_overrides) and (width, height) in size_template_paths:
+            if (layer_header_text or layer_description_text or layer_image_overrides) and (width, height) in size_template_paths:
                 psd_path_for_size = size_template_paths.get((width, height))
                 layer_boxes = get_psd_layer_boxes(psd_path_for_size)
                 applied_layers = []
@@ -1153,97 +1170,124 @@ def generate():
                         _clean_layer_box(box, layer_name)
                         final_image = apply_layer_image_override(final_image, box, override_image)
                     applied_layers.append(layer_name)
-                if layer_description_text:
-                    box = layer_boxes.get("description")
-                    if box is not None:
-                        _clean_layer_box(box, "description")
-                        psd_text_style = (
-                            get_psd_layer_text_style(psd_path_for_size, "description")
-                            if psd_path_for_size is not None
-                            else None
-                        ) or {}
-                        if not psd_text_style:
-                            # Surfaced on the results page rather than just
-                            # silently falling back -- if this shows up
-                            # unexpectedly (the PSD clearly has a real
-                            # "description" text layer), that's the signal
-                            # something's off in *this* environment specifically
-                            # (e.g. psd-tools missing/outdated here vs. wherever
-                            # this was last verified), not a text-sizing bug.
-                            background_notes.append(
-                                f"{size_label(width, height)}: description -- couldn't read this "
-                                "template's own font settings from the PSD (font/size/color/leading "
-                                "not read from a real text layer) -- using autofit sizing instead."
-                            )
-                        effective_family = layer_description_font_family or psd_text_style.get("family") or "sans"
-                        effective_bold = psd_text_style.get("bold", True)
-                        # A user-typed font size wins as the *ceiling*
-                        # for the same shrink-to-fit search the PSD's own
-                        # font size otherwise drives -- see
-                        # apply_layer_text_override()'s `exact_font_size`
-                        # param. It's still just a ceiling, not a literal
-                        # demand: the text is always shrunk further if it
-                        # doesn't actually fit the box, so an explicit
-                        # size can never push text past the box's edges
-                        # (see the "clamped" note appended below when
-                        # that happens, so it's visible rather than a
-                        # silent "why didn't my font size change
-                        # anything").
-                        exact_font_size = layer_description_font_size
-                        ceiling_font_size = None if exact_font_size else psd_text_style.get("font_size")
-                        # The PSD's own leading (line spacing) is scaled
-                        # proportionally against the PSD's own font size
-                        # (leading_reference_size) to whatever size
-                        # actually ends up rendering -- see
-                        # apply_layer_text_override()'s `leading` /
-                        # `leading_reference_size` params. This still
-                        # applies even when the user typed an explicit
-                        # font size: the PSD's *relative* line spacing is
-                        # still the best estimate available, and tracks
-                        # the requested size far better than a generic
-                        # ~1.2x-of-font-size approximation would.
-                        effective_leading = psd_text_style.get("line_height")
-                        leading_reference_size = psd_text_style.get("font_size")
-                        if layer_description_use_custom_color:
-                            effective_color = layer_description_text_color
-                        else:
-                            effective_color = psd_text_style.get("color", (26, 26, 26))
-                        text_debug: dict = {}
-                        final_image = apply_layer_text_override(
-                            final_image,
-                            box,
-                            layer_description_text,
-                            text_color=effective_color,
-                            font_family=effective_family,
-                            font_size=ceiling_font_size,
-                            exact_font_size=exact_font_size,
-                            bold=effective_bold,
-                            leading=effective_leading,
-                            leading_reference_size=leading_reference_size,
-                            debug=text_debug,
-                        )
-                        applied_layers.append("description")
+                def _apply_text_layer_override(
+                    layer_key, text, font_family, font_size, use_custom_color, text_color
+                ):
+                    # Shared by every text-layer override (description,
+                    # header, ...) -- reads that named layer's own PSD
+                    # font settings as the default, lets font
+                    # family/size/color be overridden per field, and
+                    # shrink-to-fits the text into the layer's box. See
+                    # apply_layer_text_override() for the actual
+                    # shrink-to-fit/leading-scaling behavior.
+                    nonlocal final_image
+                    box = layer_boxes.get(layer_key)
+                    if box is None:
+                        return
+                    _clean_layer_box(box, layer_key)
+                    psd_text_style = (
+                        get_psd_layer_text_style(psd_path_for_size, layer_key)
+                        if psd_path_for_size is not None
+                        else None
+                    ) or {}
+                    if not psd_text_style:
+                        # Surfaced on the results page rather than just
+                        # silently falling back -- if this shows up
+                        # unexpectedly (the PSD clearly has a real text
+                        # layer with this name), that's the signal
+                        # something's off in *this* environment specifically
+                        # (e.g. psd-tools missing/outdated here vs. wherever
+                        # this was last verified), not a text-sizing bug.
                         background_notes.append(
-                            f"{size_label(width, height)}: description debug -- "
-                            f"read from PSD: {psd_text_style or 'none'} | "
-                            f"used: {text_debug.get('font_size')}px {text_debug.get('family')} "
-                            f"(bold={text_debug.get('bold')}), leading {text_debug.get('line_height')}px, "
-                            f"{text_debug.get('lines')} line(s), color {effective_color}."
+                            f"{size_label(width, height)}: {layer_key} -- couldn't read this "
+                            "template's own font settings from the PSD (font/size/color/leading "
+                            "not read from a real text layer) -- using autofit sizing instead."
                         )
-                        if text_debug.get("clamped"):
-                            # The text is always shrunk to actually fit the
-                            # box (see apply_layer_text_override()) -- if
-                            # that meant using less than what was
-                            # requested (the PSD's own size, or an
-                            # explicit override), say so explicitly here
-                            # rather than leaving a "why didn't my font
-                            # size change anything" silently unanswered.
-                            background_notes.append(
-                                f"{size_label(width, height)}: description -- requested "
-                                f"{text_debug.get('requested_font_size')}px didn't fit this size's "
-                                f"box at this text length -- used {text_debug.get('font_size')}px "
-                                "instead so the text stays inside the box."
-                            )
+                    effective_family = font_family or psd_text_style.get("family") or "sans"
+                    effective_bold = psd_text_style.get("bold", True)
+                    # A user-typed font size wins as the *ceiling* for the
+                    # same shrink-to-fit search the PSD's own font size
+                    # otherwise drives -- see apply_layer_text_override()'s
+                    # `exact_font_size` param. It's still just a ceiling,
+                    # not a literal demand: the text is always shrunk
+                    # further if it doesn't actually fit the box, so an
+                    # explicit size can never push text past the box's
+                    # edges (see the "clamped" note appended below when
+                    # that happens, so it's visible rather than a silent
+                    # "why didn't my font size change anything").
+                    exact_font_size = font_size
+                    ceiling_font_size = None if exact_font_size else psd_text_style.get("font_size")
+                    # The PSD's own leading (line spacing) is scaled
+                    # proportionally against the PSD's own font size
+                    # (leading_reference_size) to whatever size actually
+                    # ends up rendering -- see apply_layer_text_override()'s
+                    # `leading` / `leading_reference_size` params. This
+                    # still applies even when the user typed an explicit
+                    # font size: the PSD's *relative* line spacing is
+                    # still the best estimate available, and tracks the
+                    # requested size far better than a generic
+                    # ~1.2x-of-font-size approximation would.
+                    effective_leading = psd_text_style.get("line_height")
+                    leading_reference_size = psd_text_style.get("font_size")
+                    if use_custom_color:
+                        effective_color = text_color
+                    else:
+                        effective_color = psd_text_style.get("color", (26, 26, 26))
+                    text_debug: dict = {}
+                    final_image = apply_layer_text_override(
+                        final_image,
+                        box,
+                        text,
+                        text_color=effective_color,
+                        font_family=effective_family,
+                        font_size=ceiling_font_size,
+                        exact_font_size=exact_font_size,
+                        bold=effective_bold,
+                        leading=effective_leading,
+                        leading_reference_size=leading_reference_size,
+                        debug=text_debug,
+                    )
+                    applied_layers.append(layer_key)
+                    background_notes.append(
+                        f"{size_label(width, height)}: {layer_key} debug -- "
+                        f"read from PSD: {psd_text_style or 'none'} | "
+                        f"used: {text_debug.get('font_size')}px {text_debug.get('family')} "
+                        f"(bold={text_debug.get('bold')}), leading {text_debug.get('line_height')}px, "
+                        f"{text_debug.get('lines')} line(s), color {effective_color}."
+                    )
+                    if text_debug.get("clamped"):
+                        # The text is always shrunk to actually fit the
+                        # box (see apply_layer_text_override()) -- if that
+                        # meant using less than what was requested (the
+                        # PSD's own size, or an explicit override), say so
+                        # explicitly here rather than leaving a "why
+                        # didn't my font size change anything" silently
+                        # unanswered.
+                        background_notes.append(
+                            f"{size_label(width, height)}: {layer_key} -- requested "
+                            f"{text_debug.get('requested_font_size')}px didn't fit this size's "
+                            f"box at this text length -- used {text_debug.get('font_size')}px "
+                            "instead so the text stays inside the box."
+                        )
+
+                if layer_header_text:
+                    _apply_text_layer_override(
+                        "header",
+                        layer_header_text,
+                        layer_header_font_family,
+                        layer_header_font_size,
+                        layer_header_use_custom_color,
+                        layer_header_text_color,
+                    )
+                if layer_description_text:
+                    _apply_text_layer_override(
+                        "description",
+                        layer_description_text,
+                        layer_description_font_family,
+                        layer_description_font_size,
+                        layer_description_use_custom_color,
+                        layer_description_text_color,
+                    )
                 if applied_layers:
                     background_notes.append(
                         f"{size_label(width, height)}: updated layer(s) -- " + ", ".join(applied_layers) + "."
