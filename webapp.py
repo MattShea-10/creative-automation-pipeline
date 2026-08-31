@@ -717,16 +717,17 @@ def generate():
     else:
         content_psd_path = _carry_forward_upload("content_psd", uploads_dir, prior_job_dir, prior_form_state)
     content_psd_provided = content_psd_path is not None
+    content_psd_image = None
     if content_psd_provided:
         try:
-            open_as_rgb(content_psd_path)  # validate it's actually readable
+            content_psd_image = open_as_rgb(content_psd_path)
         except ValueError as exc:
             flash(f"728x480 content PSD: {exc}")
             return redirect(url_for("index"))
-        # This upload is a *trigger* only -- it does not add its own size
-        # to the output. The batch is driven entirely by whatever's
-        # already saved in default_templates/ (merged in just below);
-        # "Output sizes"/"Custom sizes" are ignored in this mode too.
+        # The upload renders as its own size (see the size_templates merge
+        # below) *and* pulls in whatever's already saved in
+        # default_templates/ -- "Output sizes"/"Custom sizes" and the
+        # general hero image are still ignored in this mode either way.
         sizes = []
 
     # Profanity check, PSD text layers -- same hard gate as the typed
@@ -745,6 +746,9 @@ def generate():
                 )
                 return redirect(url_for("index"))
 
+    background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
+    background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
+
     # Saved default templates (default_templates/) only come into play
     # when the quick-campaign content PSD field is used -- that field's
     # whole point is "upload one flagship PSD and export the rest of a
@@ -760,15 +764,17 @@ def generate():
     else:
         default_templates, default_template_paths = {}, {}
     if content_psd_provided and not default_templates:
-        flash(
-            "That PSD was uploaded, but default_templates/ doesn't have any saved "
-            "templates yet -- there's nothing to export. Save at least one template "
-            "there first (see the Size-specific PSD templates section), or use that "
-            "section directly instead of the 728x480 content PSD field."
+        background_notes.append(
+            "default_templates/ doesn't have any saved templates yet -- only the "
+            "uploaded 728x480 content PSD's own size was exported."
         )
-        return redirect(url_for("index"))
-    size_templates = {**default_templates, **psd_templates}
-    size_template_paths = {**default_template_paths, **psd_template_paths}
+    size_templates = dict(default_templates)
+    size_template_paths = dict(default_template_paths)
+    if content_psd_provided:
+        size_templates[content_psd_image.size] = content_psd_image
+        size_template_paths[content_psd_image.size] = content_psd_path
+    size_templates.update(psd_templates)
+    size_template_paths.update(psd_template_paths)
 
     # Every template in play this request -- whether a per-request PSD
     # template row, the content_psd trigger's saved defaults, or both --
@@ -866,9 +872,6 @@ def generate():
     # already checked/typed above pulls that size into the batch -- the
     # user shouldn't also have to add it.
     sizes = sorted(set(sizes) | set(size_templates.keys()))
-
-    background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
-    background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
 
     # AI-generated hero image, if the box was checked and there's an
     # actual gap for it to fill (a hero image was uploaded, or every

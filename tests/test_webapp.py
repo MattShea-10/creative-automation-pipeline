@@ -2150,12 +2150,11 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
 
 class ContentPsdQuickModeTest(unittest.TestCase):
-    """Covers the single-input "quick campaign" content_psd field: this
-    upload is a *trigger* only -- it doesn't add its own size to the
-    output. The batch becomes exactly whatever's saved in
-    default_templates/, and nothing else -- Output sizes/Custom
-    sizes/hero image are all disregarded, and the uploaded PSD's own
-    728x480 size is not rendered as a card of its own."""
+    """Covers the single-input "quick campaign" content_psd field: the
+    upload renders as its own size (keyed by its actual pixel dimensions,
+    not the nominal "728x480" in its label) *and* pulls in whatever's
+    saved in default_templates/ -- Output sizes/Custom sizes/hero image
+    are all disregarded either way."""
 
     def setUp(self):
         webapp.app.config["TESTING"] = True
@@ -2248,7 +2247,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         image_data = compression + plane(r) + plane(g) + plane(b)
         return header + color_mode_data + image_resources + layer_mask_info + image_data
 
-    def test_content_psd_triggers_saved_defaults_only_not_its_own_size(self):
+    def test_content_psd_renders_its_own_size_plus_saved_defaults(self):
         self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
 
         data = {
@@ -2258,17 +2257,36 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        # Only the one saved default (970x90) -- the uploaded PSD's own
-        # nominal 728x480 size is NOT rendered as a card of its own, it's
-        # purely the trigger for the saved-defaults batch. Otherwise a
-        # user with a 728x480 default template already saved would see
-        # two near-identical cards (their saved 728x480 template, plus a
-        # second one from this upload) -- exactly the bug this behavior
-        # avoids.
-        self.assertEqual(r.data.count(b'class="card"'), 1)
-        self.assertNotIn(b"728x480", r.data)
+        # Two cards: the saved default (970x90) *and* the uploaded PSD's
+        # own actual size (64x40 -- this test's synthetic PSD's real
+        # pixel dimensions, not the nominal "728x480" the field is
+        # labeled for).
+        self.assertEqual(r.data.count(b'class="card"'), 2)
+        self.assertIn(b"64x40", r.data)
         self.assertIn(b"970x90", r.data)
         self.assertNotIn(b"1080x1080", r.data)
+
+    def test_content_psd_own_size_takes_priority_over_a_same_size_saved_default(self):
+        # A saved default at the exact same size the upload itself
+        # happens to be -- the freshly uploaded PSD wins, since it's the
+        # more recent, more explicit thing the user just gave us.
+        self._write_default_template("64x40.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+
+        data = {
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data.count(b'class="card"'), 1)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_64x40.png") as img:
+            r_, g_, b_ = img.getpixel((5, 5))
+        # The upload's own blue-ish color (10, 10, 200), not the saved
+        # default's green (30, 180, 30).
+        self.assertGreater(b_, r_)
+        self.assertGreater(b_, g_)
 
     def test_content_psd_corrupt_saved_default_is_skipped_without_crashing(self):
         # default_templates/ is scanned on every content-PSD request; one
@@ -2290,7 +2308,9 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # unrelated to this job's actual creatives, so check the card
         # count and the actual filename instead.
         self.assertNotIn(b"creative_160x600", r.data)
-        self.assertEqual(r.data.count(b'class="card"'), 1)
+        # 970x90 (the valid saved default) plus the upload's own size
+        # (64x40) -- the corrupt 160x600 file is the only one skipped.
+        self.assertEqual(r.data.count(b'class="card"'), 2)
 
     def test_content_psd_ignores_checked_output_sizes_and_custom_sizes(self):
         self._write_default_template("300x250.psd", self._sample_psd_bytes(size=(300, 250)))
@@ -2303,14 +2323,16 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        # Only the saved default (300x250) -- the checked/custom sizes
-        # above are disregarded entirely in this mode.
-        self.assertEqual(r.data.count(b'class="card"'), 1)
+        # The saved default (300x250) plus the upload's own size (64x40)
+        # -- the checked/custom sizes above are still disregarded
+        # entirely in this mode.
+        self.assertEqual(r.data.count(b'class="card"'), 2)
         self.assertIn(b"300x250", r.data)
+        self.assertIn(b"64x40", r.data)
         self.assertNotIn(b"970x250", r.data)
         self.assertNotIn(b"1080x1080", r.data)
 
-    def test_content_psd_with_no_saved_defaults_flashes_instead_of_rendering_nothing(self):
+    def test_content_psd_with_no_saved_defaults_still_renders_its_own_size(self):
         data = {
             "content_psd": (io.BytesIO(self._sample_psd_bytes()), "content.psd"),
             "header": "",
@@ -2321,11 +2343,10 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200)
         # Nothing saved in default_templates/ this test's isolated folder
-        # -- since the upload itself isn't rendered, there'd be nothing
-        # to show, so this should flash rather than silently produce an
-        # empty results page.
-        self.assertIn(b"default_templates", r.data)
-        self.assertNotIn(b'class="card"', r.data)
+        # -- but the upload's own size is always exported regardless, so
+        # this succeeds with exactly one card, no flash.
+        self.assertEqual(r.data.count(b'class="card"'), 1)
+        self.assertIn(b"64x40", r.data)
 
     def test_content_psd_saved_default_renders_as_is_with_no_overlay(self):
         self._write_default_template("728x480.psd", self._sample_psd_bytes(color=(90, 200, 40)))
