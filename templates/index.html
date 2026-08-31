@@ -222,6 +222,62 @@
             </div>
           {% endif %}
         </div>
+          <div class="field" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a; margin-bottom: 0;">
+            <label><span class="psd-badge">PSD</span> Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+          <div class="hint">
+            Upload a <code>.psd</code> file for a specific output size (e.g. <code>728x480</code>) and that size will
+            use the flattened PSD as its background instead of the general hero image (in Advanced options below) -- just the composite
+            preview Pillow renders from the PSD, no layers or effects. A size you add here is automatically included
+            in the batch even if it isn't checked/typed under "Output sizes" below. The hero image only needs to be
+            provided if some requested size has no matching template.
+          </div>
+          <div class="hint">
+            A row here only ever affects the exact size you upload it for -- it never pulls in anything else.
+            <code>default_templates/</code> saved templates are only auto-applied to other sizes when you use the
+            728x480 content PSD field above, not from a row here.
+          </div>
+          {% for i in range(1, 5) %}
+            <div class="inline-controls" style="margin-top: {% if i == 1 %}0.4rem{% else %}0.6rem{% endif %};">
+              <label for="psd_size_{{ i }}" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Size</span>
+                <input type="text" id="psd_size_{{ i }}" name="psd_size_{{ i }}" placeholder="728x480" style="width: 7rem;" value="{{ prefill.get('psd_size_' ~ i, '') }}">
+              </label>
+              <label for="psd_file_{{ i }}" style="font-weight: 400; flex: 1 1 auto;">
+                <span style="white-space: nowrap;">PSD file</span>
+                <input type="file" id="psd_file_{{ i }}" name="psd_file_{{ i }}" accept=".psd" style="width: auto;">
+              </label>
+              {% if prefill_files.get('psd_file_' ~ i) %}
+                <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" title="Remove this template -- use the hero image for this size instead">&times;</button>
+              {% endif %}
+              <input type="hidden" id="psd_size_{{ i }}_clear" name="psd_size_{{ i }}_clear" value="">
+            </div>
+            {% if prefill_files.get('psd_file_' ~ i) %}
+              <div class="hint" id="psd_currently_{{ i }}" style="margin-top: -0.3rem; margin-bottom: 0.5rem;">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong> -- choose a new file to replace it, click &times; to remove it and fall back to the hero image for this size, or leave blank to keep it.</div>
+            {% endif %}
+          {% endfor %}
+
+        </div>
+        <script>
+          (function () {
+            for (var i = 1; i <= 4; i++) {
+              (function (i) {
+                var btn = document.getElementById("psd_clear_btn_" + i);
+                if (!btn) return;
+                var sizeInput = document.getElementById("psd_size_" + i);
+                var fileInput = document.getElementById("psd_file_" + i);
+                var clearFlag = document.getElementById("psd_size_" + i + "_clear");
+                var currentlyHint = document.getElementById("psd_currently_" + i);
+                btn.addEventListener("click", function () {
+                  sizeInput.value = "";
+                  fileInput.value = "";
+                  clearFlag.value = "1";
+                  if (currentlyHint) currentlyHint.hidden = true;
+                  btn.hidden = true;
+                });
+              })(i);
+            }
+          })();
+        </script>
       </div>
       <script>
         (function () {
@@ -239,63 +295,6 @@
           }
           contentPsdInput.addEventListener("change", sync);
           sync();
-        })();
-      </script>
-
-      <div class="field">
-        <label><span class="psd-badge">PSD</span> Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
-        <div class="hint">
-          Upload a <code>.psd</code> file for a specific output size (e.g. <code>728x480</code>) and that size will
-          use the flattened PSD as its background instead of the general hero image (in Advanced options below) -- just the composite
-          preview Pillow renders from the PSD, no layers or effects. A size you add here is automatically included
-          in the batch even if it isn't checked/typed under "Output sizes" below. The hero image only needs to be
-          provided if some requested size has no matching template.
-        </div>
-        <div class="hint">
-          A row here only ever affects the exact size you upload it for -- it never pulls in anything else.
-          <code>default_templates/</code> saved templates are only auto-applied to other sizes when you use the
-          728x480 content PSD field above, not from a row here.
-        </div>
-        {% for i in range(1, 5) %}
-          <div class="inline-controls" style="margin-top: {% if i == 1 %}0.4rem{% else %}0.6rem{% endif %};">
-            <label for="psd_size_{{ i }}" style="font-weight: 400;">
-              <span style="white-space: nowrap;">Size</span>
-              <input type="text" id="psd_size_{{ i }}" name="psd_size_{{ i }}" placeholder="728x480" style="width: 7rem;" value="{{ prefill.get('psd_size_' ~ i, '') }}">
-            </label>
-            <label for="psd_file_{{ i }}" style="font-weight: 400; flex: 1 1 auto;">
-              <span style="white-space: nowrap;">PSD file</span>
-              <input type="file" id="psd_file_{{ i }}" name="psd_file_{{ i }}" accept=".psd" style="width: auto;">
-            </label>
-            {% if prefill_files.get('psd_file_' ~ i) %}
-              <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" title="Remove this template -- use the hero image for this size instead">&times;</button>
-            {% endif %}
-            <input type="hidden" id="psd_size_{{ i }}_clear" name="psd_size_{{ i }}_clear" value="">
-          </div>
-          {% if prefill_files.get('psd_file_' ~ i) %}
-            <div class="hint" id="psd_currently_{{ i }}" style="margin-top: -0.3rem; margin-bottom: 0.5rem;">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong> -- choose a new file to replace it, click &times; to remove it and fall back to the hero image for this size, or leave blank to keep it.</div>
-          {% endif %}
-        {% endfor %}
-
-      </div>
-      <script>
-        (function () {
-          for (var i = 1; i <= 4; i++) {
-            (function (i) {
-              var btn = document.getElementById("psd_clear_btn_" + i);
-              if (!btn) return;
-              var sizeInput = document.getElementById("psd_size_" + i);
-              var fileInput = document.getElementById("psd_file_" + i);
-              var clearFlag = document.getElementById("psd_size_" + i + "_clear");
-              var currentlyHint = document.getElementById("psd_currently_" + i);
-              btn.addEventListener("click", function () {
-                sizeInput.value = "";
-                fileInput.value = "";
-                clearFlag.value = "1";
-                if (currentlyHint) currentlyHint.hidden = true;
-                btn.hidden = true;
-              });
-            })(i);
-          }
         })();
       </script>
 
