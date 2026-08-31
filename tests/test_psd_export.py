@@ -17,7 +17,7 @@ from PIL import Image, ImageChops
 from psd_tools import PSDImage
 
 from src.creative_render import render_creative, render_creative_layers
-from src.image_ops import get_psd_layer_boxes
+from src.image_ops import get_psd_backdrop, get_psd_layer_background, get_psd_layer_boxes
 from src.psd_export import REUPLOAD_LAYER_NAMES, _tight_bbox_crop, build_layered_psd, save_layered_psd
 
 
@@ -27,6 +27,57 @@ class PsdExportTest(unittest.TestCase):
 
     def tearDown(self):
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def _overlapping_template_psd(self):
+        """A 200x150 PSD shaped like a real ad template: a full-canvas
+        red background, a blue "logo" band across the top, and a green
+        "header" text box sitting on top of that same band. The overlap
+        is the point -- it's what separates "hide one layer" from "clear
+        the whole box".
+        """
+        size = (200, 150)
+        background = Image.new("RGBA", size, (200, 0, 0, 255))
+        logo = Image.new("RGBA", size, (0, 0, 0, 0))
+        logo.paste((0, 0, 200, 255), (20, 10, 180, 60))
+        header = Image.new("RGBA", size, (0, 0, 0, 0))
+        header.paste((0, 200, 0, 255), (30, 20, 170, 50))
+        dest = self.tmp_dir / "overlapping.psd"
+        save_layered_psd(
+            [("background", background), ("logo", logo), ("header", header)],
+            size,
+            dest,
+            layer_names={},
+        )
+        return dest
+
+    def test_get_psd_backdrop_clears_everything_but_the_background(self):
+        # The header box is the region a text override wipes. Inside it
+        # the backdrop must be pure background -- no logo, no old header
+        # -- so replacement text lands on the ad's own artwork instead of
+        # on top of whatever was sharing its box.
+        dest = self._overlapping_template_psd()
+        backdrop = get_psd_backdrop(dest)
+        self.assertIsNotNone(backdrop)
+        colors = {backdrop.getpixel((x, y)) for x in range(30, 170, 20) for y in range(20, 50, 10)}
+        self.assertEqual(colors, {(200, 0, 0)})
+
+    def test_get_psd_layer_background_alone_leaves_the_overlapping_logo(self):
+        # The contrast case, and the reason get_psd_backdrop() exists:
+        # hiding just "header" still leaves the logo band inside the
+        # header's own box, so text drawn there would sit on the logo.
+        dest = self._overlapping_template_psd()
+        clean = get_psd_layer_background(dest, "header")
+        self.assertIsNotNone(clean)
+        self.assertEqual(clean.getpixel((100, 35)), (0, 0, 200))
+
+    def test_get_psd_backdrop_returns_none_without_a_background_layer(self):
+        # Nothing to keep means no usable backdrop -- callers fall back to
+        # the single-layer clean-up rather than wiping a box to nothing.
+        size = (200, 150)
+        logo = Image.new("RGBA", size, (0, 0, 200, 255))
+        dest = self.tmp_dir / "no-background.psd"
+        save_layered_psd([("logo", logo)], size, dest, layer_names={})
+        self.assertIsNone(get_psd_backdrop(dest))
 
     def test_build_layered_psd_rejects_empty_layer_list(self):
         with self.assertRaises(ValueError):

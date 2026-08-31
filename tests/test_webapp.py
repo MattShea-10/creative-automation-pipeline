@@ -1800,6 +1800,69 @@ class PsdTemplateSectionTest(unittest.TestCase):
         self.assertIn(b"PSD template row 1", r.data)
         self.assertIn(b"supported file type", r.data)
 
+    def test_text_override_keeps_the_source_template_as_a_second_download(self):
+        # A text override forces a rebuild, and the rebuild writes over
+        # the copy of the template -- a stack of rasterized layers, since
+        # psd-tools can only author pixel layers. That leaves nowhere to
+        # retype the words, so the untouched template is kept beside it
+        # under its own name: same design, but its header/description are
+        # still live Photoshop type layers.
+        _template_upload = self._sample_psd_bytes(color=(90, 200, 40))
+        template_bytes = (
+            _template_upload.getvalue()
+            if hasattr(_template_upload, "getvalue")
+            else _template_upload
+        )
+        data = {
+            "psd_size_1": "300x250",
+            "psd_file_1": (io.BytesIO(template_bytes), "template.psd"),
+            "custom_sizes": "300x250",
+            "layer_description_text": "Replacement words",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        job_dir = webapp.JOBS_DIR / job_id
+        rebuilt = job_dir / "creative_300x250.psd"
+        source = job_dir / "creative_300x250_source-template.psd"
+        self.assertTrue(rebuilt.is_file())
+        self.assertTrue(source.is_file())
+        # Byte-identical to what was uploaded -- that's the whole point:
+        # nothing was re-encoded, so the type layers survive intact.
+        self.assertEqual(source.read_bytes(), template_bytes)
+        # The rebuild really is a different file, not the same copy.
+        self.assertNotEqual(rebuilt.read_bytes(), template_bytes)
+
+        # Both are offered on the results page, and both ride along in
+        # the bulk zip.
+        self.assertIn(f"/download-psd/{job_id}/creative_300x250.psd".encode(), r.data)
+        self.assertIn(
+            f"/download-psd/{job_id}/creative_300x250_source-template.psd".encode(), r.data
+        )
+        zip_path = next(iter(sorted(job_dir.glob("*.zip"))))
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        self.assertIn("creative_300x250.psd", names)
+        self.assertIn("creative_300x250_source-template.psd", names)
+
+    def test_no_source_template_download_when_nothing_was_overridden(self):
+        # Without an override there's no rebuild, so the single "Download
+        # PSD" already IS the untouched template -- a second identical
+        # copy beside it would just be clutter.
+        data = {
+            "psd_size_1": "300x250",
+            "psd_file_1": (self._sample_psd_bytes(color=(90, 200, 40)), "template.psd"),
+            "custom_sizes": "300x250",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn(b"_source-template.psd", r.data)
+
     def test_generate_psd_template_size_offers_the_original_file_as_its_psd_download(self):
         # The template branch's "Download PSD" is the user's own uploaded
         # template file itself (already using the app's own required
@@ -1959,15 +2022,13 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         image_data = compression + plane(r) + plane(g) + plane(b)
         return header + color_mode_data + image_resources + layer_mask_info + image_data
 
-    def test_psd_template_row_does_not_pull_in_default_templates_for_other_sizes(self):
-        # A Size-specific PSD template row is scoped to exactly the
-        # size(s) uploaded there -- it must NOT also switch on
-        # default_templates/ auto-use for every OTHER requested size.
-        # Only the 728x480 content PSD field does that (see
-        # ContentPsdQuickModeTest). A saved 970x90 template existing on
-        # disk must be irrelevant here even though a PSD was uploaded
-        # this request (for the unrelated 300x250 row) and 970x90 is
-        # part of the requested batch.
+    def test_psd_template_row_adds_its_size_to_the_saved_defaults_batch(self):
+        # default_templates/ drives the batch, and an explicitly uploaded
+        # Size-specific PSD template row is added on top of it -- so a
+        # saved 970x90 plus a 300x250 row is a two-creative batch. The
+        # typed "970x90" custom size contributes nothing of its own here:
+        # it is already covered by the saved template, and custom sizes
+        # are ignored entirely while default_templates/ is non-empty.
         self._write_default_template("tester-970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
 
         data = {
@@ -1981,22 +2042,24 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"970x90", r.data)
-        self.assertNotIn(b"used the saved default template", r.data)
+        self.assertIn(b"300x250 used your uploaded PSD template", r.data)
+        self.assertIn(b"used the saved default template", r.data)
+        # Exactly two previews: the saved template plus the uploaded row.
+        self.assertEqual(r.data.count(b'class="card"'), 2)
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         with Image.open(webapp.JOBS_DIR / job_id / "creative_970x90.png") as img:
             r_, g_, b_ = img.getpixel((5, 5))
-        # 970x90 fell back to the hero image (blue), not the saved
-        # template (green) -- the saved template was never even scanned.
-        self.assertGreater(b_, r_)
-        self.assertGreater(b_, g_)
+        # 970x90 used the saved template (green), not the hero image (blue).
+        self.assertGreater(g_, r_)
+        self.assertGreater(g_, b_)
 
-    def test_default_template_ignored_when_no_psd_uploaded_this_request(self):
-        # No PSD upload at all this request (just a plain hero image) --
-        # the saved default must NOT be pulled in, even though it exists
-        # on disk and even though its size matches nothing requested here
-        # is a coincidence away from colliding. The normal tool (hero +
-        # overlay pipeline) should be used for every requested size.
+    def test_saved_default_templates_define_the_batch_on_their_own(self):
+        # A saved template on disk is enough on its own -- no PSD upload
+        # of any kind this request, just a plain hero image. The batch is
+        # exactly the saved 970x90, and the checked "default" social
+        # sizes are dropped: the preview count always reflects what's in
+        # default_templates/.
         self._write_default_template("tester-970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
 
         data = {
@@ -2007,11 +2070,11 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        self.assertNotIn(b"970x90", r.data)
-        self.assertNotIn(b"used the saved default template", r.data)
-        # Exactly the 3 social defaults -- nothing extra snuck in from
-        # default_templates/.
-        self.assertEqual(r.data.count(b'class="card"'), 3)
+        self.assertIn(b"970x90", r.data)
+        self.assertNotIn(b"1080x1080", r.data)
+        self.assertIn(b"used the saved default template", r.data)
+        # Exactly one preview: one saved template, one card.
+        self.assertEqual(r.data.count(b'class="card"'), 1)
 
     def test_per_request_upload_overrides_saved_default_for_same_size(self):
         self._write_default_template("300x250.psd", self._sample_psd_bytes(color=(200, 200, 10)))
@@ -2154,7 +2217,10 @@ class ContentPsdQuickModeTest(unittest.TestCase):
     upload renders as its own size (keyed by its actual pixel dimensions,
     not the nominal "728x480" in its label) *and* pulls in whatever's
     saved in default_templates/ -- Output sizes/Custom sizes/hero image
-    are all disregarded either way."""
+    are all disregarded either way. "Its own size" has one exception: an
+    upload within a hair of a saved template's size updates that
+    template's slot instead of exporting a near-duplicate next to it
+    (see _snap_to_template_size)."""
 
     def setUp(self):
         webapp.app.config["TESTING"] = True
@@ -2246,6 +2312,64 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         plane = lambda value: bytes([value]) * (width * height)
         image_data = compression + plane(r) + plane(g) + plane(b)
         return header + color_mode_data + image_resources + layer_mask_info + image_data
+
+    def test_content_psd_a_few_pixels_off_replaces_that_saved_template(self):
+        # The real-world case: a hand-built 728x480 delivery file dropped
+        # into a campaign whose saved template for that slot is 720x480.
+        # 8px wider, same height -- a new version of that creative, not an
+        # extra one -- so it takes over the 720x480 slot instead of
+        # exporting beside it and leaving two near-identical previews.
+        self._write_default_template(
+            "tester-720x480.psd", self._sample_psd_bytes(size=(720, 480), color=(30, 180, 30))
+        )
+
+        data = {
+            "content_psd": (
+                io.BytesIO(self._sample_psd_bytes(size=(728, 480), color=(10, 10, 200))),
+                "content-728x480.psd",
+            ),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        # One saved template, one preview -- the 728x480 upload did not
+        # add a card of its own.
+        self.assertEqual(r.data.count(b'class="card"'), 1)
+        self.assertIn(b"720x480", r.data)
+        self.assertNotIn(b"728x480 <", r.data)
+        self.assertIn(b"replaced that creative", r.data)
+
+        # ...and the slot shows the UPLOAD's pixels (blue), not the saved
+        # template's (green) -- it really did update that creative.
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_720x480.png") as img:
+            r_, g_, b_ = img.convert("RGB").getpixel((5, 5))
+        self.assertGreater(b_, r_)
+        self.assertGreater(b_, g_)
+
+    def test_content_psd_at_a_genuinely_different_size_still_exports_on_its_own(self):
+        # The snap is deliberately narrow: 300x250 is nowhere near the
+        # saved 720x480's aspect ratio, so it's a different creative and
+        # gets its own card rather than silently overwriting the slot.
+        self._write_default_template(
+            "tester-720x480.psd", self._sample_psd_bytes(size=(720, 480), color=(30, 180, 30))
+        )
+
+        data = {
+            "content_psd": (
+                io.BytesIO(self._sample_psd_bytes(size=(300, 250), color=(10, 10, 200))),
+                "content.psd",
+            ),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.data.count(b'class="card"'), 2)
+        self.assertIn(b"720x480", r.data)
+        self.assertIn(b"300x250", r.data)
+        self.assertNotIn(b"replaced that creative", r.data)
 
     def test_content_psd_renders_its_own_size_plus_saved_defaults(self):
         self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))

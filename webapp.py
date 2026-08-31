@@ -53,6 +53,7 @@ from src.image_ops import (
     center_crop_to_ratio,
     find_missing_brand_colors,
     get_psd_canvas_size,
+    get_psd_backdrop,
     get_psd_layer_background,
     get_psd_layer_boxes,
     get_psd_layer_foreground,
@@ -207,6 +208,48 @@ def _default_size_templates() -> tuple:
     return templates, template_paths
 
 
+# How far a quick-campaign content PSD may sit from a saved template's
+# size and still be treated as *that* size rather than a size of its own.
+# The motivating case is a hand-built 728x480 delivery file dropped into a
+# campaign whose saved template for that slot is 720x480: 8px wider, same
+# height, visually the same creative. Exporting both is a near-duplicate
+# nobody asked for, so the upload updates the existing slot instead. The
+# ratio check is what keeps this honest -- it's the difference between "a
+# slightly-off version of this creative" and "a different creative".
+CONTENT_PSD_SNAP_RATIO_TOLERANCE = 0.05   # aspect ratio within 5%
+CONTENT_PSD_SNAP_SIZE_TOLERANCE = 0.10    # each dimension within 10%
+
+
+def _snap_to_template_size(size, template_sizes) -> tuple:
+    """Map a content PSD's own pixel size onto a near-identical saved
+    template size, so an uploaded 728x480 updates the existing 720x480
+    creative instead of exporting alongside it.
+
+    Returns the matching size from `template_sizes`, or `size` unchanged
+    if nothing is close enough (a genuinely new size still exports as
+    itself). Ties break on the smallest combined pixel difference.
+    """
+    width, height = size
+    if not width or not height or size in template_sizes:
+        return size
+    ratio = width / height
+    best = None
+    for candidate in template_sizes:
+        candidate_width, candidate_height = candidate
+        if not candidate_width or not candidate_height:
+            continue
+        if abs(candidate_width / candidate_height - ratio) / ratio > CONTENT_PSD_SNAP_RATIO_TOLERANCE:
+            continue
+        if abs(candidate_width - width) / width > CONTENT_PSD_SNAP_SIZE_TOLERANCE:
+            continue
+        if abs(candidate_height - height) / height > CONTENT_PSD_SNAP_SIZE_TOLERANCE:
+            continue
+        distance = abs(candidate_width - width) + abs(candidate_height - height)
+        if best is None or distance < best[0]:
+            best = (distance, candidate)
+    return best[1] if best else size
+
+
 import datetime as _datetime
 
 _WATCHED_SOURCE_FILES = [
@@ -229,7 +272,7 @@ print(f"[webapp] code build stamp: {BUILD_STAMP} (restart after any edit to pick
 
 SIZE_PRESET_CHOICES = [
     ("default", "Social defaults -- 1080x1080, 1080x1920, 1920x1080"),
-    ("web-top7", "Web ad sizes (10) -- Leaderboard, Medium Rectangle, Skyscraper, etc."),
+    ("web-top7", "Web ad sizes (9) -- Leaderboard, Medium Rectangle, Skyscraper, etc."),
     ("broadcast", "Broadcast/video frame sizes (3) -- 1080p, 720p, 4K UHD"),
 ]
 
@@ -756,20 +799,14 @@ def generate():
     background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
 
-    # Saved default templates (default_templates/) only come into play
-    # when the quick-campaign content PSD field is used -- that field's
-    # whole point is "upload one flagship PSD and export the rest of a
-    # templated campaign from what's saved on disk," so it needs the
-    # scan. A Size-specific PSD template row is scoped to exactly the
-    # size(s) uploaded there and nothing else -- it must NOT also reach
-    # into default_templates/ and start swapping out other requested
-    # sizes' hero image for a saved template just because a row was
-    # filled in. (It used to; see the git history/session notes if that
-    # behavior is ever wanted back as an opt-in.)
-    if content_psd_provided:
-        default_templates, default_template_paths = _default_size_templates()
-    else:
-        default_templates, default_template_paths = {}, {}
+    # Saved default templates (default_templates/) define the batch.
+    # Whatever .psd files are sitting in that folder ARE the set of
+    # creatives this app exports -- one preview per saved template and
+    # nothing else -- so the scan runs on every request, rather than only
+    # on the quick-campaign content-PSD path it used to be gated behind.
+    # The "Output sizes"/"Custom sizes" controls are a fallback for an
+    # empty folder (see the sizes merge further down).
+    default_templates, default_template_paths = _default_size_templates()
     if content_psd_provided and not default_templates:
         background_notes.append(
             "default_templates/ doesn't have any saved templates yet -- only the "
@@ -778,8 +815,19 @@ def generate():
     size_templates = dict(default_templates)
     size_template_paths = dict(default_template_paths)
     if content_psd_provided:
-        size_templates[content_psd_image.size] = content_psd_image
-        size_template_paths[content_psd_image.size] = content_psd_path
+        # Snapped rather than added: an upload a few pixels off a saved
+        # template's size is a new version of that creative, not an extra
+        # one, so it takes over that slot and the preview count stays
+        # equal to the number of saved templates.
+        content_psd_size = _snap_to_template_size(content_psd_image.size, default_templates)
+        if content_psd_size != content_psd_image.size:
+            background_notes.append(
+                f"The uploaded content PSD is {content_psd_image.size[0]}x{content_psd_image.size[1]} -- close "
+                f"enough to the saved {size_label(*content_psd_size)} template that it replaced that creative "
+                "instead of exporting as an extra size of its own."
+            )
+        size_templates[content_psd_size] = content_psd_image
+        size_template_paths[content_psd_size] = content_psd_path
     size_templates.update(psd_templates)
     size_template_paths.update(psd_template_paths)
 
@@ -893,10 +941,18 @@ def generate():
             layer_image = auto_transparent_background(layer_image)
         layer_image_overrides[layer_name] = layer_image
 
-    # Uploading a template (or having a saved default) for a size not
-    # already checked/typed above pulls that size into the batch -- the
-    # user shouldn't also have to add it.
-    sizes = sorted(set(sizes) | set(size_templates.keys()))
+    # default_templates/ is the source of truth for what gets exported.
+    # When it holds saved templates, the batch is exactly those sizes
+    # plus anything explicitly uploaded on this request (a size-specific
+    # PSD template row, or the quick-campaign content PSD) -- the "Output
+    # sizes"/"Custom sizes" selections are deliberately dropped so the
+    # number of previews always reflects what's in default_templates/.
+    # With an empty folder there's nothing to drive the batch, so those
+    # selections are honored as before.
+    if default_templates:
+        sizes = sorted(set(size_templates.keys()))
+    else:
+        sizes = sorted(set(sizes) | set(size_templates.keys()))
 
     # AI-generated hero image, if the box was checked and there's an
     # actual gap for it to fill (a hero image was uploaded, or every
@@ -1050,6 +1106,16 @@ def generate():
         # is_template_size below), so there's nothing generic to re-export
         # as an editable layer stack for it.
         psd_filename = None
+        # The unmodified source template, kept beside the rendered PSD
+        # whenever a layer override forced a rebuild. The rebuild is a
+        # stack of rasterized pixel layers -- psd-tools can only author
+        # those (create_pixel_layer is its one layer-writing API, and
+        # TypeLayer.text has no setter), so the header/description in a
+        # rebuilt file are pictures of words, not Photoshop type layers.
+        # The source template still has the real, live type layers, so
+        # offering it alongside is the difference between "you can move
+        # this text" and "you can retype this text".
+        source_psd_filename = None
         if (width, height) in psd_templates:
             background_notes.append(
                 f"{size_label(width, height)} used your uploaded PSD template as-is -- "
@@ -1193,8 +1259,15 @@ def generate():
                 # underneath whatever it's about to redraw -- see the
                 # branch inside _clean_layer_box() just below.
                 background_replaced_this_request = "background" in layer_image_overrides
+                # final_image as it stood with the new background painted
+                # in but before every other layer was composited back on
+                # top -- the "clear the whole box" case below needs a
+                # backdrop-only image to wipe to, and once the background
+                # has been replaced this request the PSD's own backdrop is
+                # the wrong one to use. Stays None unless that happens.
+                background_only_image = None
 
-                def _clean_layer_box(target_box, layer_name):
+                def _clean_layer_box(target_box, layer_name, full_box=False):
                     # Patch in the PSD's own true pixels for this box with
                     # the named layer hidden (see get_psd_layer_background())
                     # before drawing anything new there -- this is real
@@ -1204,6 +1277,14 @@ def generate():
                     # correctly with zero leftover trace of the old layer.
                     nonlocal final_image
                     if psd_path_for_size is None:
+                        return
+                    if full_box and background_replaced_this_request:
+                        # Same "wipe the whole box" intent as below, but
+                        # against the background this request just put
+                        # there rather than the PSD's original one.
+                        if background_only_image is None:
+                            return
+                        final_image.paste(background_only_image.crop(target_box), target_box[:2])
                         return
                     if background_replaced_this_request and layer_name != "background":
                         # The background this request started with is
@@ -1229,7 +1310,20 @@ def generate():
                         mask_source = _fit_rgba_like_final_image(mask_source)
                         final_image.paste(pristine_final_image, mask=mask_source.split()[3])
                         return
-                    clean_bg = get_psd_layer_background(psd_path_for_size, layer_name)
+                    clean_bg = None
+                    if full_box:
+                        # Replace, don't overprint. Hiding just this one
+                        # layer is enough when it's the only thing in its
+                        # box, but a text layer's box routinely overlaps
+                        # other artwork -- a header box parked across the
+                        # logo, say -- and hiding only the text layer
+                        # leaves that artwork sitting under the new words.
+                        # Compositing everything except the background
+                        # away gives the box's true backdrop to wipe to,
+                        # so the new text owns the space the old text had.
+                        clean_bg = get_psd_backdrop(psd_path_for_size)
+                    if clean_bg is None:
+                        clean_bg = get_psd_layer_background(psd_path_for_size, layer_name)
                     if clean_bg is None:
                         return
                     if clean_bg.size != final_image.size:
@@ -1267,6 +1361,7 @@ def generate():
                         continue
                     if layer_name == "background":
                         final_image = apply_layer_background_override(final_image, box, override_image)
+                        background_only_image = final_image.copy()
                         foreground_mask_source = (
                             get_psd_layer_foreground(psd_path_for_size, layer_name)
                             if psd_path_for_size is not None
@@ -1309,7 +1404,11 @@ def generate():
                     box = layer_boxes.get(layer_key)
                     if box is None:
                         return
-                    _clean_layer_box(box, layer_key)
+                    # full_box: a text override replaces what was in the
+                    # box rather than printing over it -- see
+                    # _clean_layer_box() for why a text layer needs this
+                    # and an image layer doesn't.
+                    _clean_layer_box(box, layer_key, full_box=True)
                     psd_text_style = (
                         get_psd_layer_text_style(psd_path_for_size, layer_key)
                         if psd_path_for_size is not None
@@ -1467,6 +1566,16 @@ def generate():
                                 export_layers.append((name, _fit_rgba_like_final_image(layer_img)))
                         if not export_layers:
                             export_layers = [("Background", final_image)]
+                        # Saved first: the rebuild below writes over the
+                        # copy of the template made further up (same
+                        # filename), and that copy is the only file in
+                        # this job with live text layers in it.
+                        if psd_path_for_size is not None:
+                            source_candidate_filename = (
+                                f"{file_name_prefix}_{size_label(width, height)}_source-template.psd"
+                            )
+                            shutil.copy(psd_path_for_size, job_dir / source_candidate_filename)
+                            source_psd_filename = source_candidate_filename
                         psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
                         save_layered_psd(
                             export_layers,
@@ -1558,6 +1667,7 @@ def generate():
                 "ratio": ratio_label(width, height),
                 "name": size_name(width, height),
                 "psd_filename": psd_filename,
+                "source_psd_filename": source_psd_filename,
             }
         )
 
@@ -1583,6 +1693,15 @@ def generate():
                 zf.write(
                     job_dir / creative["psd_filename"],
                     arcname=f"{zip_entry_prefix}{creative['psd_filename']}",
+                )
+            # The source template next to it -- the only copy whose
+            # header/description are still editable Photoshop type
+            # layers rather than rendered pixels (see
+            # source_psd_filename where it's set).
+            if creative.get("source_psd_filename"):
+                zf.write(
+                    job_dir / creative["source_psd_filename"],
+                    arcname=f"{zip_entry_prefix}{creative['source_psd_filename']}",
                 )
 
     # Saved so the "Edit" button on the results page (see /edit/<job_id>)

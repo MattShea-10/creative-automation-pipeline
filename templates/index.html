@@ -36,6 +36,8 @@
     summary { @apply font-semibold cursor-pointer text-[0.92rem] text-slate-200; }
     .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .manual-creative-box > summary { @apply uppercase tracking-wide; }
+    .manual-creative-box.is-disabled { @apply opacity-50 border-slate-700 bg-slate-800/30; }
+    .manual-disabled-note { @apply text-amber-300 mt-2 mb-1; }
     .campaign-brief-box { background: #1e293b; }
     .campaign-brief-box > summary { @apply uppercase tracking-wide; }
     .checkbox-row { @apply flex items-start gap-2 my-[0.6rem]; }
@@ -381,7 +383,7 @@
 
         <div class="field" style="margin-top: 0.9rem;">
           <label>Output sizes</label>
-          <div class="hint">Pick one or more groups. Leave all unchecked to use the social defaults.</div>
+          <div class="hint">Pick one or more groups. Leave all unchecked to use the social defaults. <strong>Ignored whenever <code>default_templates/</code> holds saved PSD templates</strong> &mdash; those define the batch, one preview each.</div>
           {% for value, description in size_presets %}
             <div class="checkbox-row">
               <input type="checkbox" id="size_{{ value }}" name="sizes" value="{{ value }}" {% if prefill.get('sizes') is not none %}{% if value in prefill.get('sizes') %}checked{% endif %}{% elif value == 'default' %}checked{% endif %}>
@@ -392,7 +394,7 @@
 
         <div class="field">
           <label for="custom_sizes">Custom sizes</label>
-          <div class="hint">Comma-separated WIDTHxHEIGHT, e.g. <code>1200x628,970x250</code>. Combined with any groups checked above.</div>
+          <div class="hint">Comma-separated WIDTHxHEIGHT, e.g. <code>1200x628,970x250</code>. Combined with any groups checked above &mdash; and, like them, ignored while <code>default_templates/</code> holds saved PSD templates.</div>
           <input type="text" id="custom_sizes" name="custom_sizes" placeholder="1200x628" value="{{ prefill.get('custom_sizes', '') }}">
         </div>
 
@@ -704,6 +706,62 @@
             btn.hidden = true;
           });
         })(i);
+      }
+
+      // "Upload Creative" and "Manual Creative" are mutually exclusive.
+      // A PSD template is exported exactly as designed -- render_creative()
+      // never draws a header/description/logo/badge/CTA overlay on top of
+      // one, and with default_templates/ driving the batch the output-size
+      // controls don't apply either -- so the moment any PSD is picked
+      // (the quick-campaign content PSD or any size-specific template
+      // row), the whole Manual Creative panel is disabled and collapsed
+      // rather than left there collecting settings that would be silently
+      // ignored. Disabled controls aren't submitted at all, so the server
+      // sees the same "nothing typed" state the panel is showing.
+      var manualBox = root.querySelector(".manual-creative-box");
+      var psdInputs = root.querySelectorAll('input[type="file"][accept=".psd"]');
+      var priorPsdHints = root.querySelectorAll('[data-role^="psd-currently-"]');
+      if (manualBox && psdInputs.length) {
+        var manualNote = document.createElement("div");
+        manualNote.className = "hint manual-disabled-note";
+        manualNote.textContent =
+          "Disabled -- a PSD is uploaded above. A PSD template is exported exactly as designed, so " +
+          "header, description, CTA, logo, badge, hero image and output-size settings don't apply to it. " +
+          "Clear the PSD upload to use these again.";
+        manualNote.hidden = true;
+        var manualSummary = manualBox.querySelector("summary");
+        if (manualSummary) manualSummary.insertAdjacentElement("afterend", manualNote);
+        else manualBox.insertAdjacentElement("afterbegin", manualNote);
+
+        var syncManual = function () {
+          var hasPsd = false;
+          psdInputs.forEach(function (input) {
+            if (input.files && input.files.length > 0) hasPsd = true;
+            // A file input can't be pre-populated with a prior upload, so
+            // an edit of an earlier job reports its carried-forward PSD
+            // through these markers instead (same trick as the
+            // content-PSD layer panel above).
+            if (input.dataset.hasPrior === "true") hasPsd = true;
+          });
+          priorPsdHints.forEach(function (hint) {
+            if (!hint.hidden) hasPsd = true;
+          });
+          manualBox.querySelectorAll("input, select, textarea, button").forEach(function (el) {
+            el.disabled = hasPsd;
+          });
+          manualNote.hidden = !hasPsd;
+          manualBox.classList.toggle("is-disabled", hasPsd);
+          if (hasPsd) manualBox.open = false;
+        };
+        psdInputs.forEach(function (input) {
+          input.addEventListener("change", syncManual);
+        });
+        // Registered after the clear (x) handlers wired up above, so this
+        // re-runs once a row has actually been cleared.
+        root.querySelectorAll('[data-role^="psd-clear-btn-"]').forEach(function (btn) {
+          btn.addEventListener("click", syncManual);
+        });
+        syncManual();
       }
 
       // A "Location: <name>" line under every image/PSD upload field,

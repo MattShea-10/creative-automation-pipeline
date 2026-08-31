@@ -285,16 +285,15 @@ mobile placement, plus commonly-used additional sizes):
 | 200x200 | Small Square |
 | 468x60 | Banner |
 | 970x90 | Large Leaderboard |
-| 728x480 | Wide Rectangle |
 
 (Kept under the `web-top7` preset name for continuity even though the list
-has grown to 10 entries. "Wide Rectangle" isn't an official IAB name --
-there isn't a standard one for 728x480 -- it's just a readable label for a
-size that comes up often as a flattened-creative delivery size (e.g. a
-Photoshop export). Two other sizes sometimes grouped with these -- 300x600
-"Half Page Ad" and 970x250 "Billboard" -- aren't in this preset but are
-still recognized with a friendly name if you request them explicitly, e.g.
-`--sizes 300x600`.)
+has grown to 9 entries. Three other sizes sometimes grouped with these --
+300x600 "Half Page Ad", 970x250 "Billboard" and 728x480 "Wide Rectangle" --
+aren't in this preset but are still recognized with a friendly name if you
+request them explicitly, e.g. `--sizes 300x600`. "Wide Rectangle" isn't an
+official IAB name -- there isn't a standard one for 728x480 -- it's just a
+readable label for a size that comes up often as a flattened-creative
+delivery size, e.g. a Photoshop export.)
 
 **`broadcast`** -- if these same creatives were extended to video for TV,
 broadcast (unlike web) standardizes on a single 16:9 frame rather than a

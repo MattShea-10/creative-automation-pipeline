@@ -48,7 +48,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="A comma-separated list where each item is a preset name (default | web-top7 | "
         "broadcast) and/or an explicit WIDTHxHEIGHT pixel size -- freely mixable, e.g. "
-        "'web-top7,broadcast' or 'default,1200x628'. 'web-top7' is 10 common web/display ad sizes; "
+        "'web-top7,broadcast' or 'default,1200x628'. 'web-top7' is 9 common web/display ad sizes; "
         "'broadcast' is TV/video delivery resolutions (1920x1080, 1280x720, 3840x2160). Duplicate "
         "pixel sizes across presets are only rendered once. Overrides any 'output_sizes' in the "
         "brief. Defaults to 1080x1080, 1080x1920, 1920x1080.",

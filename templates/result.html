@@ -143,6 +143,9 @@
             {% if c.psd_filename %}
               <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}">Download PSD</a>
             {% endif %}
+            {% if c.source_psd_filename %}
+              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.source_psd_filename) }}" title="The template this size was built from, unmodified -- its header and description are still live Photoshop type layers you can retype. The rendered PSD above has them as pixel layers instead.">Download source PSD (live text)</a>
+            {% endif %}
           </div>
         </div>
       {% endfor %}

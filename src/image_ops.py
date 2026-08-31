@@ -114,7 +114,7 @@ DEFAULT_SIZES: List[Tuple[int, int]] = [
 # Common web/display ad sizes, in pixels -- as specified by the user
 # (desktop placements, one mobile placement, plus commonly-used additional
 # sizes). Kept under the "web-top7" preset name for continuity even though
-# this list has grown to 10 entries.
+# this list has grown to 9 entries.
 WEB_AD_SIZES: List[Tuple[int, int]] = [
     (728, 90),    # Leaderboard
     (300, 250),   # Medium Rectangle
@@ -125,7 +125,6 @@ WEB_AD_SIZES: List[Tuple[int, int]] = [
     (200, 200),   # Small Square
     (468, 60),    # Banner
     (970, 90),    # Large Leaderboard
-    (728, 480),   # Wide Rectangle -- not an IAB standard unit, but a common flattened-creative delivery size
 ]
 
 # If these same creatives were extended to video, the pixel dimensions a
@@ -140,10 +139,10 @@ BROADCAST_VIDEO_SIZES: List[Tuple[int, int]] = [
 
 # Friendly names for well-known sizes, used to make filenames/reports more
 # readable when a requested size matches a recognized standard. Includes a
-# couple of sizes (300x600 "Half Page Ad", 970x250 "Billboard") that aren't
-# in the active WEB_AD_SIZES preset below but are still recognized if
-# requested explicitly via --sizes. "Wide Rectangle" (728x480) isn't an
-# official IAB name -- there isn't one for this size -- just a readable
+# few sizes (300x600 "Half Page Ad", 970x250 "Billboard", 728x480 "Wide
+# Rectangle") that aren't in the active WEB_AD_SIZES preset above but are
+# still recognized if requested explicitly via --sizes. "Wide Rectangle"
+# isn't an official IAB name -- there isn't one for this size -- just a readable
 # label instead of falling back to an ugly reduced-fraction ratio (91:60).
 SIZE_NAMES = {
     (728, 90): "Leaderboard",
@@ -231,8 +230,8 @@ def parse_sizes(spec: str) -> List[Tuple[int, int]]:
     preset name ('default', 'web-top7', 'broadcast') or an explicit
     'WIDTHxHEIGHT' pair -- and the two can be freely mixed, so a single
     campaign can render more than one size family in one run, e.g.:
-        "default,web-top7"        -> all 3 social sizes + all 10 web ad sizes
-        "web-top7,broadcast"      -> all 10 web ad sizes + all 3 broadcast sizes
+        "default,web-top7"        -> all 3 social sizes + all 9 web ad sizes
+        "web-top7,broadcast"      -> all 9 web ad sizes + all 3 broadcast sizes
         "default,1200x628"        -> the 3 social sizes plus one extra custom size
     Preset names are case-insensitive. Exact pixel-size duplicates across
     presets (e.g. 1920x1080 appearing in both 'default' and 'broadcast')
@@ -1674,6 +1673,59 @@ def _psd_composite_with_layers_hidden(
             layer.visible = visible
 
     return composite
+
+
+def get_psd_backdrop(
+    psd_path: Union[str, Path], keep_layer_names: Iterable[str] = ("background",)
+) -> Optional[Image.Image]:
+    """Return the PSD composited down to just its backdrop -- every
+    top-level layer hidden EXCEPT the ones named in `keep_layer_names`
+    (case-insensitive, "background" by default) -- flattened to RGB.
+
+    This is the "clear the whole box" counterpart to
+    get_psd_layer_background() just below. That one hides a single named
+    layer, which is exactly right when the layer being replaced is the
+    only thing occupying its box. It's not enough when a text layer's box
+    overlaps other artwork -- a header box sitting across the logo, say,
+    which is common in a real template where the designer parked the
+    headline over the brand mark. Hiding only "header" there leaves the
+    logo in place and the new text lands on top of it, reading as text
+    added to the design rather than text replacing it.
+
+    Compositing everything away except the background gives the box's
+    true backdrop -- the ad's own gradient or photo -- so a text override
+    can wipe its whole box back to that and genuinely own the space.
+
+    Returns None under the same conditions as
+    _psd_composite_with_layers_hidden(), plus when the file has no layer
+    left to keep (nothing named in `keep_layer_names` exists), since a
+    composite of nothing isn't a usable backdrop.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return None
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return None
+
+    keep = {name.strip().lower() for name in keep_layer_names}
+    names = [layer.name.strip().lower() for layer in psd]
+    if not any(name in keep for name in names):
+        return None
+    hide = [name for name in names if name not in keep]
+    if not hide:
+        # Nothing to hide -- the document is already just its backdrop.
+        try:
+            return psd.composite().convert("RGB")
+        except Exception:
+            return None
+
+    composite = _psd_composite_with_layers_hidden(psd_path, hide)
+    if composite is None:
+        return None
+    return composite.convert("RGB")
 
 
 def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Optional[Image.Image]:

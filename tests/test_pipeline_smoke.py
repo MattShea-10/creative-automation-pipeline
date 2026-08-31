@@ -130,11 +130,11 @@ class PipelineSmokeTest(unittest.TestCase):
         )
         report = pipeline.run(brief)
 
-        # Only 320x50 (Mobile Leaderboard) is mobile; the other 9 are desktop.
+        # Only 320x50 (Mobile Leaderboard) is mobile; the other 8 are desktop.
         mobile = [c for c in report.creatives if c.device == "mobile"]
         desktop = [c for c in report.creatives if c.device == "desktop"]
         self.assertEqual(len(mobile), 2)  # 2 products x 1 mobile size
-        self.assertEqual(len(desktop), 18)  # 2 products x 9 desktop sizes
+        self.assertEqual(len(desktop), 16)  # 2 products x 8 desktop sizes
         for c in mobile:
             self.assertIn("/mobile/", c.output_path.replace("\\", "/"))
         for c in desktop:
@@ -142,10 +142,13 @@ class PipelineSmokeTest(unittest.TestCase):
         self.assertTrue((self.output_dir / "hydroboost" / "mobile" / "hydroboost_320x50.png").exists())
         self.assertTrue((self.output_dir / "hydroboost" / "desktop" / "hydroboost_728x90.png").exists())
 
-    def test_728x480_is_a_recognized_web_ad_size(self):
+    def test_728x480_is_recognized_but_not_in_the_web_top7_preset(self):
         from src.image_ops import WEB_AD_SIZES, device_category, size_name
 
-        self.assertIn((728, 480), WEB_AD_SIZES)
+        # 728x480 was dropped from the web-top7 preset, but it's still a
+        # recognized size: requested explicitly it keeps its friendly name
+        # and desktop placement.
+        self.assertNotIn((728, 480), WEB_AD_SIZES)
         self.assertEqual(size_name(728, 480), "Wide Rectangle")
         self.assertEqual(device_category(728, 480), "desktop")
 
