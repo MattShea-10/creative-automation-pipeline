@@ -1351,6 +1351,67 @@ def get_psd_layer_boxes(psd_path: Union[str, Path]) -> dict:
     return boxes
 
 
+def get_psd_layer_stack(psd_path: Union[str, Path]) -> Optional[List[Tuple[str, Image.Image]]]:
+    """Return every top-level layer in `psd_path` as its own canvas-sized
+    RGBA image (transparent everywhere except where that one layer
+    itself draws, its own real alpha preserved), in the same back-to-
+    front order psd-tools stores them in -- ready to feed straight into
+    save_layered_psd() to rebuild an equivalent layered PSD.
+
+    Unlike get_psd_layer_boxes() (a bounding box per layer) or
+    get_psd_layer_background()/get_psd_layer_foreground() (one flattened
+    composite with a layer hidden), this keeps every layer as its own
+    separate image -- so a caller can swap out one or two entries (e.g.
+    with a freshly-overridden layer's own isolated RGBA patch -- see
+    apply_layer_image_override()'s `keep_alpha`) and rebuild a real,
+    still-editable PSD where every OTHER layer is untouched, instead of
+    collapsing everything down to one flattened layer.
+
+    Each layer's own `layer.composite()` isn't used here -- confirmed
+    directly against this project's own templates, psd-tools renders a
+    text (type) layer composited on its own as fully blank (transparent),
+    even though that exact same layer renders correctly as *part of* a
+    whole-document composite (see get_psd_layer_background()'s "hide one
+    layer" trick, which already depends on that working). So each layer
+    is isolated the same way: every OTHER layer's visibility is toggled
+    off, one at a time, and psd.composite() is called for the whole
+    document -- already canvas-sized and correctly positioned, text
+    included, with everything else transparent.
+
+    Returns None if `psd-tools` isn't installed, the file can't be
+    opened, or it isn't a layered PSD -- callers should treat that as
+    "no layer stack available" and fall back to their own handling (e.g.
+    a single flattened layer).
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return None
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return None
+
+    layers = [layer for layer in psd if (layer.name or "").strip()]
+    original_visibility = [(layer, layer.visible) for layer in layers]
+    stack: List[Tuple[str, Image.Image]] = []
+    try:
+        for target in layers:
+            for layer in layers:
+                layer.visible = layer is target
+            try:
+                composite = psd.composite()
+            except Exception:
+                continue
+            if composite is None:
+                continue
+            stack.append((target.name.strip(), composite.convert("RGBA")))
+    finally:
+        for layer, visible in original_visibility:
+            layer.visible = visible
+    return stack
+
+
 def get_psd_text_layers(psd_path: Union[str, Path]) -> dict:
     """Return {lowercased layer name: text content} for every top-level
     text (type) layer in the PSD at `psd_path` -- the actual words someone
@@ -1790,6 +1851,8 @@ def apply_layer_image_override(
     base_image: Image.Image,
     bbox: Tuple[int, int, int, int],
     replacement: Image.Image,
+    *,
+    keep_alpha: bool = False,
 ) -> Image.Image:
     """Return a copy of `base_image` with `replacement` scaled to fit
     `bbox`'s height and centered within it, preserving its own aspect
@@ -1810,6 +1873,14 @@ def apply_layer_image_override(
     background there first (see `get_psd_layer_background()`) so that
     margin shows the ad's actual background rather than whatever the
     old layer's content was.
+
+    `keep_alpha=True` skips the final flatten-to-RGB and returns RGBA
+    instead, with `base_image`'s own alpha preserved everywhere except
+    where `replacement` was just composited in. Passing a fully
+    transparent `base_image` this way isolates exactly what this call
+    drew -- nothing else -- as its own standalone layer, for a real
+    layered PSD export (see webapp.py's render loop) rather than the
+    flattened preview this function normally produces.
     """
     x0, y0, x1, y1 = bbox
     box_w, box_h = x1 - x0, y1 - y0
@@ -1823,7 +1894,7 @@ def apply_layer_image_override(
         rgba = rgba.crop(content_bbox)
     content_w, content_h = rgba.size
     if content_w <= 0 or content_h <= 0:
-        return canvas.convert("RGB")
+        return canvas if keep_alpha else canvas.convert("RGB")
 
     scale = box_h / content_h
     if content_w * scale > box_w:
@@ -1835,13 +1906,15 @@ def apply_layer_image_override(
     paste_x = x0 + (box_w - new_w) // 2
     paste_y = y0 + (box_h - new_h) // 2
     canvas.alpha_composite(resized, (paste_x, paste_y))
-    return canvas.convert("RGB")
+    return canvas if keep_alpha else canvas.convert("RGB")
 
 
 def apply_layer_background_override(
     base_image: Image.Image,
     bbox: Tuple[int, int, int, int],
     replacement: Image.Image,
+    *,
+    keep_alpha: bool = False,
 ) -> Image.Image:
     """Return a copy of `base_image` with `replacement` filling `bbox`
     completely -- center-cropped to the box's exact aspect ratio (see
@@ -1857,16 +1930,22 @@ def apply_layer_background_override(
     frame, with no gaps -- so this crops-to-fill instead of fitting-with-
     letterboxing, and doesn't trim/expect any transparency (a background
     upload is typically a flat photo, not a cutout).
+
+    `keep_alpha=True` skips the final flatten-to-RGB and returns RGBA
+    instead -- see apply_layer_image_override()'s own `keep_alpha` for
+    why (a real layered PSD export, not the flattened preview). The fill
+    itself is still fully opaque either way; only `base_image`'s own
+    alpha *outside* `bbox` is preserved when this is set.
     """
     x0, y0, x1, y1 = bbox
     box_w, box_h = x1 - x0, y1 - y0
     if box_w <= 0 or box_h <= 0:
         return base_image
 
-    canvas = base_image.convert("RGB").copy()
-    filled = center_crop_to_ratio(replacement.convert("RGB"), (box_w, box_h))
+    canvas = base_image.convert("RGBA").copy()
+    filled = center_crop_to_ratio(replacement.convert("RGB"), (box_w, box_h)).convert("RGBA")
     canvas.paste(filled, (x0, y0))
-    return canvas
+    return canvas if keep_alpha else canvas.convert("RGB")
 
 
 def _reconstruct_box_background(image: Image.Image, bbox: Tuple[int, int, int, int]) -> Image.Image:
@@ -1975,6 +2054,7 @@ def apply_layer_text_override(
     leading: Optional[int] = None,
     leading_reference_size: Optional[int] = None,
     debug: Optional[dict] = None,
+    keep_alpha: bool = False,
 ) -> Image.Image:
     """Return a copy of `base_image` with `text` painted directly into
     `bbox` -- same idea as apply_layer_image_override(): whatever's
@@ -2012,13 +2092,19 @@ def apply_layer_text_override(
     from painting on the PSD's own true background for this box (see
     _clean_layer_box() in webapp.py) with the PSD's own text color, the
     same pairing the original template already used successfully.
+
+    `keep_alpha=True` returns RGBA instead of flattening to RGB -- see
+    apply_layer_image_override()'s own `keep_alpha` for why (a real
+    layered PSD export). Drawing onto a fully transparent `base_image`
+    this way isolates just the rendered glyphs, anti-aliased edges and
+    all, as their own standalone layer.
     """
     x0, y0, x1, y1 = bbox
     box_w, box_h = x1 - x0, y1 - y0
     if box_w <= 0 or box_h <= 0:
         return base_image
 
-    canvas = base_image.convert("RGB").copy()
+    canvas = base_image.convert("RGBA").copy() if keep_alpha else base_image.convert("RGB").copy()
     draw = ImageDraw.Draw(canvas)
 
     padding = max(int(min(box_w, box_h) * 0.06), 3)
@@ -2073,7 +2159,7 @@ def apply_layer_text_override(
             (text_x, text_y),
             line,
             font=font,
-            fill=text_color,
+            fill=text_color if not keep_alpha else (text_color[0], text_color[1], text_color[2], 255),
         )
         text_y += line_height
 

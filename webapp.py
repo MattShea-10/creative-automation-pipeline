@@ -56,6 +56,7 @@ from src.image_ops import (
     get_psd_layer_background,
     get_psd_layer_boxes,
     get_psd_layer_foreground,
+    get_psd_layer_stack,
     get_psd_layer_text_style,
     map_box_through_fit,
     open_as_rgb,
@@ -1108,6 +1109,15 @@ def generate():
                 psd_path_for_size = size_template_paths.get((width, height))
                 layer_boxes = get_psd_layer_boxes(psd_path_for_size)
                 applied_layers = []
+                # Each overridden layer's own isolated RGBA patch (box-
+                # positioned, transparent everywhere else) -- keyed by
+                # lowercased layer name, e.g. "background"/"logo"/
+                # "header". Populated below as each override is applied,
+                # and reused when building the downloadable layered PSD
+                # (see the "if applied_layers" block further down) so
+                # that export shows exactly the new content on its own
+                # layer instead of a single flattened image.
+                export_layer_patches: dict = {}
                 # A pristine copy of this size's template, exactly as it
                 # renders with zero overrides -- i.e. Pillow's own
                 # embedded/flattened PSD composite (the same source used
@@ -1269,9 +1279,21 @@ def generate():
                             # for why the *pixels* being restored come
                             # from there instead of this RGBA composite.
                             final_image.paste(pristine_final_image, mask=foreground_mask_source.split()[3])
+                        export_layer_patches[layer_name] = apply_layer_background_override(
+                            Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
+                            box,
+                            override_image,
+                            keep_alpha=True,
+                        )
                     else:
                         _clean_layer_box(box, layer_name)
                         final_image = apply_layer_image_override(final_image, box, override_image)
+                        export_layer_patches[layer_name] = apply_layer_image_override(
+                            Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
+                            box,
+                            override_image,
+                            keep_alpha=True,
+                        )
                     applied_layers.append(layer_name)
                 def _apply_text_layer_override(
                     layer_key, text, font_family, font_size, use_custom_color, text_color
@@ -1350,6 +1372,23 @@ def generate():
                         leading_reference_size=leading_reference_size,
                         debug=text_debug,
                     )
+                    # Same call again, but onto a transparent canvas with
+                    # keep_alpha=True -- isolates just the new glyphs as
+                    # their own layer (see export_layer_patches above),
+                    # for the downloadable PSD.
+                    export_layer_patches[layer_key] = apply_layer_text_override(
+                        Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
+                        box,
+                        text,
+                        text_color=effective_color,
+                        font_family=effective_family,
+                        font_size=ceiling_font_size,
+                        exact_font_size=exact_font_size,
+                        bold=effective_bold,
+                        leading=effective_leading,
+                        leading_reference_size=leading_reference_size,
+                        keep_alpha=True,
+                    )
                     applied_layers.append(layer_key)
                     background_notes.append(
                         f"{size_label(width, height)}: {layer_key} debug -- "
@@ -1400,22 +1439,40 @@ def generate():
                     # changed pixels in final_image (logo/CTA/product/
                     # description), that original copy silently stops
                     # matching what the results page just showed as the
-                    # preview. Re-save it as a single flattened layer built
-                    # straight from final_image so the downloaded PSD looks
-                    # exactly like the preview -- this trades away the
-                    # original file's separate editable layers, but only
-                    # once there was actually something to update; a
-                    # template with no layer overrides still gets the
-                    # original fully-editable file above. Best-effort like
-                    # the copy above: a failure here just leaves that
-                    # last-copied (now-stale) file in place rather than
-                    # blocking an otherwise-successful render.
+                    # preview. Rebuild it as a real layered PSD instead of
+                    # a single flattened image: every layer this request
+                    # did NOT touch comes straight from the original file
+                    # (see get_psd_layer_stack()), and every layer it DID
+                    # touch is swapped for that override's own isolated
+                    # RGBA patch (export_layer_patches, built alongside
+                    # each override above) -- so the download still opens
+                    # in Photoshop with logo/CTA/product/background/
+                    # header/description as separate, transparency-intact
+                    # layers, not one baked-together image. Falls back to
+                    # the single-flattened-layer file only if the original
+                    # PSD's layer stack can't be read at all. Best-effort
+                    # like the copy above: a failure here just leaves
+                    # that last-copied (now-stale) file in place rather
+                    # than blocking an otherwise-successful render.
                     try:
+                        layer_stack = (
+                            get_psd_layer_stack(psd_path_for_size) if psd_path_for_size is not None else None
+                        )
+                        export_layers = []
+                        for name, layer_img in layer_stack or []:
+                            key = name.strip().lower()
+                            if key in export_layer_patches:
+                                export_layers.append((name, export_layer_patches[key]))
+                            else:
+                                export_layers.append((name, _fit_rgba_like_final_image(layer_img)))
+                        if not export_layers:
+                            export_layers = [("Background", final_image)]
                         psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
                         save_layered_psd(
-                            [("Background", final_image)],
+                            export_layers,
                             (width, height),
                             job_dir / psd_candidate_filename,
+                            layer_names={},
                         )
                         psd_filename = psd_candidate_filename
                     except Exception:

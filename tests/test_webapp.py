@@ -3450,6 +3450,63 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                     )
         self.assertTrue(checked_any, f"no solid '{untouched_name}' pixel found to verify")
 
+    def test_downloaded_psd_after_a_layer_override_keeps_separate_layers(self):
+        # Matt's report: after updating the background, the downloaded
+        # PSD "isn't holding transparency in the layers" and "isn't
+        # exporting all layers, it's exporting as a flattened image" --
+        # this used to intentionally collapse the whole creative down to
+        # one flattened "Background" layer once any override changed a
+        # pixel (see the old comment this replaced). Now the download
+        # should still be a real, multi-layer PSD: every layer this
+        # request didn't touch comes straight from the original file
+        # (transparency and all), and only the overridden layer(s) show
+        # new content.
+        (w, h), staged_path = self._stage_real_template()
+        from psd_tools import PSDImage
+        from src.image_ops import get_psd_layer_boxes
+
+        original_layer_names = {name.lower() for name in get_psd_layer_boxes(staged_path)}
+        self.assertIn("background", original_layer_names)
+        untouched_names = original_layer_names - {"background"}
+        self.assertTrue(untouched_names, "staged real template has no other layers to verify against")
+
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+
+        psd_filename = f"creative_{w}x{h}.psd"
+        downloaded_psd_path = webapp.JOBS_DIR / job_id / psd_filename
+        self.assertTrue(downloaded_psd_path.is_file(), "no PSD was written for this job/size")
+
+        exported = PSDImage.open(downloaded_psd_path)
+        exported_names = {(layer.name or "").strip().lower() for layer in exported}
+
+        # More than just a single flattened "Background" -- the original
+        # layer names are still all there.
+        self.assertGreater(len(list(exported)), 1)
+        self.assertTrue(
+            original_layer_names.issubset(exported_names),
+            f"expected {original_layer_names} to all still be present, got {exported_names}",
+        )
+
+        # An untouched layer keeps real, non-flattened alpha -- not
+        # baked opaque into a single background image.
+        untouched_layer = next(
+            layer for layer in exported if (layer.name or "").strip().lower() in untouched_names
+        )
+        untouched_composite = untouched_layer.composite()
+        self.assertEqual(untouched_composite.mode, "RGBA")
+        alpha_min, alpha_max = untouched_composite.split()[3].getextrema()
+        self.assertEqual(
+            alpha_min, 0, f"'{untouched_layer.name}' layer has no transparency left after the export"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
