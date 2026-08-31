@@ -77,13 +77,13 @@
       @apply text-blue-300 text-[0.78rem] font-bold uppercase tracking-wider;
     }
     .campaign-card { @apply mb-8; }
-    .campaign-card-header { @apply flex items-center justify-between mb-2; }
-    .campaign-card-title { @apply text-slate-400 text-[0.78rem] font-bold uppercase tracking-wider; }
+    .campaign-brief-box > summary { @apply flex items-center justify-between gap-3; }
+    .campaign-card-title { @apply text-slate-400 text-[0.78rem] font-bold uppercase tracking-wider flex-none; }
     .remove-campaign-btn {
-      @apply text-slate-500 text-[0.8rem] font-semibold border border-slate-700 rounded-md px-[0.6rem] py-[0.2rem] cursor-pointer bg-transparent hover:bg-slate-800 hover:text-slate-200;
+      @apply text-slate-500 text-[0.72rem] font-semibold uppercase tracking-wide border border-slate-600 rounded-md px-[0.5rem] py-[0.15rem] cursor-pointer bg-transparent hover:bg-slate-800 hover:text-slate-200;
     }
-    .add-campaign-btn {
-      @apply block w-full mb-8 bg-transparent border border-dashed border-slate-600 text-slate-300 rounded-[10px] py-4 text-[0.95rem] font-semibold cursor-pointer hover:bg-slate-900 hover:border-slate-500 transition-colors;
+    .create-campaign-btn {
+      @apply inline-block bg-transparent text-slate-400 text-[0.85rem] font-semibold uppercase tracking-wide border border-slate-700 rounded-md px-[0.9rem] py-[0.45rem] cursor-pointer hover:bg-slate-800 hover:text-slate-100 transition-colors;
     }
   </style>
 </head>
@@ -104,6 +104,10 @@
       compliance checks, use the CLI instead (<code>python -m src.main --brief ...</code>).
     </p>
 
+    <div style="text-align: right; margin-bottom: 1.5rem;">
+      <button type="button" id="add-campaign-btn" class="create-campaign-btn">Create Campaign</button>
+    </div>
+
     {% with messages = get_flashed_messages() %}
       {% if messages %}
         {% for m in messages %}
@@ -114,9 +118,6 @@
 
     <div id="campaigns-container">
       <div class="campaign-card" data-campaign-index="1">
-        <div class="campaign-card-header">
-          <span class="campaign-card-title">Campaign 1</span>
-        </div>
         <form class="creative-form" action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
       {% if edit_job_id %}
         <input type="hidden" name="edit_job_id" value="{{ edit_job_id }}" data-edit-only>
@@ -124,7 +125,10 @@
       {% endif %}
 
       <details class="campaign-brief-box" open>
-        <summary style="margin-bottom: 0.6rem;">Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></summary>
+        <summary style="margin-bottom: 0.6rem;">
+          <span>Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></span>
+          <span class="campaign-card-title">Campaign 1</span>
+        </summary>
         <div class="hint" style="margin-top: -0.3rem;">
           Context for this batch -- not composited into the creatives, just carried along with them on the
           results page and saved for when you come back to edit this batch later.
@@ -587,8 +591,6 @@
       </div>
     </div>
 
-    <button type="button" id="add-campaign-btn" class="add-campaign-btn">+ Add another creative campaign</button>
-
     <footer>Creative Automation Pipeline -- quick-generate UI{% if build_stamp %} &middot; code build: {{ build_stamp }}{% endif %}</footer>
   </div>
   <script>
@@ -720,12 +722,17 @@
         removeBtn.type = "button";
         removeBtn.className = "remove-campaign-btn";
         removeBtn.textContent = "Remove";
-        removeBtn.addEventListener("click", function () {
+        removeBtn.addEventListener("click", function (event) {
+          // The button lives inside a <summary> (next to the "Campaign N"
+          // label) so its own click doesn't also toggle that <details>
+          // open/closed.
+          event.preventDefault();
+          event.stopPropagation();
           clone.remove();
           renumberCampaigns();
         });
-        var header = clone.querySelector(".campaign-card-header");
-        if (header) header.appendChild(removeBtn);
+        var titleEl = clone.querySelector(".campaign-card-title");
+        if (titleEl && titleEl.parentNode) titleEl.parentNode.appendChild(removeBtn);
 
         container.appendChild(clone);
         initCreativeForm(clone);
