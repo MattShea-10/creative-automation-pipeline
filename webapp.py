@@ -36,6 +36,7 @@ from werkzeug.utils import secure_filename
 
 from src.creative_render import render_creative, render_creative_layers
 from src.psd_export import save_layered_psd
+from src.compliance import check_profanity, check_trademark_text
 from src.image_ops import (
     DEFAULT_SIZES,
     VALID_BADGE_POSITIONS,
@@ -536,6 +537,33 @@ def generate():
         )
         return redirect(url_for("index"))
 
+    # Profanity check -- blocks generation outright, same as the campaign
+    # brief being incomplete, rather than just a warning on the results
+    # page. Covers every free-text field that ends up visible on a
+    # creative or the results page, whether or not it's already been
+    # parsed into a local variable above; the ones parsed later (header/
+    # description/CTA/layer description) are read fresh from the raw form
+    # here since this check runs before they're otherwise needed.
+    profanity_fields = [
+        ("Product name", product_name),
+        ("Market", market),
+        ("Audience", audience),
+        ("Campaign message", campaign_message),
+        ("AI hero image prompt", ai_hero_prompt),
+        ("Header/title", (request.form.get("header") or "").strip()),
+        ("Description/message", (request.form.get("description") or "").strip()),
+        ("Call-to-action text", (request.form.get("cta_text") or "").strip()),
+        ("Description/message (update)", (request.form.get("layer_description_text") or "").strip()),
+    ]
+    flagged_fields = [label for label, value in profanity_fields if value and check_profanity(value)]
+    if flagged_fields:
+        flash(
+            "That contains language we can't allow through -- please edit: "
+            + ", ".join(flagged_fields)
+            + "."
+        )
+        return redirect(url_for("index"))
+
     # Brand colors -- up to three, each independently opt-in (a swatch
     # with nothing checked contributes nothing; there's no meaningful
     # "blank" for an <input type="color">, which always carries a value).
@@ -939,6 +967,28 @@ def generate():
         badge_path = _carry_forward_upload("badge_image", uploads_dir, prior_job_dir, prior_form_state)
     if badge_path is not None:
         badge_image_obj = Image.open(badge_path).convert("RGBA")
+
+    # Trademark/brand-name check -- optional bonus, not a requirement:
+    # OCRs each uploaded image and flags any well-known brand name it
+    # finds printed as text in it. Purely a warning (shown in red on the
+    # results page, like a missing brand color), never blocks generation,
+    # and silently finds nothing if the system doesn't have the
+    # `tesseract` OCR binary installed -- see check_trademark_text().
+    trademark_images = [("Hero image", hero_image), ("Logo", logo_image), ("Badge", badge_image_obj)]
+    trademark_images += [
+        (f"{layer_name.replace('_', ' ').title()} update image", layer_image)
+        for layer_name, layer_image in layer_image_overrides.items()
+    ]
+    for image_label, image_obj in trademark_images:
+        if image_obj is None:
+            continue
+        found_brands = check_trademark_text(image_obj)
+        if found_brands:
+            background_warnings.append(
+                f"{image_label}: looks like it may contain the brand name "
+                + ", ".join(found_brands)
+                + " as text -- worth a second look before this goes out."
+            )
 
     creatives = []
     for width, height in sizes:

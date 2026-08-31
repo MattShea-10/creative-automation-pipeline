@@ -730,6 +730,17 @@ brief's "actionable insights" goal.
   shrink to fit), it's just not a polished result at the most extreme
   ratios -- `--no-header` is a quick way to free up space there if a title
   isn't needed on those particular sizes.
+- The web UI's profanity check (`src/compliance.py`) uses the
+  `better-profanity` library and is a real `requirements.txt` dependency --
+  it blocks generation outright when flagged text is found in any of the
+  campaign brief, header/title, description, or CTA fields. The companion
+  trademark check is a lighter-weight bonus: it OCRs uploaded images (hero,
+  logo, badge, and any layer-override images) and flags well-known brand
+  names it finds as literal text, as a warning rather than a block --
+  text-only, so it can't recognize an actual logo mark. It needs the
+  `tesseract` OCR binary plus `pip install pytesseract`, neither of which
+  is in `requirements.txt` (a heavier, optional install); without them it
+  silently finds nothing rather than failing.
 
 ## Project structure
 

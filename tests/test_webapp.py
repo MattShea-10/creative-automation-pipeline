@@ -507,6 +507,54 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"Campaign brief is required -- please fill in: Audience.", r.data)
 
+    def test_generate_with_profanity_in_campaign_message_is_blocked(self):
+        # Profanity is a hard gate, same class of thing as a missing
+        # campaign-brief field -- no job directory should be created.
+        before = set(webapp.JOBS_DIR.glob("*")) if webapp.JOBS_DIR.is_dir() else set()
+        data = {
+            "hero_image": (self._sample_image_bytes(), "hero.png"),
+            "sizes": ["default"],
+            "fit_mode": "crop",
+            "campaign_message": "This is such shit, buy it now.",
+        }
+        r = self.client.post(
+            "/generate", data=data, content_type="multipart/form-data", follow_redirects=True
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"language we can", r.data)
+        self.assertIn(b"Campaign message", r.data)
+        after = set(webapp.JOBS_DIR.glob("*")) if webapp.JOBS_DIR.is_dir() else set()
+        self.assertEqual(before, after)  # no job directory was created
+
+    def test_generate_with_profanity_in_header_names_that_field(self):
+        data = {
+            "hero_image": (self._sample_image_bytes(), "hero.png"),
+            "sizes": ["default"],
+            "fit_mode": "crop",
+            "header": "this is fucking great",
+        }
+        r = self.client.post(
+            "/generate", data=data, content_type="multipart/form-data", follow_redirects=True
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"language we can", r.data)
+        self.assertIn(b"Header/title", r.data)
+
+    def test_generate_with_clean_text_is_not_blocked_by_profanity_check(self):
+        data = {
+            "hero_image": (self._sample_image_bytes(), "hero.png"),
+            "sizes": ["default"],
+            "fit_mode": "crop",
+            "header": "Totally clean headline",
+            "campaign_message": "Totally clean campaign message.",
+        }
+        r = self.client.post(
+            "/generate", data=data, content_type="multipart/form-data", follow_redirects=True
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn(b"language we can", r.data)
+        self.assertIn(b"/download/", r.data)
+
     def test_generate_combines_preset_and_custom_sizes(self):
         data = {
             "hero_image": (self._sample_image_bytes(), "hero.png"),
@@ -2344,6 +2392,50 @@ class BrandColorCheckTest(unittest.TestCase):
         ImageDraw.Draw(img).rectangle((0, 0, 50, 50), fill=(255, 0, 0))
         missing = find_missing_brand_colors(img, [(0, 0, 0), (255, 0, 0), (0, 255, 0)])
         self.assertEqual(missing, [(0, 255, 0)])
+
+
+class ContentComplianceCheckTest(unittest.TestCase):
+    """Unit coverage for the profanity and trademark-text helpers in
+    src/compliance.py -- the web UI's content checks."""
+
+    def test_check_profanity_flags_bad_language(self):
+        from src.compliance import check_profanity
+
+        self.assertTrue(check_profanity("this is such shit"))
+
+    def test_check_profanity_allows_clean_text(self):
+        from src.compliance import check_profanity
+
+        self.assertFalse(check_profanity("Refreshing summer lemonade."))
+
+    def test_check_profanity_allows_blank_text(self):
+        from src.compliance import check_profanity
+
+        self.assertFalse(check_profanity(""))
+        self.assertFalse(check_profanity(None))
+
+    def test_check_trademark_text_gracefully_returns_empty_without_ocr(self):
+        # Simulates the tesseract binary not being installed -- must never
+        # raise, just find nothing, since this is an optional bonus check.
+        import src.compliance as compliance
+
+        original = compliance._pytesseract
+        compliance._pytesseract = None
+        try:
+            img = Image.new("RGB", (100, 100), "white")
+            self.assertEqual(compliance.check_trademark_text(img), [])
+        finally:
+            compliance._pytesseract = original
+
+    def test_check_trademark_text_finds_a_known_brand_name_when_ocr_available(self):
+        import src.compliance as compliance
+
+        if compliance._pytesseract is None:
+            self.skipTest("tesseract OCR binary not available in this environment")
+        img = Image.new("RGB", (400, 120), "white")
+        ImageDraw.Draw(img).text((10, 40), "NIKE", fill="black")
+        found = compliance.check_trademark_text(img)
+        self.assertIn("Nike", found)
 
 
 class BoxMappingTest(unittest.TestCase):

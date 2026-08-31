@@ -8,10 +8,38 @@ rather than to build production-grade brand/legal detection.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from PIL import Image
+
+from better_profanity import profanity as _profanity
+
+_profanity.load_censor_words()
+
+# Optional -- real trademark/logo detection needs a vision model or a paid
+# API; this is deliberately just OCR text matching (catches a brand NAME
+# printed in an uploaded image, not a logo mark), and it's fine for the
+# whole feature to no-op if the system doesn't have the `tesseract` binary
+# installed. See check_trademark_text() below.
+try:
+    import pytesseract as _pytesseract
+except ImportError:
+    _pytesseract = None
+
+# Not exhaustive -- a short, illustrative list of well-known brand names to
+# flag if they turn up as literal text in an uploaded image. A real system
+# would use a maintained trademark database; this is a heuristic bonus
+# check, same spirit as the rest of this module.
+KNOWN_BRAND_NAMES = [
+    "Nike", "Adidas", "Puma", "Reebok", "Under Armour",
+    "Apple", "Google", "Microsoft", "Amazon", "Samsung", "Sony",
+    "Coca-Cola", "Coca Cola", "Pepsi", "McDonald's", "McDonalds",
+    "Starbucks", "Disney", "Netflix", "Meta", "Facebook", "Instagram",
+    "Twitter", "Walmart", "Target", "IKEA", "Tesla", "BMW", "Mercedes-Benz",
+    "Louis Vuitton", "Gucci", "Chanel", "Rolex", "Toyota", "Honda",
+]
 
 DEFAULT_PROHIBITED_WORDS = [
     "guaranteed",
@@ -93,3 +121,37 @@ def run_compliance_checks(
         brand_color_distance=distance,
         legal_flags=check_legal_content(message, prohibited_words),
     )
+
+
+def check_profanity(text: str) -> bool:
+    """True if `text` contains profanity (handles common leetspeak/spacing
+    tricks via the better-profanity library's built-in wordlist). Used as a
+    hard gate -- unlike everything else in this module, this one is meant
+    to block, not just warn.
+    """
+    if not text:
+        return False
+    return bool(_profanity.contains_profanity(text))
+
+
+def check_trademark_text(image: Image.Image, brand_names: Optional[List[str]] = None) -> List[str]:
+    """Best-effort: OCRs `image` and returns any known brand names found as
+    literal text in it. This is text-only -- it can't recognize an actual
+    logo mark, only a brand *name* someone typed into the creative. Always
+    returns [] rather than raising, including when the `tesseract` binary
+    isn't installed on this machine (a "plus" feature, not a requirement --
+    see README for the optional setup).
+    """
+    if _pytesseract is None:
+        return []
+    names = brand_names or KNOWN_BRAND_NAMES
+    try:
+        extracted = _pytesseract.image_to_string(image.convert("RGB"))
+    except Exception:
+        return []
+    found = []
+    for name in names:
+        pattern = r"\b" + re.escape(name).replace(r"\-", "[- ]?") + r"\b"
+        if re.search(pattern, extracted, re.IGNORECASE):
+            found.append(name)
+    return found
