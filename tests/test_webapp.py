@@ -555,6 +555,72 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertNotIn(b"language we can", r.data)
         self.assertIn(b"/download/", r.data)
 
+    def test_generate_with_profanity_in_a_content_psd_text_layer_is_blocked(self):
+        # A PSD's text layer is just as much "text someone typed" as any
+        # web form field -- otherwise the profanity check above would be
+        # trivially bypassable by putting flagged language in the PSD
+        # instead of the form. get_psd_text_layers() itself is exercised
+        # for real (against real PSD bytes) elsewhere -- this test
+        # monkeypatches it so the *webapp wiring* (which upload, which
+        # field label, which flash message) can be checked without
+        # depending on any particular fixture file's actual text content.
+        orig = webapp.get_psd_text_layers
+        webapp.get_psd_text_layers = lambda path: {"description": "such shit, wow"}
+        try:
+            (webapp.DEFAULT_TEMPLATES_DIR / "profanity-970x90.psd").write_bytes(
+                self._sample_psd_bytes(size=(970, 90)).getvalue()
+            )
+            data = {
+                "content_psd": (self._sample_psd_bytes(), "content.psd"),
+            }
+            r = self.client.post(
+                "/generate", data=data, content_type="multipart/form-data", follow_redirects=True
+            )
+        finally:
+            webapp.get_psd_text_layers = orig
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"language we can", r.data)
+        self.assertIn(b"content PSD", r.data)
+        self.assertIn(b"description", r.data)
+
+    def test_generate_with_profanity_in_a_psd_template_row_text_layer_is_blocked(self):
+        orig = webapp.get_psd_text_layers
+        webapp.get_psd_text_layers = lambda path: {"description": "such shit, wow"}
+        try:
+            data = {
+                "hero_image": (self._sample_image_bytes(), "hero.png"),
+                "sizes": ["default"],
+                "fit_mode": "crop",
+                "psd_size_1": "970x90",
+                "psd_file_1": (self._sample_psd_bytes(size=(970, 90)), "row1.psd"),
+            }
+            r = self.client.post(
+                "/generate", data=data, content_type="multipart/form-data", follow_redirects=True
+            )
+        finally:
+            webapp.get_psd_text_layers = orig
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"language we can", r.data)
+        self.assertIn(b"PSD template row 1", r.data)
+
+    def test_generate_with_a_clean_psd_text_layer_is_not_blocked(self):
+        orig = webapp.get_psd_text_layers
+        webapp.get_psd_text_layers = lambda path: {"description": "Totally clean copy."}
+        try:
+            (webapp.DEFAULT_TEMPLATES_DIR / "clean-970x90.psd").write_bytes(
+                self._sample_psd_bytes(size=(970, 90)).getvalue()
+            )
+            data = {
+                "content_psd": (self._sample_psd_bytes(), "content.psd"),
+            }
+            r = self.client.post(
+                "/generate", data=data, content_type="multipart/form-data", follow_redirects=True
+            )
+        finally:
+            webapp.get_psd_text_layers = orig
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn(b"language we can", r.data)
+
     def test_generate_combines_preset_and_custom_sizes(self):
         data = {
             "hero_image": (self._sample_image_bytes(), "hero.png"),
@@ -2757,6 +2823,44 @@ class LayerOverrideHelpersTest(unittest.TestCase):
         from src.image_ops import get_psd_layer_boxes
 
         self.assertEqual(get_psd_layer_boxes("/nonexistent/path/does-not-exist.psd"), {})
+
+    def test_get_psd_text_layers_returns_empty_for_missing_file(self):
+        from src.image_ops import get_psd_text_layers
+
+        self.assertEqual(get_psd_text_layers("/nonexistent/path/does-not-exist.psd"), {})
+
+    def test_get_psd_text_layers_returns_empty_for_non_layered_file(self):
+        from src.image_ops import get_psd_text_layers
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plain.png"
+            Image.new("RGB", (50, 50), (1, 2, 3)).save(path)
+            self.assertEqual(get_psd_text_layers(path), {})
+
+    def test_get_psd_text_layers_reads_real_text_layer_content(self):
+        # Exercises the real psd-tools TypeLayer.text property against
+        # whatever actual layered template the project currently ships,
+        # rather than a mocked/hand-built one.
+        real_dir = Path(__file__).resolve().parent.parent / "default_templates"
+        if not real_dir.is_dir():
+            self.skipTest(f"no default_templates/ directory at {real_dir}")
+        real_psd = None
+        for candidate in sorted(real_dir.glob("*.psd")):
+            from src.image_ops import get_psd_text_layers as _probe
+
+            if _probe(candidate):
+                real_psd = candidate
+                break
+        if real_psd is None:
+            self.skipTest(f"no .psd in {real_dir} has a text layer with content")
+        from src.image_ops import get_psd_text_layers
+
+        texts = get_psd_text_layers(real_psd)
+        self.assertTrue(texts)
+        for name, text in texts.items():
+            self.assertIsInstance(name, str)
+            self.assertIsInstance(text, str)
+            self.assertTrue(text)
 
     def test_get_psd_layer_boxes_finds_a_layer_that_has_an_ordinary_mask(self):
         # Regression test: get_psd_layer_boxes() used to read PSDs with

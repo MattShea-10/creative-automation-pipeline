@@ -1351,6 +1351,47 @@ def get_psd_layer_boxes(psd_path: Union[str, Path]) -> dict:
     return boxes
 
 
+def get_psd_text_layers(psd_path: Union[str, Path]) -> dict:
+    """Return {lowercased layer name: text content} for every top-level
+    text (type) layer in the PSD at `psd_path` -- the actual words someone
+    typed into that layer in Photoshop (e.g. a "description" layer baked
+    straight into an uploaded template), not styling.
+
+    Used by the web app's profanity check so flagged language embedded
+    directly in an uploaded PSD's text layer gets caught the same as
+    flagged language typed into one of the web form's own fields --
+    otherwise that check would be trivially bypassable by putting the
+    text in the PSD instead of the form.
+
+    A layer with no text (an empty type layer) is skipped. Returns {} if
+    `psd-tools` isn't installed, the file can't be opened, or it isn't a
+    layered PSD -- same "nothing usable here" convention as
+    get_psd_layer_boxes() above, so callers can treat a missing/unreadable
+    file the same as one with no text layers at all.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return {}
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return {}
+
+    texts: dict = {}
+    for layer in psd:
+        name = (layer.name or "").strip()
+        if not name or layer.kind != "type":
+            continue
+        try:
+            text = layer.text
+        except Exception:
+            continue
+        if text:
+            texts[name.lower()] = text
+    return texts
+
+
 def find_missing_brand_colors(
     image: Image.Image,
     colors: List[Tuple[int, int, int]],

@@ -38,6 +38,7 @@ from src.creative_render import render_creative, render_creative_layers
 from src.psd_export import save_layered_psd
 from src.compliance import check_profanity, check_trademark_text
 from src.image_ops import (
+    get_psd_text_layers,
     DEFAULT_SIZES,
     VALID_BADGE_POSITIONS,
     VALID_CTA_POSITIONS,
@@ -648,6 +649,10 @@ def generate():
     psd_templates: dict = {}
     psd_template_paths: dict = {}
     psd_file_paths: dict = {}  # {row index: Path} -- for form_state.json, see below
+    # (label, Path) for every PSD actually uploaded *this request* (not
+    # carried forward from a prior edit) -- scanned for profanity in their
+    # text layers below, once content_psd's own fresh-upload is known too.
+    fresh_psd_uploads = []
     for i in range(1, MAX_PSD_TEMPLATES + 1):
         psd_size_raw = (request.form.get(f"psd_size_{i}") or "").strip()
         psd_file = request.files.get(f"psd_file_{i}")
@@ -666,6 +671,7 @@ def generate():
                 )
                 return redirect(url_for("index"))
             psd_path = _save_upload(psd_file, uploads_dir)
+            fresh_psd_uploads.append((f"PSD template row {i}", psd_path))
         elif psd_cleared:
             psd_path = None
         else:
@@ -707,6 +713,7 @@ def generate():
             )
             return redirect(url_for("index"))
         content_psd_path = _save_upload(content_psd_file, uploads_dir)
+        fresh_psd_uploads.append(("728x480 content PSD", content_psd_path))
     else:
         content_psd_path = _carry_forward_upload("content_psd", uploads_dir, prior_job_dir, prior_form_state)
     content_psd_provided = content_psd_path is not None
@@ -721,6 +728,22 @@ def generate():
         # already saved in default_templates/ (merged in just below);
         # "Output sizes"/"Custom sizes" are ignored in this mode too.
         sizes = []
+
+    # Profanity check, PSD text layers -- same hard gate as the typed
+    # form fields above, just sourced from whatever's actually typed into
+    # a text layer inside a freshly uploaded PSD (e.g. a template's
+    # "description" layer). Only PSDs uploaded *this* request are
+    # scanned -- one already carried forward from a prior edit was
+    # already checked the first time it came in, and default_templates/
+    # saved templates aren't a fresh "upload" at all.
+    for psd_label, psd_path_to_scan in fresh_psd_uploads:
+        for layer_name, layer_text in get_psd_text_layers(psd_path_to_scan).items():
+            if check_profanity(layer_text):
+                flash(
+                    f"{psd_label}: the '{layer_name}' text layer contains language we can't allow "
+                    "through -- please edit it in the PSD and re-upload."
+                )
+                return redirect(url_for("index"))
 
     # Saved default templates (default_templates/) only come into play
     # when the quick-campaign content PSD field is used -- that field's
