@@ -1,0 +1,667 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Creative Automation -- Quick Generate</title>
+  <style>
+    :root {
+      --brand-blue: #0057B8;
+      --ink: #1a1a1a;
+      --muted: #6b6b6b;
+      --border: #dcdcdc;
+      --bg: #fafafa;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--ink);
+      margin: 0;
+      padding: 2.5rem 1.5rem;
+    }
+    .wrap { max-width: 640px; margin: 0 auto; }
+    h1 { font-size: 1.5rem; margin-bottom: 0.25rem; }
+    .subtitle { color: var(--muted); margin-top: 0; margin-bottom: 2rem; font-size: 0.95rem; }
+    form { background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 1.75rem; }
+    label { display: block; font-weight: 600; margin-bottom: 0.35rem; font-size: 0.92rem; }
+    .hint { color: var(--muted); font-weight: 400; font-size: 0.82rem; margin-top: -0.1rem; margin-bottom: 0.4rem; }
+    .field { margin-bottom: 1.25rem; }
+    input[type="text"], input[type="number"], textarea, input[type="file"], select {
+      width: 100%;
+      padding: 0.55rem 0.65rem;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 0.95rem;
+      font-family: inherit;
+    }
+    select.font-family-select { width: auto; min-width: 9rem; }
+    textarea { resize: vertical; min-height: 4.5rem; }
+    details {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.75rem 1rem;
+      margin-bottom: 1.25rem;
+      background: #fcfcfc;
+    }
+    summary { font-weight: 600; cursor: pointer; font-size: 0.92rem; }
+    .checkbox-row { display: flex; align-items: flex-start; gap: 0.5rem; margin: 0.6rem 0; }
+    .checkbox-row input { margin-top: 0.2rem; }
+    .checkbox-row span { font-size: 0.88rem; }
+    .radio-row { display: flex; gap: 1.5rem; margin-top: 0.4rem; }
+    .radio-row label { font-weight: 400; display: flex; align-items: center; gap: 0.4rem; margin-bottom: 0; }
+    .inline-controls { display: flex; align-items: center; gap: 1.5rem; margin-top: 0.5rem; flex-wrap: wrap; }
+    .inline-controls label { font-weight: 400; margin-bottom: 0; display: flex; align-items: center; gap: 0.5rem; flex: 0 0 auto; }
+    input[type="color"] {
+      width: 2.4rem;
+      height: 2.4rem;
+      padding: 2px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      cursor: pointer;
+      background: #fff;
+    }
+    .font-size-input { width: 5.5rem; }
+    .clear-btn {
+      background: none;
+      border: 1px solid var(--border);
+      border-radius: 50%;
+      width: 1.6rem;
+      height: 1.6rem;
+      line-height: 1;
+      font-size: 1rem;
+      color: var(--muted);
+      cursor: pointer;
+      flex: 0 0 auto;
+      padding: 0;
+    }
+    .clear-btn:hover { background: #f2f2f2; color: var(--ink); }
+    button {
+      background: var(--brand-blue);
+      color: #fff;
+      border: none;
+      padding: 0.7rem 1.4rem;
+      border-radius: 6px;
+      font-size: 0.98rem;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    button:hover { opacity: 0.92; }
+    .top-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+    .reset-link {
+      display: inline-block;
+      flex: 0 0 auto;
+      color: var(--muted);
+      font-size: 0.85rem;
+      font-weight: 600;
+      text-decoration: none;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.45rem 0.9rem;
+      white-space: nowrap;
+      margin-top: 0.15rem;
+    }
+    .reset-link:hover { background: #f2f2f2; color: var(--ink); }
+    .flash {
+      background: #fff3f3;
+      border: 1px solid #f3b3b3;
+      color: #8a1f1f;
+      padding: 0.75rem 1rem;
+      border-radius: 6px;
+      margin-bottom: 1.25rem;
+      font-size: 0.9rem;
+    }
+    footer { color: var(--muted); font-size: 0.8rem; margin-top: 2rem; text-align: center; }
+    code { background: #f0f0f0; padding: 0.1rem 0.35rem; border-radius: 4px; font-size: 0.85em; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top-row">
+      <h1>Creative Automation -- Quick Generate</h1>
+      <a
+        href="{{ url_for('index') }}"
+        class="reset-link"
+        onclick="return confirm('Reset the form? Everything you have typed or attached -- including any batch you were editing -- will be cleared.');"
+      >Reset form</a>
+    </div>
+    <p class="subtitle">
+      Upload one hero image (or a short product video), add a header and a
+      description, and get back every configured ad size at once. For a
+      full multi-product campaign with GenAI generation, localization, and
+      compliance checks, use the CLI instead (<code>python -m src.main --brief ...</code>).
+    </p>
+
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for m in messages %}
+          <div class="flash">{{ m }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <form action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
+      {% if edit_job_id %}
+        <input type="hidden" name="edit_job_id" value="{{ edit_job_id }}">
+        <div class="hint" style="margin-bottom: 1rem;">Editing a previous batch -- any file field you don't change keeps its previous file automatically.</div>
+      {% endif %}
+
+      <div class="field" style="border: 1px solid var(--border); border-radius: 8px; padding: 1rem 1.1rem; background: #fcfcfc;">
+        <label style="margin-bottom: 0.6rem;">Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></label>
+        <div class="hint" style="margin-top: -0.3rem;">
+          Context for this batch -- not composited into the creatives, just carried along with them on the
+          results page and saved for when you come back to edit this batch later.
+        </div>
+        <div class="inline-controls" style="margin-top: 0.6rem; align-items: flex-start;">
+          <label for="product_name" style="font-weight: 400; flex: 1 1 200px;">
+            <span style="white-space: nowrap;">Product name</span>
+            <input type="text" id="product_name" name="product_name" placeholder="e.g. HydroBoost Sports Drink" value="{{ prefill.get('product_name', '') }}" required>
+          </label>
+          <label for="market" style="font-weight: 400; flex: 1 1 200px;">
+            <span style="white-space: nowrap;">Market</span>
+            <input type="text" id="market" name="market" placeholder="e.g. US, UK" value="{{ prefill.get('market', '') }}" required>
+          </label>
+        </div>
+        <div class="inline-controls" style="margin-top: 0.6rem; align-items: flex-start;">
+          <label for="audience" style="font-weight: 400; flex: 1 1 200px;">
+            <span style="white-space: nowrap;">Audience</span>
+            <input type="text" id="audience" name="audience" placeholder="e.g. Active adults 18-34" value="{{ prefill.get('audience', '') }}" required>
+          </label>
+        </div>
+        <div class="field" style="margin-top: 0.6rem; margin-bottom: 0;">
+          <label for="campaign_message" style="font-weight: 400;">Campaign message</label>
+          <textarea id="campaign_message" name="campaign_message" placeholder="e.g. Drive summer trial among active adults with a refreshed flavor line." required>{{ prefill.get('campaign_message', '') }}</textarea>
+        </div>
+
+        <div class="field" style="margin-top: 0.9rem; margin-bottom: 0;">
+          <label style="font-weight: 400;">Brand colors</label>
+          <div class="hint" style="margin-top: -0.2rem;">
+            Check any of these you want verified -- after generating, each checked color is looked for in
+            every rendered creative, and a warning is added on the results page for any size where a color
+            doesn't show up anywhere in the image.
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            {% for i in range(1, 4) %}
+              <label for="brand_color_{{ i }}_enabled">
+                <input type="checkbox" id="brand_color_{{ i }}_enabled" name="brand_color_{{ i }}_enabled" value="1" {% if prefill.get('brand_color_' ~ i ~ '_enabled') %}checked{% endif %}>
+                Brand color {{ i }}
+              </label>
+              <input type="color" id="brand_color_{{ i }}" name="brand_color_{{ i }}" value="{{ prefill.get('brand_color_' ~ i, '#000000') }}">
+            {% endfor %}
+          </div>
+        </div>
+      </div>
+
+      <div class="field" style="border: 1px solid var(--brand-blue); border-radius: 8px; padding: 1rem 1.1rem; background: #f4f8ff;">
+        <label for="content_psd">728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
+        <div class="hint">
+          Upload just this one <code>.psd</code>, sized 728x480, and every other size saved in your
+          <code>default_templates/</code> folder is generated automatically alongside it. Using this field
+          <strong>ignores</strong> the "Output sizes"/"Custom sizes" choices below and the general hero image --
+          the exported batch is exactly this upload plus whatever's in <code>default_templates/</code>, nothing else.
+        </div>
+        <input type="file" id="content_psd" name="content_psd" accept=".psd">
+        {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+
+        <div id="layer_overrides_section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #cddefc;">
+          <div class="hint" style="margin-top: 0;">
+            <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
+            template-covered size whose PSD has a matching named layer (<code>description</code>,
+            <code>logo</code>, <code>cta</code>, <code>product</code>), the new content is composited into
+            that layer's exact position for that size -- a different position/scale per size, since each
+            template has its own layout. A size whose PSD doesn't have a given layer just skips that one
+            update. Image layers are pasted in (contain-fit, centered); the description is painted over and
+            redrawn with your text, since Pillow can't edit a PSD's live text layer directly. These are PSD
+            updates only -- they don't affect the general hero-image tool below.
+          </div>
+          <div class="field" style="margin-top: 0.6rem; margin-bottom: 0.6rem;">
+            <label for="layer_description_text" style="font-weight: 400;">Description text</label>
+            <input type="text" id="layer_description_text" name="layer_description_text" placeholder="e.g. First 500 get free cans" value="{{ prefill.get('layer_description_text', '') }}">
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_description_font_family" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Font</span>
+              <select class="font-family-select" id="layer_description_font_family" name="layer_description_font_family">
+                <option value="" {% if prefill.get('layer_description_font_family', '') == '' %}selected{% endif %}>Match PSD</option>
+                <option value="sans" {% if prefill.get('layer_description_font_family') == 'sans' %}selected{% endif %}>Sans-serif</option>
+                <option value="serif" {% if prefill.get('layer_description_font_family') == 'serif' %}selected{% endif %}>Serif</option>
+                <option value="mono" {% if prefill.get('layer_description_font_family') == 'mono' %}selected{% endif %}>Monospace</option>
+                <option value="condensed" {% if prefill.get('layer_description_font_family') == 'condensed' %}selected{% endif %}>Condensed</option>
+              </select>
+            </label>
+            <label for="layer_description_font_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Font size (px)</span>
+              <input type="number" class="font-size-input" id="layer_description_font_size" name="layer_description_font_size" min="4" max="2000" placeholder="Match PSD" value="{{ prefill.get('layer_description_font_size', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_description_use_custom_color">
+              <input type="checkbox" id="layer_description_use_custom_color" name="layer_description_use_custom_color" value="1" {% if prefill.get('layer_description_use_custom_color') %}checked{% endif %}>
+              Custom text color
+            </label>
+            <label for="layer_description_text_color">
+              <input type="color" id="layer_description_text_color" name="layer_description_text_color" value="{{ prefill.get('layer_description_text_color', '#1a1a1a') }}">
+              Text color
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            By default the description text matches whatever font family, size, and color the PSD's own
+            <code>description</code> text layer was set to in Photoshop (when readable). Set the font/size above
+            to override it, and check "Custom text color" to override the color too -- for every template size.
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_logo_image" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Logo image</span>
+              <input type="file" id="layer_logo_image" name="layer_logo_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
+            </label>
+            <label for="layer_cta_image" style="font-weight: 400;">
+              <span style="white-space: nowrap;">CTA image</span>
+              <input type="file" id="layer_cta_image" name="layer_cta_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
+            </label>
+            <label for="layer_product_image" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Product image</span>
+              <input type="file" id="layer_product_image" name="layer_product_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
+            </label>
+          </div>
+          {% if prefill_files.get('layer_logo_image') or prefill_files.get('layer_cta_image') or prefill_files.get('layer_product_image') %}
+            <div class="hint" style="margin-top: 0.3rem;">
+              Currently set{% if prefill_files.get('layer_logo_image') %} -- logo: <strong>{{ prefill_files.get('layer_logo_image') }}</strong>{% endif %}{% if prefill_files.get('layer_cta_image') %} -- CTA: <strong>{{ prefill_files.get('layer_cta_image') }}</strong>{% endif %}{% if prefill_files.get('layer_product_image') %} -- product: <strong>{{ prefill_files.get('layer_product_image') }}</strong>{% endif %}.
+              Choose a new file for any of these to replace it, or leave blank to keep it.
+            </div>
+          {% endif %}
+        </div>
+      </div>
+      <script>
+        (function () {
+          var contentPsdInput = document.getElementById("content_psd");
+          var layerSection = document.getElementById("layer_overrides_section");
+          // A file input can't be pre-populated with a prior upload (browser
+          // security), so on the Edit page contentPsdInput.files is always
+          // empty even when a content PSD was used last time -- fall back to
+          // this flag (set from prefill_files, the carried-forward file) so
+          // the panel doesn't collapse just because nothing's freshly picked.
+          var hasPriorContentPsd = {{ 'true' if prefill_files.get('content_psd') else 'false' }};
+          function sync() {
+            var hasFile = (contentPsdInput.files && contentPsdInput.files.length > 0) || hasPriorContentPsd;
+            layerSection.hidden = !hasFile;
+          }
+          contentPsdInput.addEventListener("change", sync);
+          sync();
+        })();
+      </script>
+
+      <div class="field">
+        <label for="hero_image">Hero image (or video) <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+        <div class="hint">PNG, JPG, WEBP, or TIFF, or a video (MP4, MOV, etc.) -- a frame is extracted automatically from video. Only required for sizes not already covered by an uploaded PSD template below.</div>
+        <input type="file" id="hero_image" name="hero_image">
+        {% if prefill_files.get('hero_image') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+
+        <div class="checkbox-row" style="margin-top: 0.7rem;">
+          <input type="checkbox" id="ai_hero_enabled" name="ai_hero_enabled" value="1" {% if prefill.get('ai_hero_enabled') %}checked{% endif %}>
+          <span>Generate a hero image with AI if no hero image ends up covering a size (uses a real GenAI image-generation provider -- can take up to ~40 seconds)</span>
+        </div>
+        <div id="ai_hero_options" hidden style="margin-top: 0.6rem;">
+          <label for="ai_hero_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+          <input type="text" id="ai_hero_prompt" name="ai_hero_prompt" placeholder="Leave blank to auto-build from product name / header" value="{{ prefill.get('ai_hero_prompt', '') }}">
+          <div class="inline-controls" style="margin-top: 0.5rem;">
+            <label for="ai_hero_provider" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Provider</span>
+              <select class="font-family-select" id="ai_hero_provider" name="ai_hero_provider">
+                <option value="pollinations" {% if prefill.get('ai_hero_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
+                <option value="huggingface" {% if prefill.get('ai_hero_provider') == 'huggingface' %}selected{% endif %}>Hugging Face SDXL (needs HUGGINGFACE_API_TOKEN in .env)</option>
+                <option value="mock" {% if prefill.get('ai_hero_provider') == 'mock' %}selected{% endif %}>Offline placeholder (no network, for testing)</option>
+              </select>
+            </label>
+          </div>
+          <div class="hint" style="margin-top: 0.4rem;">
+            Generated once and reused for every size that needs it. If the chosen provider fails (free APIs
+            occasionally do), the offline placeholder is used instead and a warning explains why.
+          </div>
+        </div>
+      </div>
+      <script>
+        (function () {
+          var aiHeroCheckbox = document.getElementById("ai_hero_enabled");
+          var aiHeroOptions = document.getElementById("ai_hero_options");
+          function sync() {
+            aiHeroOptions.hidden = !aiHeroCheckbox.checked;
+          }
+          aiHeroCheckbox.addEventListener("change", sync);
+          sync();
+        })();
+      </script>
+
+      <div class="field">
+        <label>Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+        <div class="hint">
+          Upload a <code>.psd</code> file for a specific output size (e.g. <code>728x480</code>) and that size will
+          use the flattened PSD as its background instead of the general hero image above -- just the composite
+          preview Pillow renders from the PSD, no layers or effects. A size you add here is automatically included
+          in the batch even if it isn't checked/typed under "Output sizes" below. The hero image only needs to be
+          provided if some requested size has no matching template.
+        </div>
+        <div class="hint">
+          A row here only ever affects the exact size you upload it for -- it never pulls in anything else.
+          <code>default_templates/</code> saved templates are only auto-applied to other sizes when you use the
+          728x480 content PSD field above, not from a row here.
+        </div>
+        {% for i in range(1, 5) %}
+          <div class="inline-controls" style="margin-top: {% if i == 1 %}0.4rem{% else %}0.6rem{% endif %};">
+            <label for="psd_size_{{ i }}" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size</span>
+              <input type="text" id="psd_size_{{ i }}" name="psd_size_{{ i }}" placeholder="728x480" style="width: 7rem;" value="{{ prefill.get('psd_size_' ~ i, '') }}">
+            </label>
+            <label for="psd_file_{{ i }}" style="font-weight: 400; flex: 1 1 auto;">
+              <span style="white-space: nowrap;">PSD file</span>
+              <input type="file" id="psd_file_{{ i }}" name="psd_file_{{ i }}" accept=".psd" style="width: auto;">
+            </label>
+            {% if prefill_files.get('psd_file_' ~ i) %}
+              <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" title="Remove this template -- use the hero image for this size instead">&times;</button>
+            {% endif %}
+            <input type="hidden" id="psd_size_{{ i }}_clear" name="psd_size_{{ i }}_clear" value="">
+          </div>
+          {% if prefill_files.get('psd_file_' ~ i) %}
+            <div class="hint" id="psd_currently_{{ i }}" style="margin-top: -0.3rem; margin-bottom: 0.5rem;">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong> -- choose a new file to replace it, click &times; to remove it and fall back to the hero image for this size, or leave blank to keep it.</div>
+          {% endif %}
+        {% endfor %}
+
+      </div>
+      <script>
+        (function () {
+          for (var i = 1; i <= 4; i++) {
+            (function (i) {
+              var btn = document.getElementById("psd_clear_btn_" + i);
+              if (!btn) return;
+              var sizeInput = document.getElementById("psd_size_" + i);
+              var fileInput = document.getElementById("psd_file_" + i);
+              var clearFlag = document.getElementById("psd_size_" + i + "_clear");
+              var currentlyHint = document.getElementById("psd_currently_" + i);
+              btn.addEventListener("click", function () {
+                sizeInput.value = "";
+                fileInput.value = "";
+                clearFlag.value = "1";
+                if (currentlyHint) currentlyHint.hidden = true;
+                btn.hidden = true;
+              });
+            })(i);
+          }
+        })();
+      </script>
+
+      <div class="field">
+        <label for="header">Header / title</label>
+        <div class="hint">Shown in a banner across the top. Leave blank for no header.</div>
+        <input type="text" id="header" name="header" placeholder="e.g. HydroBoost Sports Drink" value="{{ prefill.get('header', '') }}">
+      </div>
+
+      <div class="field">
+        <label for="description">Description / message</label>
+        <div class="hint">Shown in a banner across the bottom -- the ad's caption or call-to-action.</div>
+        <textarea id="description" name="description" placeholder="e.g. Feel the Fresh. Own Your Summer.">{{ prefill.get('description', '') }}</textarea>
+      </div>
+
+      <details>
+        <summary>Advanced options</summary>
+
+        <div class="field" style="margin-top: 0.9rem;">
+          <label>Output sizes</label>
+          <div class="hint">Pick one or more groups. Leave all unchecked to use the social defaults.</div>
+          {% for value, description in size_presets %}
+            <div class="checkbox-row">
+              <input type="checkbox" id="size_{{ value }}" name="sizes" value="{{ value }}" {% if prefill.get('sizes') is not none %}{% if value in prefill.get('sizes') %}checked{% endif %}{% elif value == 'default' %}checked{% endif %}>
+              <label for="size_{{ value }}" style="font-weight: 400; margin-bottom: 0;"><span>{{ description }}</span></label>
+            </div>
+          {% endfor %}
+        </div>
+
+        <div class="field">
+          <label for="custom_sizes">Custom sizes</label>
+          <div class="hint">Comma-separated WIDTHxHEIGHT, e.g. <code>1200x628,970x250</code>. Combined with any groups checked above.</div>
+          <input type="text" id="custom_sizes" name="custom_sizes" placeholder="1200x628" value="{{ prefill.get('custom_sizes', '') }}">
+        </div>
+
+        <div class="field">
+          <label>Fit mode</label>
+          <div class="hint">"Crop" fills the frame (best for photos). "Contain" never crops (best for a finished design/logo where nothing should be cut off).</div>
+          <div class="radio-row">
+            <label><input type="radio" name="fit_mode" value="crop" {% if prefill.get('fit_mode', 'crop') == 'crop' %}checked{% endif %}> Crop (fill)</label>
+            <label><input type="radio" name="fit_mode" value="contain" {% if prefill.get('fit_mode', 'crop') == 'contain' %}checked{% endif %}> Contain (no cropping)</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Header text style</label>
+          <div class="hint">Choose the header's text color, and optionally remove the dark plate behind it so the text floats directly over the image (a thin outline is added automatically to keep it legible either way). "Glow" adds a soft colored halo behind the text instead of that outline.</div>
+          <div class="inline-controls">
+            <label for="header_text_color">
+              <input type="color" id="header_text_color" name="header_text_color" value="{{ prefill.get('header_text_color', '#ffffff') }}">
+              Text color
+            </label>
+            <label for="header_no_background">
+              <input type="checkbox" id="header_no_background" name="header_no_background" value="1" {% if prefill.get('header_no_background') %}checked{% endif %}>
+              No background (transparent)
+            </label>
+          </div>
+          <div class="inline-controls">
+            <label for="header_glow">
+              <input type="checkbox" id="header_glow" name="header_glow" value="1" {% if prefill.get('header_glow') %}checked{% endif %}>
+              Glow
+            </label>
+            <label for="header_glow_color">
+              <input type="color" id="header_glow_color" name="header_glow_color" value="{{ prefill.get('header_glow_color', '#ffffff') }}">
+              Glow color
+            </label>
+          </div>
+          <div class="inline-controls">
+            <label for="header_font_size">
+              <span style="white-space: nowrap;">Font size (px)</span>
+              <input type="number" class="font-size-input" id="header_font_size" name="header_font_size" min="4" max="2000" placeholder="Auto" value="{{ prefill.get('header_font_size', '') }}">
+            </label>
+          </div>
+          <div class="radio-row" style="margin-top: 0.5rem;">
+            <label><input type="radio" name="header_align" value="left" {% if prefill.get('header_align', 'center') == 'left' %}checked{% endif %}> Left</label>
+            <label><input type="radio" name="header_align" value="center" {% if prefill.get('header_align', 'center') == 'center' %}checked{% endif %}> Center</label>
+            <label><input type="radio" name="header_align" value="right" {% if prefill.get('header_align', 'center') == 'right' %}checked{% endif %}> Right</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Description text style</label>
+          <div class="hint">Same idea, for the bottom message/CTA banner.</div>
+          <div class="inline-controls">
+            <label for="message_text_color">
+              <input type="color" id="message_text_color" name="message_text_color" value="{{ prefill.get('message_text_color', '#ffffff') }}">
+              Text color
+            </label>
+            <label for="message_no_background">
+              <input type="checkbox" id="message_no_background" name="message_no_background" value="1" {% if prefill.get('message_no_background') %}checked{% endif %}>
+              No background (transparent)
+            </label>
+          </div>
+          <div class="inline-controls">
+            <label for="message_glow">
+              <input type="checkbox" id="message_glow" name="message_glow" value="1" {% if prefill.get('message_glow') %}checked{% endif %}>
+              Glow
+            </label>
+            <label for="message_glow_color">
+              <input type="color" id="message_glow_color" name="message_glow_color" value="{{ prefill.get('message_glow_color', '#ffffff') }}">
+              Glow color
+            </label>
+          </div>
+          <div class="inline-controls">
+            <label for="message_font_size">
+              <span style="white-space: nowrap;">Font size (px)</span>
+              <input type="number" class="font-size-input" id="message_font_size" name="message_font_size" min="4" max="2000" placeholder="Auto" value="{{ prefill.get('message_font_size', '') }}">
+            </label>
+          </div>
+          <div class="radio-row" style="margin-top: 0.5rem;">
+            <label><input type="radio" name="message_align" value="left" {% if prefill.get('message_align', 'left') == 'left' %}checked{% endif %}> Left</label>
+            <label><input type="radio" name="message_align" value="center" {% if prefill.get('message_align', 'left') == 'center' %}checked{% endif %}> Center</label>
+            <label><input type="radio" name="message_align" value="right" {% if prefill.get('message_align', 'left') == 'right' %}checked{% endif %}> Right</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="cta_text">Call-to-action (optional)</label>
+          <div class="hint">A short button label -- e.g. "Shop Now" or "Learn More" -- rendered as a filled, pill-shaped button. Always drawn on top of everything else (including the badge image) so it stays visible. Leave blank for no CTA button.</div>
+          <input type="text" id="cta_text" name="cta_text" placeholder="e.g. Shop Now" value="{{ prefill.get('cta_text', '') }}">
+        </div>
+
+        <div class="field">
+          <label>Call-to-action style</label>
+          <div class="hint">Button (background) and text color, the button label's typeface, and where the button sits. Font size scales the *whole button* together (text, padding, and pill shape all grow or shrink with it) -- it's the way to make the CTA bigger or smaller overall, not just the letters. Leave "Auto" to size it relative to the frame instead.</div>
+          <div class="inline-controls">
+            <label for="cta_button_color">
+              <input type="color" id="cta_button_color" name="cta_button_color" value="{{ prefill.get('cta_button_color', '#0057b8') }}">
+              Background color
+            </label>
+            <label for="cta_text_color">
+              <input type="color" id="cta_text_color" name="cta_text_color" value="{{ prefill.get('cta_text_color', '#ffffff') }}">
+              Text color
+            </label>
+          </div>
+          <div class="inline-controls">
+            <label for="cta_font_family">
+              <span style="white-space: nowrap;">Font</span>
+              <select class="font-family-select" id="cta_font_family" name="cta_font_family">
+                <option value="sans" {% if prefill.get('cta_font_family', 'sans') == 'sans' %}selected{% endif %}>Sans-serif</option>
+                <option value="serif" {% if prefill.get('cta_font_family', 'sans') == 'serif' %}selected{% endif %}>Serif</option>
+                <option value="mono" {% if prefill.get('cta_font_family', 'sans') == 'mono' %}selected{% endif %}>Monospace</option>
+                <option value="condensed" {% if prefill.get('cta_font_family', 'sans') == 'condensed' %}selected{% endif %}>Condensed</option>
+              </select>
+            </label>
+            <label for="cta_font_size">
+              <span style="white-space: nowrap;">Font size (px)</span>
+              <input type="number" class="font-size-input" id="cta_font_size" name="cta_font_size" min="4" max="2000" placeholder="Auto" value="{{ prefill.get('cta_font_size', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls">
+            <label for="cta_glow">
+              <input type="checkbox" id="cta_glow" name="cta_glow" value="1" {% if prefill.get('cta_glow') %}checked{% endif %}>
+              Glow
+            </label>
+            <label for="cta_glow_color">
+              <input type="color" id="cta_glow_color" name="cta_glow_color" value="{{ prefill.get('cta_glow_color', '#ffffff') }}">
+              Glow color
+            </label>
+          </div>
+          <div class="radio-row" style="flex-wrap: wrap; row-gap: 0.5rem; margin-top: 0.5rem;">
+            <label><input type="radio" name="cta_position" value="top-left" {% if prefill.get('cta_position', 'bottom-center') == 'top-left' %}checked{% endif %}> Top-left</label>
+            <label><input type="radio" name="cta_position" value="top-right" {% if prefill.get('cta_position', 'bottom-center') == 'top-right' %}checked{% endif %}> Top-right</label>
+            <label><input type="radio" name="cta_position" value="bottom-left" {% if prefill.get('cta_position', 'bottom-center') == 'bottom-left' %}checked{% endif %}> Bottom-left</label>
+            <label><input type="radio" name="cta_position" value="bottom-right" {% if prefill.get('cta_position', 'bottom-center') == 'bottom-right' %}checked{% endif %}> Bottom-right</label>
+            <label><input type="radio" name="cta_position" value="center" {% if prefill.get('cta_position', 'bottom-center') == 'center' %}checked{% endif %}> Center</label>
+            <label><input type="radio" name="cta_position" value="bottom-center" {% if prefill.get('cta_position', 'bottom-center') == 'bottom-center' %}checked{% endif %}> Bottom-center</label>
+          </div>
+          <div class="checkbox-row" style="margin-top: 0.6rem;">
+            <input type="checkbox" id="cta_above_message" name="cta_above_message" value="1" {% if prefill.get('cta_above_message') %}checked{% endif %}>
+            <span>Place above description, not on top of it -- lifts a Bottom-left/Bottom-right/Bottom-center button clear of the message banner instead of the two overlapping. No effect for Top-left/Top-right/Center, or when there's no description text.</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="logo">Brand logo (optional)</label>
+          <div class="hint">PNG or WEBP with transparency.</div>
+          <input type="file" id="logo" name="logo">
+          {% if prefill_files.get('logo') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('logo') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Logo placement</label>
+          <div class="hint">A top-left or top-right logo shares the header row -- the header automatically leaves room for it on that side. The three "below header" options sit just underneath the header banner, aligned left, center, or right, instead of sharing its row. Bottom-left, bottom-right, and center have no header to avoid, so the logo is drawn on top of the message banner and badge image instead.</div>
+          <div class="radio-row" style="flex-wrap: wrap; row-gap: 0.5rem;">
+            <label><input type="radio" name="logo_position" value="top-left" {% if prefill.get('logo_position', 'top-right') == 'top-left' %}checked{% endif %}> Top-left</label>
+            <label><input type="radio" name="logo_position" value="top-right" {% if prefill.get('logo_position', 'top-right') == 'top-right' %}checked{% endif %}> Top-right</label>
+            <label><input type="radio" name="logo_position" value="below-header-left" {% if prefill.get('logo_position', 'top-right') == 'below-header-left' %}checked{% endif %}> Below header (left)</label>
+            <label><input type="radio" name="logo_position" value="below-header-center" {% if prefill.get('logo_position', 'top-right') == 'below-header-center' %}checked{% endif %}> Below header (center)</label>
+            <label><input type="radio" name="logo_position" value="below-header-right" {% if prefill.get('logo_position', 'top-right') == 'below-header-right' %}checked{% endif %}> Below header (right)</label>
+            <label><input type="radio" name="logo_position" value="bottom-left" {% if prefill.get('logo_position', 'top-right') == 'bottom-left' %}checked{% endif %}> Bottom-left</label>
+            <label><input type="radio" name="logo_position" value="bottom-right" {% if prefill.get('logo_position', 'top-right') == 'bottom-right' %}checked{% endif %}> Bottom-right</label>
+            <label><input type="radio" name="logo_position" value="center" {% if prefill.get('logo_position', 'top-right') == 'center' %}checked{% endif %}> Center</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Logo size &amp; opacity</label>
+          <div class="hint">Size as a percent of the frame; opacity for a subtler watermark look.</div>
+          <div class="inline-controls">
+            <label for="logo_scale">
+              <span style="white-space: nowrap;">Size (% of frame)</span>
+              <input type="number" class="font-size-input" id="logo_scale" name="logo_scale" min="4" max="60" value="{{ prefill.get('logo_scale', '16') }}">
+            </label>
+            <label for="logo_opacity">
+              <span style="white-space: nowrap;">Opacity (%)</span>
+              <input type="number" class="font-size-input" id="logo_opacity" name="logo_opacity" min="0" max="100" value="{{ prefill.get('logo_opacity', '100') }}">
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Logo offset</label>
+          <div class="hint">Fine-tune on top of the placement above, in pixels. Negative moves left/up, positive moves right/down -- 0, 0 leaves the logo exactly where its placement puts it.</div>
+          <div class="inline-controls">
+            <label for="logo_offset_x">
+              <span style="white-space: nowrap;">Left / right (px)</span>
+              <input type="number" class="font-size-input" id="logo_offset_x" name="logo_offset_x" min="-2000" max="2000" value="{{ prefill.get('logo_offset_x', '0') }}">
+            </label>
+            <label for="logo_offset_y">
+              <span style="white-space: nowrap;">Up / down (px)</span>
+              <input type="number" class="font-size-input" id="logo_offset_y" name="logo_offset_y" min="-2000" max="2000" value="{{ prefill.get('logo_offset_y', '0') }}">
+            </label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label for="badge_image">Badge image (optional)</label>
+          <div class="hint">A second image, independent of the brand logo above -- e.g. a "Sale" sticker, seasonal seal, or a full-frame tint/texture. PNG/WEBP recommended for transparency; JPG works too.</div>
+          <input type="file" id="badge_image" name="badge_image">
+          {% if prefill_files.get('badge_image') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('badge_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+        </div>
+
+        <div class="field">
+          <label>Badge placement</label>
+          <div class="hint">"Full frame" stretches the badge to cover the whole creative and is drawn *before* the header/message text, like a background tint. Every other position sizes it to a corner/center and draws it *on top* of everything, like a sticker.</div>
+          <div class="radio-row" style="flex-wrap: wrap; row-gap: 0.5rem;">
+            <label><input type="radio" name="badge_position" value="top-left" {% if prefill.get('badge_position', 'top-right') == 'top-left' %}checked{% endif %}> Top-left</label>
+            <label><input type="radio" name="badge_position" value="top-right" {% if prefill.get('badge_position', 'top-right') == 'top-right' %}checked{% endif %}> Top-right</label>
+            <label><input type="radio" name="badge_position" value="bottom-left" {% if prefill.get('badge_position', 'top-right') == 'bottom-left' %}checked{% endif %}> Bottom-left</label>
+            <label><input type="radio" name="badge_position" value="bottom-right" {% if prefill.get('badge_position', 'top-right') == 'bottom-right' %}checked{% endif %}> Bottom-right</label>
+            <label><input type="radio" name="badge_position" value="center" {% if prefill.get('badge_position', 'top-right') == 'center' %}checked{% endif %}> Center</label>
+            <label><input type="radio" name="badge_position" value="full" {% if prefill.get('badge_position', 'top-right') == 'full' %}checked{% endif %}> Full frame</label>
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Badge size &amp; opacity</label>
+          <div class="hint">Size is ignored when placement is "Full frame" (it always stretches to cover the frame). Opacity applies either way.</div>
+          <div class="inline-controls">
+            <label for="badge_scale">
+              <span style="white-space: nowrap;">Size (% of frame)</span>
+              <input type="number" class="font-size-input" id="badge_scale" name="badge_scale" min="5" max="100" value="{{ prefill.get('badge_scale', '35') }}">
+            </label>
+            <label for="badge_opacity">
+              <span style="white-space: nowrap;">Opacity (%)</span>
+              <input type="number" class="font-size-input" id="badge_opacity" name="badge_opacity" min="0" max="100" value="{{ prefill.get('badge_opacity', '100') }}">
+            </label>
+          </div>
+        </div>
+
+        <div class="field" style="margin-bottom: 0;">
+          <label for="video_frame_seconds">Video frame timestamp (optional)</label>
+          <div class="hint">Only used if your hero file is a video. Seconds into the clip to grab a frame from -- leave blank to use the middle of the video.</div>
+          <input type="number" step="0.1" min="0" id="video_frame_seconds" name="video_frame_seconds" placeholder="e.g. 4.5" value="{{ prefill.get('video_frame_seconds', '') }}">
+        </div>
+      </details>
+
+      <button type="submit">Generate creatives</button>
+    </form>
+
+    <footer>Creative Automation Pipeline -- quick-generate UI{% if build_stamp %} &middot; code build: {{ build_stamp }}{% endif %}</footer>
+  </div>
+</body>
+</html>

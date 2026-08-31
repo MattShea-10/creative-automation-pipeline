@@ -1,0 +1,79 @@
+campaign:
+  name: "Summer Refresh 2026"
+  target_region: "Mexico"
+  target_audience: "Young adults 18-25 interested in fitness and outdoor activity"
+  message: "Feel the Fresh. Own Your Summer."
+
+  brand:
+    logo: "assets/brand/logo.png"
+    colors:
+      - "#0057B8"  # brand blue
+      - "#FFD100"  # brand yellow
+
+  # Optional: sizes to render. Each entry is a preset name (default |
+  # web-top7 | broadcast), a "WIDTHxHEIGHT" string, or a {width, height}
+  # object -- freely mixable, and duplicates across presets are only
+  # rendered once. If omitted, the pipeline uses its built-in default of
+  # 1080x1080, 1080x1920, 1920x1080 -- or whatever is passed to --sizes on
+  # the command line, which always takes precedence over this.
+  # output_sizes:
+  #   - "default"
+  #   - "web-top7"
+  #   - "1200x628"   # e.g. a Facebook link-preview size, on top of the presets above
+
+  # Optional: how to fit each hero image into every output size.
+  #   "crop"    (default) fills the whole frame, cropping the longer side --
+  #             good for generic product/lifestyle photos where losing a
+  #             little of the edges doesn't matter.
+  #   "contain" scales the image down to fit entirely within the frame with
+  #             NO cropping, letterboxed with a blurred backdrop of the same
+  #             image -- use this for a finished, already-composed creative
+  #             (e.g. a flattened Photoshop export with its own logo/CTA/
+  #             layout baked in) where cropping would cut off part of the
+  #             design. Can also be overridden per-run with --fit on the CLI.
+  # fit_mode: "contain"
+
+  # Optional: a title/headline shown in a banner across the TOP of every
+  # creative (distinct from "message" above, which is the bottom
+  # caption/CTA banner). If omitted here and not overridden per-product
+  # below, each product's own name is used as its headline. Set to false
+  # via show_header to turn the header band off entirely (or pass
+  # --no-header on the CLI, which always wins over this).
+  # headline: "Summer Sale -- Up To 30% Off"
+  # show_header: true
+
+  products:
+    - name: "HydroBoost Sports Drink"
+      slug: "hydroboost"
+      prompt_hint: >
+        Professional studio product photo of a chilled blue sports drink
+        bottle with condensation droplets, dynamic splash of water behind it,
+        clean bright background, commercial advertising photography
+      # Optional: point this product at a specific existing file instead of
+      # the assets/<slug>.png naming convention -- handy for dropping in a
+      # design made elsewhere (a Photoshop export, a client-supplied JPEG,
+      # a product video, etc.) without having to rename it. Accepts
+      # .png/.jpg/.webp, .psd/.tif/.tiff (Pillow reads the flattened
+      # Photoshop composite directly; if a given .psd won't open, export a
+      # flattened PNG/JPG from Photoshop and point this at that file
+      # instead), and .mp4/.mov/.m4v/.avi/.mkv/.webm (a single frame is
+      # extracted and used as the hero image -- see video_frame_seconds
+      # below). Relative paths are resolved from wherever you run the CLI.
+      # When set, this takes priority over both assets/hydroboost.png and
+      # GenAI generation.
+      # asset_path: "assets/photoshop/hydroboost_728x480.psd"
+      # asset_path: "assets/video/hydroboost_demo.mp4"
+      # Optional, video assets only: which timestamp (in seconds) to grab a
+      # frame from. Defaults to the middle of the clip if omitted, since a
+      # video's first frame is often a black frame or a fade-in.
+      # video_frame_seconds: 4.5
+      # Optional: override this product's header text specifically (takes
+      # priority over the campaign-wide `headline` above, which in turn
+      # takes priority over the product name).
+      # headline: "New: HydroBoost Zero Sugar"
+    - name: "FreshGlow Body Wash"
+      slug: "freshglow"
+      prompt_hint: >
+        Professional studio product photo of a green body wash bottle
+        surrounded by fresh mint leaves and water droplets, clean bright
+        background, commercial advertising photography

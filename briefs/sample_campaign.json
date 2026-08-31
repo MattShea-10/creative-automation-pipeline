@@ -1,0 +1,29 @@
+{
+  "campaign": {
+    "name": "Winter Glow 2026",
+    "target_region": "France",
+    "target_audience": "Adults 25-40 interested in skincare and self-care",
+    "message": "Glow Through Winter.",
+    "brand": {
+      "logo": "assets/brand/logo.png",
+      "colors": ["#0057B8", "#FFD100"]
+    },
+    "products": [
+      {
+        "name": "HydroBoost Sports Drink",
+        "slug": "hydroboost",
+        "prompt_hint": "Professional studio product photo of a chilled blue sports drink bottle, winter theme, clean bright background"
+      },
+      {
+        "name": "FreshGlow Body Wash",
+        "slug": "freshglow",
+        "prompt_hint": "Professional studio product photo of a green body wash bottle, winter theme, clean bright background"
+      },
+      {
+        "name": "PureShine Shampoo",
+        "slug": "pureshine",
+        "prompt_hint": "Professional studio product photo of a silver shampoo bottle, winter theme, clean bright background"
+      }
+    ]
+  }
+}

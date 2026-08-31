@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+
+# macOS
+.DS_Store
+
+# Environment / secrets
+.env
+
+# Generated at runtime -- real job data (uploaded creatives, campaign
+# briefs, rendered PNG/PSD output) and AI-hero-image cache, not source.
+outputs/
+assets/generated_cache/
