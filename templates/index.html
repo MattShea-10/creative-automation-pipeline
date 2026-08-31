@@ -76,6 +76,15 @@
     .upload-creative-box > summary {
       @apply text-blue-300 text-[0.78rem] font-bold uppercase tracking-wider;
     }
+    .campaign-card { @apply mb-8; }
+    .campaign-card-header { @apply flex items-center justify-between mb-2; }
+    .campaign-card-title { @apply text-slate-400 text-[0.78rem] font-bold uppercase tracking-wider; }
+    .remove-campaign-btn {
+      @apply text-slate-500 text-[0.8rem] font-semibold border border-slate-700 rounded-md px-[0.6rem] py-[0.2rem] cursor-pointer bg-transparent hover:bg-slate-800 hover:text-slate-200;
+    }
+    .add-campaign-btn {
+      @apply block w-full mb-8 bg-transparent border border-dashed border-slate-600 text-slate-300 rounded-[10px] py-4 text-[0.95rem] font-semibold cursor-pointer hover:bg-slate-900 hover:border-slate-500 transition-colors;
+    }
   </style>
 </head>
 <body>
@@ -103,10 +112,15 @@
       {% endif %}
     {% endwith %}
 
-    <form action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
+    <div id="campaigns-container">
+      <div class="campaign-card" data-campaign-index="1">
+        <div class="campaign-card-header">
+          <span class="campaign-card-title">Campaign 1</span>
+        </div>
+        <form class="creative-form" action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
       {% if edit_job_id %}
-        <input type="hidden" name="edit_job_id" value="{{ edit_job_id }}">
-        <div class="hint" style="margin-bottom: 1rem;">Editing a previous batch -- any file field you don't change keeps its previous file automatically.</div>
+        <input type="hidden" name="edit_job_id" value="{{ edit_job_id }}" data-edit-only>
+        <div class="hint" style="margin-bottom: 1rem;" data-edit-only>Editing a previous batch -- any file field you don't change keeps its previous file automatically.</div>
       {% endif %}
 
       <details class="campaign-brief-box" open>
@@ -164,10 +178,10 @@
           <strong>ignores</strong> the "Output sizes"/"Custom sizes" choices below and the general hero image --
           the exported batch is exactly this upload plus whatever's in <code>default_templates/</code>, nothing else.
         </div>
-        <input type="file" id="content_psd" name="content_psd" accept=".psd">
-        {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+        <input type="file" id="content_psd" name="content_psd" accept=".psd" data-has-prior="{{ 'true' if prefill_files.get('content_psd') else 'false' }}">
+        {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
-        <div id="layer_overrides_section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
+        <div id="layer_overrides_section" data-role="layer-overrides-section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
             template-covered size whose PSD has a matching named layer (<code>description</code>,
@@ -228,7 +242,7 @@
             </label>
           </div>
           {% if prefill_files.get('layer_logo_image') or prefill_files.get('layer_cta_image') or prefill_files.get('layer_product_image') %}
-            <div class="hint" style="margin-top: 0.3rem;">
+            <div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>
               Currently set{% if prefill_files.get('layer_logo_image') %} -- logo: <strong>{{ prefill_files.get('layer_logo_image') }}</strong>{% endif %}{% if prefill_files.get('layer_cta_image') %} -- CTA: <strong>{{ prefill_files.get('layer_cta_image') }}</strong>{% endif %}{% if prefill_files.get('layer_product_image') %} -- product: <strong>{{ prefill_files.get('layer_product_image') }}</strong>{% endif %}.
               Choose a new file for any of these to replace it, or leave blank to keep it.
             </div>
@@ -259,56 +273,17 @@
                 <input type="file" id="psd_file_{{ i }}" name="psd_file_{{ i }}" accept=".psd" style="width: auto;">
               </label>
               {% if prefill_files.get('psd_file_' ~ i) %}
-                <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" title="Remove this template -- use the hero image for this size instead">&times;</button>
+                <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" data-role="psd-clear-btn-{{ i }}" data-prefill-hint title="Remove this template -- use the hero image for this size instead">&times;</button>
               {% endif %}
               <input type="hidden" id="psd_size_{{ i }}_clear" name="psd_size_{{ i }}_clear" value="">
             </div>
             {% if prefill_files.get('psd_file_' ~ i) %}
-              <div class="hint" id="psd_currently_{{ i }}" style="margin-top: -0.3rem; margin-bottom: 0.5rem;">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong> -- choose a new file to replace it, click &times; to remove it and fall back to the hero image for this size, or leave blank to keep it.</div>
+              <div class="hint" id="psd_currently_{{ i }}" data-role="psd-currently-{{ i }}" data-prefill-hint style="margin-top: -0.3rem; margin-bottom: 0.5rem;">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong> -- choose a new file to replace it, click &times; to remove it and fall back to the hero image for this size, or leave blank to keep it.</div>
             {% endif %}
           {% endfor %}
 
         </div>
-        <script>
-          (function () {
-            for (var i = 1; i <= 4; i++) {
-              (function (i) {
-                var btn = document.getElementById("psd_clear_btn_" + i);
-                if (!btn) return;
-                var sizeInput = document.getElementById("psd_size_" + i);
-                var fileInput = document.getElementById("psd_file_" + i);
-                var clearFlag = document.getElementById("psd_size_" + i + "_clear");
-                var currentlyHint = document.getElementById("psd_currently_" + i);
-                btn.addEventListener("click", function () {
-                  sizeInput.value = "";
-                  fileInput.value = "";
-                  clearFlag.value = "1";
-                  if (currentlyHint) currentlyHint.hidden = true;
-                  btn.hidden = true;
-                });
-              })(i);
-            }
-          })();
-        </script>
       </details>
-      <script>
-        (function () {
-          var contentPsdInput = document.getElementById("content_psd");
-          var layerSection = document.getElementById("layer_overrides_section");
-          // A file input can't be pre-populated with a prior upload (browser
-          // security), so on the Edit page contentPsdInput.files is always
-          // empty even when a content PSD was used last time -- fall back to
-          // this flag (set from prefill_files, the carried-forward file) so
-          // the panel doesn't collapse just because nothing's freshly picked.
-          var hasPriorContentPsd = {{ 'true' if prefill_files.get('content_psd') else 'false' }};
-          function sync() {
-            var hasFile = (contentPsdInput.files && contentPsdInput.files.length > 0) || hasPriorContentPsd;
-            layerSection.hidden = !hasFile;
-          }
-          contentPsdInput.addEventListener("change", sync);
-          sync();
-        })();
-      </script>
 
       <details class="manual-creative-box">
         <summary>Manual Creative</summary>
@@ -317,14 +292,14 @@
         <label for="hero_image"><span class="psd-badge">PSD</span> Hero image (or video) <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
         <div class="hint">PNG, JPG, WEBP, or TIFF, or a video (MP4, MOV, etc.) -- a frame is extracted automatically from video. Only required for sizes not already covered by an uploaded PSD template above.</div>
         <input type="file" id="hero_image" name="hero_image">
-        {% if prefill_files.get('hero_image') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+        {% if prefill_files.get('hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
         <div class="ai-hero-callout" style="margin-top: 0.7rem;">
           <div class="checkbox-row" style="margin: 0;">
             <input type="checkbox" id="ai_hero_enabled" name="ai_hero_enabled" value="1" {% if prefill.get('ai_hero_enabled') %}checked{% endif %}>
             <span><span class="ai-badge">AI</span> Generate a hero image with AI if no hero image ends up covering a size (uses a real GenAI image-generation provider -- can take up to ~40 seconds)</span>
           </div>
-          <div id="ai_hero_options" hidden style="margin-top: 0.6rem;">
+          <div id="ai_hero_options" data-role="ai-hero-options" hidden style="margin-top: 0.6rem;">
             <label for="ai_hero_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
             <input type="text" id="ai_hero_prompt" name="ai_hero_prompt" placeholder="Leave blank to auto-build from product name / header" value="{{ prefill.get('ai_hero_prompt', '') }}">
             <div class="inline-controls" style="margin-top: 0.5rem;">
@@ -344,17 +319,6 @@
           </div>
         </div>
       </div>
-      <script>
-        (function () {
-          var aiHeroCheckbox = document.getElementById("ai_hero_enabled");
-          var aiHeroOptions = document.getElementById("ai_hero_options");
-          function sync() {
-            aiHeroOptions.hidden = !aiHeroCheckbox.checked;
-          }
-          aiHeroCheckbox.addEventListener("change", sync);
-          sync();
-        })();
-      </script>
 
         <div class="field" style="margin-top: 0.9rem;">
           <label>Output sizes</label>
@@ -528,7 +492,7 @@
           <label for="logo">Brand logo (optional)</label>
           <div class="hint">PNG or WEBP with transparency.</div>
           <input type="file" id="logo" name="logo">
-          {% if prefill_files.get('logo') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('logo') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+          {% if prefill_files.get('logo') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('logo') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
         </div>
 
         <div class="field">
@@ -580,7 +544,7 @@
           <label for="badge_image">Badge image (optional)</label>
           <div class="hint">A second image, independent of the brand logo above -- e.g. a "Sale" sticker, seasonal seal, or a full-frame tint/texture. PNG/WEBP recommended for transparency; JPG works too.</div>
           <input type="file" id="badge_image" name="badge_image">
-          {% if prefill_files.get('badge_image') %}<div class="hint" style="margin-top: 0.3rem;">Currently: <strong>{{ prefill_files.get('badge_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+          {% if prefill_files.get('badge_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('badge_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
         </div>
 
         <div class="field">
@@ -619,9 +583,161 @@
       </details>
 
       <button type="submit">Generate creatives</button>
-    </form>
+        </form>
+      </div>
+    </div>
+
+    <button type="button" id="add-campaign-btn" class="add-campaign-btn">+ Add another creative campaign</button>
 
     <footer>Creative Automation Pipeline -- quick-generate UI{% if build_stamp %} &middot; code build: {{ build_stamp }}{% endif %}</footer>
   </div>
+  <script>
+    // Wires up the sync behavior for one campaign card's form -- the
+    // "Generate a hero image with AI" checkbox revealing its options, the
+    // 728x480 content PSD input revealing the layer-overrides panel, and
+    // each "Size-specific PSD templates" row's clear (x) button. Looks
+    // elements up by `name`/`data-role` rather than `id` so it works
+    // identically for the original server-rendered card and for every
+    // cloned campaign card added later (see addCampaignCard() below),
+    // even though clones get their own unique ids (see remapIds()).
+    function initCreativeForm(root) {
+      var aiHeroCheckbox = root.querySelector('[name="ai_hero_enabled"]');
+      var aiHeroOptions = root.querySelector('[data-role="ai-hero-options"]');
+      if (aiHeroCheckbox && aiHeroOptions) {
+        var syncHero = function () {
+          aiHeroOptions.hidden = !aiHeroCheckbox.checked;
+        };
+        aiHeroCheckbox.addEventListener("change", syncHero);
+        syncHero();
+      }
+
+      var contentPsdInput = root.querySelector('[name="content_psd"]');
+      var layerSection = root.querySelector('[data-role="layer-overrides-section"]');
+      if (contentPsdInput && layerSection) {
+        // A file input can't be pre-populated with a prior upload (browser
+        // security), so on the Edit page contentPsdInput.files is always
+        // empty even when a content PSD was used last time -- fall back to
+        // this data attribute (set from prefill_files, the carried-forward
+        // file) so the panel doesn't collapse just because nothing's
+        // freshly picked. A cloned campaign card always has this set to
+        // "false" (see addCampaignCard()) since it never has a prior file.
+        var syncContentPsd = function () {
+          var hasPriorContentPsd = contentPsdInput.dataset.hasPrior === "true";
+          var hasFile = (contentPsdInput.files && contentPsdInput.files.length > 0) || hasPriorContentPsd;
+          layerSection.hidden = !hasFile;
+        };
+        contentPsdInput.addEventListener("change", syncContentPsd);
+        syncContentPsd();
+      }
+
+      for (var i = 1; i <= 4; i++) {
+        (function (i) {
+          var btn = root.querySelector('[data-role="psd-clear-btn-' + i + '"]');
+          if (!btn) return;
+          var sizeInput = root.querySelector('[name="psd_size_' + i + '"]');
+          var fileInput = root.querySelector('[name="psd_file_' + i + '"]');
+          var clearFlag = root.querySelector('[name="psd_size_' + i + '_clear"]');
+          var currentlyHint = root.querySelector('[data-role="psd-currently-' + i + '"]');
+          btn.addEventListener("click", function () {
+            sizeInput.value = "";
+            fileInput.value = "";
+            clearFlag.value = "1";
+            if (currentlyHint) currentlyHint.hidden = true;
+            btn.hidden = true;
+          });
+        })(i);
+      }
+    }
+
+    // Gives every element with an `id` inside `root` a unique suffixed id
+    // (so labels/inputs in a cloned campaign card don't collide with the
+    // originals) and updates any matching `for` attribute to point at the
+    // new id. `name` attributes are left untouched -- each campaign card
+    // is its own independent <form>, so identical field names across
+    // cards are fine and expected.
+    function remapIds(root, suffix) {
+      var idMap = {};
+      root.querySelectorAll("[id]").forEach(function (el) {
+        var oldId = el.id;
+        var newId = oldId + suffix;
+        idMap[oldId] = newId;
+        el.id = newId;
+      });
+      root.querySelectorAll("[for]").forEach(function (el) {
+        var oldFor = el.getAttribute("for");
+        if (idMap[oldFor]) el.setAttribute("for", idMap[oldFor]);
+      });
+    }
+
+    (function () {
+      var container = document.getElementById("campaigns-container");
+      var addBtn = document.getElementById("add-campaign-btn");
+      var campaignCount = 1;
+
+      function renumberCampaigns() {
+        var cards = container.querySelectorAll(".campaign-card");
+        cards.forEach(function (card, index) {
+          card.dataset.campaignIndex = index + 1;
+          var title = card.querySelector(".campaign-card-title");
+          if (title) title.textContent = "Campaign " + (index + 1);
+        });
+      }
+
+      function addCampaignCard() {
+        var firstCard = container.querySelector(".campaign-card");
+        var clone = firstCard.cloneNode(true);
+        campaignCount++;
+
+        // A brand new campaign card always starts completely blank --
+        // strip anything tied specifically to an edit-in-progress or a
+        // prior upload, whether that came from the very first card being
+        // an "Edit a previous batch" page, or (once campaigns can be
+        // added) any file that had already been picked on the card being
+        // cloned from.
+        clone.querySelectorAll("[data-edit-only], [data-prefill-hint]").forEach(function (el) {
+          el.remove();
+        });
+
+        var form = clone.querySelector("form");
+        form.reset();
+
+        var contentPsdInput = clone.querySelector('[name="content_psd"]');
+        if (contentPsdInput) contentPsdInput.dataset.hasPrior = "false";
+
+        // Collapsed sections always start collapsed on a fresh card, and
+        // Campaign brief (it holds the required fields) always starts
+        // open -- regardless of whatever state the card being cloned
+        // from happened to be in when the button was clicked.
+        clone.querySelectorAll("details.upload-creative-box, details.manual-creative-box").forEach(function (d) {
+          d.removeAttribute("open");
+        });
+        var brief = clone.querySelector("details.campaign-brief-box");
+        if (brief) brief.setAttribute("open", "");
+
+        remapIds(clone, "_c" + campaignCount);
+
+        var removeBtn = document.createElement("button");
+        removeBtn.type = "button";
+        removeBtn.className = "remove-campaign-btn";
+        removeBtn.textContent = "Remove";
+        removeBtn.addEventListener("click", function () {
+          clone.remove();
+          renumberCampaigns();
+        });
+        var header = clone.querySelector(".campaign-card-header");
+        if (header) header.appendChild(removeBtn);
+
+        container.appendChild(clone);
+        initCreativeForm(clone);
+        renumberCampaigns();
+        if (typeof clone.scrollIntoView === "function") {
+          clone.scrollIntoView({ behavior: "smooth", block: "start" });
+        }
+      }
+
+      addBtn.addEventListener("click", addCampaignCard);
+      initCreativeForm(document);
+    })();
+  </script>
 </body>
 </html>
