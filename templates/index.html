@@ -77,7 +77,13 @@
       @apply text-blue-300 text-[0.78rem] font-bold uppercase tracking-wider;
     }
     .campaign-card { @apply mb-8; }
-    .campaign-brief-box > summary { @apply flex items-center justify-between gap-3; }
+    .campaign-brief-box > summary { @apply flex items-center justify-between gap-3; list-style: none; }
+    .campaign-brief-box > summary::-webkit-details-marker { display: none; }
+    .campaign-brief-box > summary .caret {
+      @apply inline-block text-slate-400 mr-1;
+      transition: transform 0.15s ease;
+    }
+    .campaign-brief-box[open] > summary .caret { transform: rotate(90deg); }
     .campaign-card-title { @apply text-slate-400 text-[0.78rem] font-bold uppercase tracking-wider flex-none; }
     .remove-campaign-btn {
       @apply text-slate-500 text-[0.72rem] font-semibold uppercase tracking-wide border border-slate-600 rounded-md px-[0.5rem] py-[0.15rem] cursor-pointer bg-transparent hover:bg-slate-800 hover:text-slate-200;
@@ -126,7 +132,7 @@
 
       <details class="campaign-brief-box" open>
         <summary style="margin-bottom: 0.6rem;">
-          <span>Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></span>
+          <span><span class="caret">&#9656;</span>Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></span>
           <span class="campaign-card-title">Campaign 1</span>
         </summary>
         <div class="hint" style="margin-top: -0.3rem;">
