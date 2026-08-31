@@ -662,6 +662,27 @@
           });
         })(i);
       }
+
+      // A "Location: <name>" line under every image/PSD upload field,
+      // updated the instant a file is chosen -- a browser only ever
+      // exposes the picked file's *name* to page JS (never its real path
+      // on disk, for the same security reason the content-PSD comment
+      // above mentions), so that's what shows here.
+      root.querySelectorAll('input[type="file"]').forEach(function (fileInput) {
+        var locationHint = document.createElement("div");
+        locationHint.className = "hint upload-location-hint";
+        locationHint.hidden = true;
+        fileInput.insertAdjacentElement("afterend", locationHint);
+        fileInput.addEventListener("change", function () {
+          var file = fileInput.files && fileInput.files[0];
+          if (file) {
+            locationHint.textContent = "Location: " + file.name;
+            locationHint.hidden = false;
+          } else {
+            locationHint.hidden = true;
+          }
+        });
+      });
     }
 
     // Gives every element with an `id` inside `root` a unique suffixed id
