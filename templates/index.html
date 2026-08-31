@@ -37,6 +37,13 @@
     .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .manual-creative-box > summary { @apply uppercase tracking-wide; }
     .manual-creative-box.is-disabled { @apply opacity-50 border-slate-700 bg-slate-800/30; }
+    .layer-image-cache { @apply mt-2; }
+    .layer-image-cache-row { @apply flex flex-wrap gap-2 mt-2; }
+    .layer-image-cached { @apply flex items-center gap-2 border border-slate-700 rounded-md bg-slate-900/60 px-2 py-1; }
+    .layer-image-cached img { @apply w-10 h-10 object-contain rounded bg-slate-800; }
+    .layer-image-cached-meta { @apply flex flex-col text-[0.78rem] leading-tight text-slate-300; }
+    .layer-image-cached-name { @apply text-slate-500 max-w-[10rem] truncate; }
+    .layer-image-cached.is-cleared { @apply opacity-40 line-through; }
     .manual-disabled-note { @apply text-amber-300 mt-2 mb-1; }
     .campaign-brief-box { background: #1e293b; }
     .campaign-brief-box > summary { @apply uppercase tracking-wide; }
@@ -191,15 +198,17 @@
         <summary>Upload Creative</summary>
         <label for="content_psd"><span class="psd-badge">PSD</span> 728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
         <div class="hint">
-          Upload just this one <code>.psd</code>, sized 728x480, and every other size saved in your
-          <code>default_templates/</code> folder is generated automatically alongside it. Using this field
-          <strong>ignores</strong> the "Output sizes"/"Custom sizes" choices below and the general hero image --
-          the exported batch is exactly this upload plus whatever's in <code>default_templates/</code>, nothing else.
+          Upload just this one <code>.psd</code> and it restyles the whole campaign: its
+          <code>background</code>, <code>product</code>, <code>logo</code> and <code>cta</code> layers are
+          composited into every saved <code>default_templates/</code> size, each fitted to that size's own
+          layout. An upload within a hair of a saved template's size takes that slot over rather than exporting
+          beside it. The "Output sizes"/"Custom sizes" choices and the general hero image are ignored -- the
+          batch is whatever's in <code>default_templates/</code>, plus this upload if it's a size of its own.
         </div>
         <input type="file" id="content_psd" name="content_psd" accept=".psd" data-has-prior="{{ 'true' if prefill_files.get('content_psd') else 'false' }}">
         {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
-        <div id="layer_overrides_section" data-role="layer-overrides-section" hidden style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
+        <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
             template-covered size whose PSD has a matching named layer (<code>header</code>,
@@ -302,10 +311,36 @@
               <input type="file" id="layer_background_image" name="layer_background_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
           </div>
-          {% if prefill_files.get('layer_logo_image') or prefill_files.get('layer_cta_image') or prefill_files.get('layer_product_image') or prefill_files.get('layer_background_image') %}
-            <div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>
-              Currently set{% if prefill_files.get('layer_logo_image') %} -- logo: <strong>{{ prefill_files.get('layer_logo_image') }}</strong>{% endif %}{% if prefill_files.get('layer_cta_image') %} -- CTA: <strong>{{ prefill_files.get('layer_cta_image') }}</strong>{% endif %}{% if prefill_files.get('layer_product_image') %} -- product: <strong>{{ prefill_files.get('layer_product_image') }}</strong>{% endif %}{% if prefill_files.get('layer_background_image') %} -- background: <strong>{{ prefill_files.get('layer_background_image') }}</strong>{% endif %}.
-              Choose a new file for any of these to replace it, or leave blank to keep it.
+          {% set layer_image_fields = [
+              ('layer_logo_image', 'Logo'),
+              ('layer_cta_image', 'CTA'),
+              ('layer_product_image', 'Product'),
+              ('layer_background_image', 'Background'),
+          ] %}
+          {% set has_layer_images = layer_image_fields | selectattr('0', 'in', prefill_files) | list %}
+          {% if has_layer_images %}
+            <div class="layer-image-cache" data-prefill-hint>
+              <div class="hint" style="margin-top: 0;">
+                Still in play from your last run -- choose a new file to replace one, click &times; to drop it,
+                or leave it alone to keep it.
+              </div>
+              <div class="layer-image-cache-row">
+                {% for field_name, label in layer_image_fields %}
+                  {% if prefill_files.get(field_name) %}
+                    <div class="layer-image-cached" data-role="layer-cached-{{ field_name }}">
+                      {% if edit_job_id %}
+                        <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get(field_name)) }}" alt="{{ label }} layer image">
+                      {% endif %}
+                      <div class="layer-image-cached-meta">
+                        <strong>{{ label }}</strong>
+                        <span class="layer-image-cached-name">{{ prefill_files.get(field_name) }}</span>
+                      </div>
+                      <button type="button" class="clear-btn" data-role="layer-clear-btn-{{ field_name }}" title="Drop this {{ label|lower }} image">&times;</button>
+                      <input type="hidden" name="{{ field_name }}_clear" value="">
+                    </div>
+                  {% endif %}
+                {% endfor %}
+              </div>
             </div>
           {% endif %}
         </div>
@@ -320,8 +355,8 @@
           </div>
           <div class="hint">
             A row here only ever affects the exact size you upload it for -- it never pulls in anything else.
-            <code>default_templates/</code> saved templates are only auto-applied to other sizes when you use the
-            728x480 content PSD field above, not from a row here.
+            <code>default_templates/</code> saved templates are only brought in when you use the content PSD
+            field above, not from a row here.
           </div>
           {% for i in range(1, 5) %}
             <div class="inline-controls" style="margin-top: {% if i == 1 %}0.4rem{% else %}0.6rem{% endif %};">
@@ -383,7 +418,7 @@
 
         <div class="field" style="margin-top: 0.9rem;">
           <label>Output sizes</label>
-          <div class="hint">Pick one or more groups. Leave all unchecked to use the social defaults. <strong>Ignored whenever <code>default_templates/</code> holds saved PSD templates</strong> &mdash; those define the batch, one preview each.</div>
+          <div class="hint">Pick one or more groups. Leave all unchecked to use the social defaults. <strong>Ignored when you upload a content PSD above</strong> &mdash; that campaign&rsquo;s batch comes from <code>default_templates/</code> instead, one preview per saved template.</div>
           {% for value, description in size_presets %}
             <div class="checkbox-row">
               <input type="checkbox" id="size_{{ value }}" name="sizes" value="{{ value }}" {% if prefill.get('sizes') is not none %}{% if value in prefill.get('sizes') %}checked{% endif %}{% elif value == 'default' %}checked{% endif %}>
@@ -394,7 +429,7 @@
 
         <div class="field">
           <label for="custom_sizes">Custom sizes</label>
-          <div class="hint">Comma-separated WIDTHxHEIGHT, e.g. <code>1200x628,970x250</code>. Combined with any groups checked above &mdash; and, like them, ignored while <code>default_templates/</code> holds saved PSD templates.</div>
+          <div class="hint">Comma-separated WIDTHxHEIGHT, e.g. <code>1200x628,970x250</code>. Combined with any groups checked above &mdash; and, like them, ignored when a content PSD is uploaded.</div>
           <input type="text" id="custom_sizes" name="custom_sizes" placeholder="1200x628" value="{{ prefill.get('custom_sizes', '') }}">
         </div>
 
@@ -671,24 +706,10 @@
         syncHero();
       }
 
-      var contentPsdInput = root.querySelector('[name="content_psd"]');
-      var layerSection = root.querySelector('[data-role="layer-overrides-section"]');
-      if (contentPsdInput && layerSection) {
-        // A file input can't be pre-populated with a prior upload (browser
-        // security), so on the Edit page contentPsdInput.files is always
-        // empty even when a content PSD was used last time -- fall back to
-        // this data attribute (set from prefill_files, the carried-forward
-        // file) so the panel doesn't collapse just because nothing's
-        // freshly picked. A cloned campaign card always has this set to
-        // "false" (see addCampaignCard()) since it never has a prior file.
-        var syncContentPsd = function () {
-          var hasPriorContentPsd = contentPsdInput.dataset.hasPrior === "true";
-          var hasFile = (contentPsdInput.files && contentPsdInput.files.length > 0) || hasPriorContentPsd;
-          layerSection.hidden = !hasFile;
-        };
-        contentPsdInput.addEventListener("change", syncContentPsd);
-        syncContentPsd();
-      }
+      // The layer-overrides panel used to be revealed only once a
+      // content PSD was picked, back when default_templates/ was scanned
+      // on that path alone. The folder now drives every batch, so those
+      // fields apply to every run and the panel stays visible.
 
       for (var i = 1; i <= 4; i++) {
         (function (i) {
@@ -707,6 +728,21 @@
           });
         })(i);
       }
+
+      // The (x) on a carried-forward layer image. The hidden field is
+      // what actually tells the server to drop it -- a file input can't
+      // be emptied on the user's behalf, so "left blank" has to keep
+      // meaning "keep what's there".
+      root.querySelectorAll('[data-role^="layer-clear-btn-"]').forEach(function (btn) {
+        btn.addEventListener("click", function () {
+          var chip = btn.closest(".layer-image-cached");
+          if (!chip) return;
+          var flag = chip.querySelector('input[type="hidden"]');
+          if (flag) flag.value = "1";
+          chip.classList.add("is-cleared");
+          btn.disabled = true;
+        });
+      });
 
       // "Upload Creative" and "Manual Creative" are mutually exclusive.
       // A PSD template is exported exactly as designed -- render_creative()

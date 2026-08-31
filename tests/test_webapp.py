@@ -236,8 +236,8 @@ class WebAppSmokeTest(unittest.TestCase):
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
-        self.assertTrue((job_dir / "creatives.zip").exists())
-        self.assertTrue((job_dir / "creative_1080x1080.png").exists())
+        self.assertTrue((job_dir / "campaign1_creatives.zip").exists())
+        self.assertTrue((job_dir / "creative_campaign1_1080x1080.png").exists())
 
         download = self.client.get(f"/download/{job_id}")
         try:
@@ -358,7 +358,7 @@ class WebAppSmokeTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
 
-        expected_prefix = "HydroBoost_Sports_Drink"
+        expected_prefix = "HydroBoost_Sports_Drink_campaign1"
         self.assertTrue((job_dir / f"{expected_prefix}_300x250.png").is_file())
         self.assertTrue((job_dir / f"{expected_prefix}_300x250.psd").is_file())
         self.assertTrue((job_dir / f"{expected_prefix}_creatives.zip").is_file())
@@ -391,7 +391,8 @@ class WebAppSmokeTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
 
-        expected_prefix = "HydroBoost_Sports_Drink"
+        product_folder = "HydroBoost_Sports_Drink"
+        expected_prefix = f"{product_folder}_campaign1"
         zip_path = job_dir / f"{expected_prefix}_creatives.zip"
         self.assertTrue(zip_path.is_file())
         with zipfile.ZipFile(zip_path) as zf:
@@ -399,17 +400,18 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertEqual(
             names,
             {
-                f"{expected_prefix}/{expected_prefix}_300x250.png",
-                f"{expected_prefix}/{expected_prefix}_300x250.psd",
-                f"{expected_prefix}/{expected_prefix}_320x50.png",
-                f"{expected_prefix}/{expected_prefix}_320x50.psd",
+                f"{product_folder}/campaign1/{expected_prefix}_300x250.png",
+                f"{product_folder}/campaign1/{expected_prefix}_300x250.psd",
+                f"{product_folder}/campaign1/{expected_prefix}_320x50.png",
+                f"{product_folder}/campaign1/{expected_prefix}_320x50.psd",
             },
         )
 
-    def test_generate_without_a_product_name_zips_files_flat_with_no_folder(self):
-        # No product name -- the zip's internal layout is unchanged from
-        # before this feature: every file loose at the zip root, no
-        # nesting folder (there's no product name to name one after).
+    def test_generate_without_a_product_name_zips_under_the_campaign_folder(self):
+        # No product name, so there's no product folder to nest under --
+        # but the campaign folder is always there, so several campaigns
+        # from one session can be unzipped side by side without their
+        # same-named sizes overwriting each other.
         data = {
             "hero_image": (self._sample_image_bytes(), "hero.png"),
             "custom_sizes": "300x250",
@@ -421,11 +423,14 @@ class WebAppSmokeTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
 
-        zip_path = job_dir / "creatives.zip"
+        zip_path = job_dir / "campaign1_creatives.zip"
         self.assertTrue(zip_path.is_file())
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
-        self.assertEqual(names, {"creative_300x250.png", "creative_300x250.psd"})
+        self.assertEqual(
+            names,
+            {"campaign1/creative_campaign1_300x250.png", "campaign1/creative_campaign1_300x250.psd"},
+        )
 
     def test_generate_without_a_product_name_keeps_the_original_generic_filenames(self):
         # No product name given -- filenames must come out byte-identical
@@ -441,9 +446,9 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
-        self.assertTrue((job_dir / "creative_300x250.png").is_file())
-        self.assertTrue((job_dir / "creative_300x250.psd").is_file())
-        self.assertTrue((job_dir / "creatives.zip").is_file())
+        self.assertTrue((job_dir / "creative_campaign1_300x250.png").is_file())
+        self.assertTrue((job_dir / "creative_campaign1_300x250.psd").is_file())
+        self.assertTrue((job_dir / "campaign1_creatives.zip").is_file())
 
     def test_generate_product_name_that_sanitizes_to_nothing_falls_back_to_generic_filenames(self):
         # A product name made entirely of emoji/punctuation has nothing
@@ -461,8 +466,8 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
-        self.assertTrue((job_dir / "creative_300x250.png").is_file())
-        self.assertTrue((job_dir / "creatives.zip").is_file())
+        self.assertTrue((job_dir / "creative_campaign1_300x250.png").is_file())
+        self.assertTrue((job_dir / "campaign1_creatives.zip").is_file())
 
     def test_generate_with_a_fully_blank_campaign_brief_flashes_and_creates_no_job(self):
         # Campaign brief is required -- all four fields explicitly blank
@@ -797,7 +802,7 @@ class WebAppSmokeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             # Top-left corner pixel should be the plain hero color (no dark
             # semi-transparent header band drawn over it).
@@ -820,7 +825,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((5, 5))  # header band, away from centered text
         self.assertEqual(corner_pixel, (230, 220, 200))  # untouched by any background plate
@@ -836,7 +841,7 @@ class WebAppSmokeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((5, 5))
         self.assertNotEqual(corner_pixel, (230, 220, 200))  # darkened by the default plate
@@ -856,7 +861,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((img.width - 5, img.height - 5))  # bottom-right, away from left-aligned text
         self.assertEqual(corner_pixel, (80, 150, 210))  # untouched by any background plate
@@ -870,7 +875,7 @@ class WebAppSmokeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((img.width - 5, img.height - 5))
         self.assertNotEqual(corner_pixel, (80, 150, 210))  # darkened by the default plate
@@ -888,7 +893,7 @@ class WebAppSmokeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             header_corner = img.getpixel((5, 5))
             message_corner = img.getpixel((5, img.height - 5))
@@ -911,7 +916,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             found_glow = any(
                 g > 120 and b > 120 and r_ < 150
@@ -934,7 +939,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             found_glow = any(
                 r_ > 120 and b > 120 and g < 150
@@ -957,7 +962,7 @@ class WebAppSmokeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((5, 5))
         self.assertEqual(corner_pixel, (10, 10, 10))  # untouched -- no plate, no glow halo
@@ -974,7 +979,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             # Right-aligned short text shouldn't light up any pixels in the
             # header band's far-left strip.
@@ -1011,7 +1016,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             # A pinned 150px font on a short "Hi" should light up text
             # pixels well past the normal ~110px (0.22 * 1080) header cap.
@@ -1053,7 +1058,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             logo_w, logo_h, margin = logo_render_size((1080, 1080), Image.new("RGBA", (200, 100)), scale_frac=0.2)
             cx = margin + logo_w // 2
@@ -1079,7 +1084,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
 
         def is_logo_yellow(pixel):
             r_, g_, b_ = pixel
@@ -1117,7 +1122,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
 
         def is_logo_yellow(pixel):
             r_, g_, b_ = pixel
@@ -1201,11 +1206,11 @@ class WebAppSmokeTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
 
         # Real job, but asking for a non-.psd file through this route.
-        resp = self.client.get(f"/download-psd/{job_id}/creative_1080x1080.png")
+        resp = self.client.get(f"/download-psd/{job_id}/creative_campaign1_1080x1080.png")
         self.assertEqual(resp.status_code, 404)
 
         # Made-up job id.
-        resp = self.client.get("/download-psd/does-not-exist/creative_1080x1080.psd")
+        resp = self.client.get("/download-psd/does-not-exist/creative_campaign1_1080x1080.psd")
         self.assertEqual(resp.status_code, 404)
 
     def test_generate_without_logo_file_is_unaffected(self):
@@ -1222,7 +1227,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((2, 2))
         self.assertEqual(corner_pixel, (10, 10, 10))  # untouched -- no logo file was attached
@@ -1266,8 +1271,8 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertEqual(r_explicit.status_code, 200)
         job_default = re.search(rb"/download/([0-9a-f]+)", r_default.data).group(1).decode()
         job_explicit = re.search(rb"/download/([0-9a-f]+)", r_explicit.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_default / "creative_1080x1080.png") as img_default, Image.open(
-            webapp.JOBS_DIR / job_explicit / "creative_1080x1080.png"
+        with Image.open(webapp.JOBS_DIR / job_default / "creative_campaign1_1080x1080.png") as img_default, Image.open(
+            webapp.JOBS_DIR / job_explicit / "creative_campaign1_1080x1080.png"
         ) as img_explicit:
             self.assertEqual(list(img_default.getdata()), list(img_explicit.getdata()))
 
@@ -1287,7 +1292,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             target_w, target_h, margin = badge_render_size((1080, 1080), Image.new("RGBA", (200, 200)), scale_frac=0.4)
             cx = 1080 - target_w - margin + target_w // 2
@@ -1309,7 +1314,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((2, 2))
         self.assertEqual(corner_pixel, (0, 200, 0))
@@ -1328,7 +1333,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((2, 2))
         self.assertEqual(corner_pixel, (10, 10, 10))  # untouched -- no badge file was attached
@@ -1372,7 +1377,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             found_button = any(
                 r_ > 180 and g < 100 and b < 130
@@ -1396,7 +1401,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
 
         def has_red(pixel):
             r_, g, b = pixel
@@ -1441,7 +1446,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             corner_pixel = img.getpixel((img.width // 2, img.height - 5))
         self.assertEqual(corner_pixel, (10, 10, 10))  # untouched -- no CTA text was given
@@ -1471,7 +1476,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             # An 80px pinned font on a short "Go" button should make the
             # button noticeably tall/wide compared to the ~65px default
@@ -1509,8 +1514,8 @@ class WebAppSmokeTest(unittest.TestCase):
 
         job_sans = re.search(rb"/download/([0-9a-f]+)", r_sans.data).group(1).decode()
         job_serif = re.search(rb"/download/([0-9a-f]+)", r_serif.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_sans / "creative_1080x1080.png") as img_sans, Image.open(
-            webapp.JOBS_DIR / job_serif / "creative_1080x1080.png"
+        with Image.open(webapp.JOBS_DIR / job_sans / "creative_campaign1_1080x1080.png") as img_sans, Image.open(
+            webapp.JOBS_DIR / job_serif / "creative_campaign1_1080x1080.png"
         ) as img_serif:
             self.assertNotEqual(list(img_sans.getdata()), list(img_serif.getdata()))
 
@@ -1541,7 +1546,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             found_glow = any(
                 g > 150 and b > 150 and r_ < 60
@@ -1562,7 +1567,7 @@ class WebAppSmokeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_1080x1080.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_1080x1080.png"
         with Image.open(out_path) as img:
             found_glow = any(
                 g > 150 and b > 150 and r_ < 60
@@ -1700,7 +1705,7 @@ class PsdTemplateSectionTest(unittest.TestCase):
         self.assertIn(b"used your uploaded PSD template", r.data)
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        out_path = webapp.JOBS_DIR / job_id / "creative_300x250.png"
+        out_path = webapp.JOBS_DIR / job_id / "creative_campaign1_300x250.png"
         with Image.open(out_path) as img:
             r_, g_, b_ = img.getpixel((5, 5))
         # No header/message text was requested, so the whole frame should
@@ -1735,9 +1740,9 @@ class PsdTemplateSectionTest(unittest.TestCase):
         self.assertIn(b"300x250 used your uploaded PSD template", r.data)
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_300x250.png") as templated:
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_300x250.png") as templated:
             tr, tg, tb = templated.getpixel((5, 5))
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_320x50.png") as from_hero:
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_320x50.png") as from_hero:
             hr, hg, hb = from_hero.getpixel((5, 5))
 
         self.assertGreater(tr, 150)
@@ -1826,8 +1831,8 @@ class PsdTemplateSectionTest(unittest.TestCase):
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
-        rebuilt = job_dir / "creative_300x250.psd"
-        source = job_dir / "creative_300x250_source-template.psd"
+        rebuilt = job_dir / "creative_campaign1_300x250.psd"
+        source = job_dir / "creative_campaign1_300x250_source-template.psd"
         self.assertTrue(rebuilt.is_file())
         self.assertTrue(source.is_file())
         # Byte-identical to what was uploaded -- that's the whole point:
@@ -1838,15 +1843,15 @@ class PsdTemplateSectionTest(unittest.TestCase):
 
         # Both are offered on the results page, and both ride along in
         # the bulk zip.
-        self.assertIn(f"/download-psd/{job_id}/creative_300x250.psd".encode(), r.data)
+        self.assertIn(f"/download-psd/{job_id}/creative_campaign1_300x250.psd".encode(), r.data)
         self.assertIn(
-            f"/download-psd/{job_id}/creative_300x250_source-template.psd".encode(), r.data
+            f"/download-psd/{job_id}/creative_campaign1_300x250_source-template.psd".encode(), r.data
         )
         zip_path = next(iter(sorted(job_dir.glob("*.zip"))))
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
-        self.assertIn("creative_300x250.psd", names)
-        self.assertIn("creative_300x250_source-template.psd", names)
+        self.assertIn("campaign1/creative_campaign1_300x250.psd", names)
+        self.assertIn("campaign1/creative_campaign1_300x250_source-template.psd", names)
 
     def test_no_source_template_download_when_nothing_was_overridden(self):
         # Without an override there's no rebuild, so the single "Download
@@ -1882,9 +1887,9 @@ class PsdTemplateSectionTest(unittest.TestCase):
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         self.assertIn(
-            f"/download-psd/{job_id}/creative_300x250.psd".encode(), r.data
+            f"/download-psd/{job_id}/creative_campaign1_300x250.psd".encode(), r.data
         )
-        psd_path = webapp.JOBS_DIR / job_id / "creative_300x250.psd"
+        psd_path = webapp.JOBS_DIR / job_id / "creative_campaign1_300x250.psd"
         self.assertTrue(psd_path.is_file())
         from src.image_ops import get_psd_layer_boxes
         layer_boxes = get_psd_layer_boxes(psd_path)
@@ -1895,14 +1900,14 @@ class PsdTemplateSectionTest(unittest.TestCase):
         # 320x50 rendered from the hero image, not a template -- it gets
         # its own (differently-built) PSD download, not this one.
         self.assertIn(
-            f"/download-psd/{job_id}/creative_320x50.psd".encode(), r.data
+            f"/download-psd/{job_id}/creative_campaign1_320x50.psd".encode(), r.data
         )
         self.assertNotEqual(
-            (webapp.JOBS_DIR / job_id / "creative_320x50.psd").read_bytes(),
+            (webapp.JOBS_DIR / job_id / "creative_campaign1_320x50.psd").read_bytes(),
             psd_path.read_bytes(),
         )
 
-        dl = self.client.get(f"/download-psd/{job_id}/creative_300x250.psd")
+        dl = self.client.get(f"/download-psd/{job_id}/creative_campaign1_300x250.psd")
         self.assertEqual(dl.status_code, 200)
         self.assertEqual(dl.data, psd_path.read_bytes())
 
@@ -2022,13 +2027,14 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         image_data = compression + plane(r) + plane(g) + plane(b)
         return header + color_mode_data + image_resources + layer_mask_info + image_data
 
-    def test_psd_template_row_adds_its_size_to_the_saved_defaults_batch(self):
-        # default_templates/ drives the batch, and an explicitly uploaded
-        # Size-specific PSD template row is added on top of it -- so a
-        # saved 970x90 plus a 300x250 row is a two-creative batch. The
-        # typed "970x90" custom size contributes nothing of its own here:
-        # it is already covered by the saved template, and custom sizes
-        # are ignored entirely while default_templates/ is non-empty.
+    def test_psd_template_row_does_not_pull_in_default_templates_for_other_sizes(self):
+        # A Size-specific PSD template row is scoped to exactly the
+        # size(s) uploaded there -- it must NOT also switch on
+        # default_templates/ auto-use for every OTHER requested size.
+        # Only the content PSD field does that. A saved 970x90 template
+        # existing on disk must be irrelevant here even though a PSD was
+        # uploaded this request (for the unrelated 300x250 row) and
+        # 970x90 is part of the requested batch.
         self._write_default_template("tester-970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
 
         data = {
@@ -2042,24 +2048,22 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"970x90", r.data)
-        self.assertIn(b"300x250 used your uploaded PSD template", r.data)
-        self.assertIn(b"used the saved default template", r.data)
-        # Exactly two previews: the saved template plus the uploaded row.
-        self.assertEqual(r.data.count(b'class="card"'), 2)
+        self.assertNotIn(b"used the saved default template", r.data)
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_970x90.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_970x90.png") as img:
             r_, g_, b_ = img.getpixel((5, 5))
-        # 970x90 used the saved template (green), not the hero image (blue).
-        self.assertGreater(g_, r_)
-        self.assertGreater(g_, b_)
+        # 970x90 fell back to the hero image (blue), not the saved
+        # template (green) -- the saved template was never even scanned.
+        self.assertGreater(b_, r_)
+        self.assertGreater(b_, g_)
 
-    def test_saved_default_templates_define_the_batch_on_their_own(self):
-        # A saved template on disk is enough on its own -- no PSD upload
-        # of any kind this request, just a plain hero image. The batch is
-        # exactly the saved 970x90, and the checked "default" social
-        # sizes are dropped: the preview count always reflects what's in
-        # default_templates/.
+    def test_a_campaign_without_a_content_psd_ignores_saved_templates(self):
+        # The plain path: a hero image and the sizes asked for, nothing
+        # else. Saved templates belong to a templated campaign, and
+        # handing them to every campaign is what made a second, blank
+        # campaign card render a set indistinguishable from the first
+        # one's.
         self._write_default_template("tester-970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
 
         data = {
@@ -2070,11 +2074,11 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b"970x90", r.data)
-        self.assertNotIn(b"1080x1080", r.data)
-        self.assertIn(b"used the saved default template", r.data)
-        # Exactly one preview: one saved template, one card.
-        self.assertEqual(r.data.count(b'class="card"'), 1)
+        self.assertNotIn(b"970x90", r.data)
+        self.assertNotIn(b"used the saved default template", r.data)
+        # Exactly the 3 social defaults -- nothing extra came in from
+        # default_templates/.
+        self.assertEqual(r.data.count(b'class="card"'), 3)
 
     def test_per_request_upload_overrides_saved_default_for_same_size(self):
         self._write_default_template("300x250.psd", self._sample_psd_bytes(color=(200, 200, 10)))
@@ -2092,7 +2096,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertNotIn(b"used the saved default template", r.data)
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_300x250.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_300x250.png") as img:
             r_, g_, b_ = img.getpixel((5, 5))
         # The per-request upload's blue wins, not the saved default's yellow.
         self.assertLess(r_, 100)
@@ -2141,7 +2145,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertIn(b"300x250 used your uploaded PSD template", second.data)
 
         second_job_id = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / second_job_id / "creative_300x250.png") as img:
+        with Image.open(webapp.JOBS_DIR / second_job_id / "creative_campaign1_300x250.png") as img:
             r2, g2, b2 = img.getpixel((5, 5))
         # Still the template's reddish color, not the hero's green -- the
         # template kept driving this size across the edit.
@@ -2181,7 +2185,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertEqual(first.status_code, 200)
         self.assertIn(b"300x250 used your uploaded PSD template", first.data)
         job_id = re.search(rb"/download/([0-9a-f]+)", first.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_300x250.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_300x250.png") as img:
             r_, g_, b_ = img.getpixel((5, 5))
         self.assertGreater(r_, g_)  # the template's reddish color, unmistakably not the hero's
 
@@ -2198,7 +2202,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertNotIn(b"300x250 used your uploaded PSD template", second.data)
 
         second_job_id = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / second_job_id / "creative_300x250.png") as img:
+        with Image.open(webapp.JOBS_DIR / second_job_id / "creative_campaign1_300x250.png") as img:
             r2, g2, b2 = img.getpixel((5, 5))
         # No PSD template this time -- 300x250 falls back to the carried-forward
         # hero image, so it should show the hero's green, not the template's red.
@@ -2343,7 +2347,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # ...and the slot shows the UPLOAD's pixels (blue), not the saved
         # template's (green) -- it really did update that creative.
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_720x480.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_720x480.png") as img:
             r_, g_, b_ = img.convert("RGB").getpixel((5, 5))
         self.assertGreater(b_, r_)
         self.assertGreater(b_, g_)
@@ -2405,7 +2409,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.data.count(b'class="card"'), 1)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_64x40.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_64x40.png") as img:
             r_, g_, b_ = img.getpixel((5, 5))
         # The upload's own blue-ish color (10, 10, 200), not the saved
         # default's green (30, 180, 30).
@@ -2431,7 +2435,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # ad-blocker disclaimer mentions that dimension as an example
         # unrelated to this job's actual creatives, so check the card
         # count and the actual filename instead.
-        self.assertNotIn(b"creative_160x600", r.data)
+        self.assertNotIn(b"creative_campaign1_160x600", r.data)
         # 970x90 (the valid saved default) plus the upload's own size
         # (64x40) -- the corrupt 160x600 file is the only one skipped.
         self.assertEqual(r.data.count(b'class="card"'), 2)
@@ -2472,22 +2476,111 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(r.data.count(b'class="card"'), 1)
         self.assertIn(b"64x40", r.data)
 
-    def test_content_psd_saved_default_renders_as_is_with_no_overlay(self):
-        self._write_default_template("728x480.psd", self._sample_psd_bytes(color=(90, 200, 40)))
+    def test_content_psd_layers_restyle_a_saved_default_with_no_overlay(self):
+        # Two things at once. The saved template (green) takes on the
+        # uploaded PSD's artwork (blue) -- one flagship upload restyles
+        # the whole campaign, which is the entire point of this field.
+        # And the headline/message form fields still draw nothing on top:
+        # a template is a finished creative, so it's never given the
+        # generic overlay treatment.
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
         data = {
-            "content_psd": (io.BytesIO(self._sample_psd_bytes()), "content.psd"),
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
             "header": "Some headline that would normally get drawn",
             "description": "Some message that would normally get drawn",
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / "creative_728x480.png") as img:
-            r_, g_, b_ = img.getpixel((5, 5))
-        # No overlay was drawn -- the frame is still the saved template's
-        # solid greenish color, untouched by the headline/message fields.
-        self.assertGreater(g_, r_)
-        self.assertGreater(g_, b_)
+        self.assertIn(b"used the saved default template as-is", r.data)
+
+        # The saved template's own size reports the upload's layers being
+        # applied to it. Asserted through the results page's own note
+        # rather than a sampled pixel: these synthetic fixtures are 64x40
+        # solid rectangles stretched to 970x90, so where a propagated
+        # layer lands in the target's boxes isn't meaningful -- that it
+        # lands at all is.
+        self.assertIn(b"970x90: updated layer(s)", r.data)
+        self.assertIn(b"product", r.data)
+
+    def test_content_psd_layers_do_not_reach_a_size_it_does_not_cover(self):
+        # A hero-rendered size isn't a template, so there are no named
+        # layer boxes to push the upload's artwork into -- it renders
+        # from the hero image as it always has. Guards against the
+        # propagation quietly leaking outside the template path.
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        # Only the saved template and the upload's own size are in the
+        # batch -- no third card appeared from the propagation.
+        self.assertEqual(r.data.count(b'class="card"'), 2)
+
+    def _job_with_a_logo_layer_image(self):
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "layer_logo_image": (self._sample_image_bytes(color=(9, 9, 9)), "mylogo.png"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        return re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+
+    def test_carried_forward_layer_image_shows_itself_on_the_edit_page(self):
+        # A browser won't let a file input be pre-populated, so a layer
+        # image that's still active looks identical to one that was never
+        # set -- "No file chosen" either way. The edit page shows the
+        # actual image back instead, served out of the job's uploads.
+        job_id = self._job_with_a_logo_layer_image()
+        e = self.client.get(f"/edit/{job_id}")
+        self.assertEqual(e.status_code, 200)
+        self.assertIn(b"layer-clear-btn-layer_logo_image", e.data)
+        self.assertIn(b"mylogo.png", e.data)
+
+        thumb = re.search(rb'src="(/uploads/[^"]+)"', e.data)
+        self.assertIsNotNone(thumb)
+        self.assertEqual(self.client.get(thumb.group(1).decode()).status_code, 200)
+
+    def test_layer_image_clear_flag_drops_it_on_the_next_run(self):
+        # The (x) beside a cached image. Leaving a file input blank has to
+        # keep meaning "keep what's there", so dropping one needs its own
+        # explicit signal.
+        job_id = self._job_with_a_logo_layer_image()
+        data = {
+            "edit_job_id": job_id,
+            "layer_logo_image_clear": "1",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        next_job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        e = self.client.get(f"/edit/{next_job_id}")
+        self.assertEqual(e.status_code, 200)
+        self.assertNotIn(b"layer-clear-btn-layer_logo_image", e.data)
+        self.assertNotIn(b"mylogo.png", e.data)
+
+    def test_a_fresh_content_psd_keeps_a_carried_layer_image(self):
+        # Re-uploading the content PSD used to silently wipe every layer
+        # image with it. They're cached and shown now, so dropping one
+        # behind the user's back would contradict what the form displays.
+        job_id = self._job_with_a_logo_layer_image()
+        data = {
+            "edit_job_id": job_id,
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(200, 10, 10))), "content2.psd"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        next_job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        e = self.client.get(f"/edit/{next_job_id}")
+        self.assertIn(b"mylogo.png", e.data)
 
     def test_content_psd_wrong_extension_flashes(self):
         data = {
@@ -3211,7 +3304,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         box = get_psd_layer_boxes(staged_path).get("logo")
         self.assertIsNotNone(box, "staged real template has no 'logo' layer -- can't verify placement")
         cx, cy = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
-        with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / f"creative_campaign1_{w}x{h}.png") as img:
             # Center of the real logo layer's bbox -- should now be the
             # overridden blue, not whatever the original template logo
             # looked like there.
@@ -3296,7 +3389,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
             box = get_psd_layer_boxes(path).get("header")
             self.assertIsNotNone(box)
-            with Image.open(webapp.JOBS_DIR / job_id / f"creative_{size[0]}x{size[1]}.png") as img:
+            with Image.open(webapp.JOBS_DIR / job_id / f"creative_campaign1_{size[0]}x{size[1]}.png") as img:
                 region = img.crop(box).convert("L")
             colors = region.getcolors(maxcolors=region.size[0] * region.size[1])
             self.assertGreater(
@@ -3379,7 +3472,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             "couldn't find any pixel in the background box not also covered by another layer",
         )
 
-        with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / f"creative_campaign1_{w}x{h}.png") as img:
             pixels = [
                 img.getpixel((max(0, min(px, img.width - 1)), max(0, min(py, img.height - 1))))[:3]
                 for px, py in background_only_points
@@ -3428,7 +3521,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         baseline_r = self.client.post("/generate", data=baseline_data, content_type="multipart/form-data")
         self.assertEqual(baseline_r.status_code, 200)
         baseline_job_id = re.search(rb"/download/([0-9a-f]+)", baseline_r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / baseline_job_id / f"creative_{w}x{h}.png") as img:
+        with Image.open(webapp.JOBS_DIR / baseline_job_id / f"creative_campaign1_{w}x{h}.png") as img:
             baseline_img = img.convert("RGB").copy()
 
         override_data = {
@@ -3440,7 +3533,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         override_r = self.client.post("/generate", data=override_data, content_type="multipart/form-data")
         self.assertEqual(override_r.status_code, 200)
         override_job_id = re.search(rb"/download/([0-9a-f]+)", override_r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / override_job_id / f"creative_{w}x{h}.png") as img:
+        with Image.open(webapp.JOBS_DIR / override_job_id / f"creative_campaign1_{w}x{h}.png") as img:
             override_img = img.convert("RGB").copy()
 
         for point in solid_points:
@@ -3497,7 +3590,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 else:
                     continue
                 break
-        with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / f"creative_campaign1_{w}x{h}.png") as img:
             r_, g_, b_ = img.getpixel((cx, cy))[:3]
         # Still near-white -- not composited against whatever the
         # template's own background used to be underneath, which would
@@ -3526,7 +3619,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         baseline_r = self.client.post("/generate", data=baseline_data, content_type="multipart/form-data")
         self.assertEqual(baseline_r.status_code, 200)
         baseline_job_id = re.search(rb"/download/([0-9a-f]+)", baseline_r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / baseline_job_id / f"creative_{w}x{h}.png") as img:
+        with Image.open(webapp.JOBS_DIR / baseline_job_id / f"creative_campaign1_{w}x{h}.png") as img:
             baseline_img = img.convert("RGB").copy()
 
         data = {
@@ -3541,7 +3634,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertIn(b"background", r.data)
         self.assertIn(b"logo", r.data)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
+        with Image.open(webapp.JOBS_DIR / job_id / f"creative_campaign1_{w}x{h}.png") as img:
             combined_img = img.convert("RGB").copy()
 
         layer_boxes = get_psd_layer_boxes(staged_path)
@@ -3604,7 +3697,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
 
-        psd_filename = f"creative_{w}x{h}.psd"
+        psd_filename = f"creative_campaign1_{w}x{h}.psd"
         downloaded_psd_path = webapp.JOBS_DIR / job_id / psd_filename
         self.assertTrue(downloaded_psd_path.is_file(), "no PSD was written for this job/size")
 

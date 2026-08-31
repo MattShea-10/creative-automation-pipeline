@@ -78,7 +78,13 @@
 </head>
 <body>
   <div class="wrap">
-    <h1>Your creatives are ready</h1>
+    <h1>Your creatives are ready{% if campaign_slot %} &mdash; campaign {{ campaign_slot }}{% endif %}</h1>
+    {% if campaign_slot %}
+      <p class="hint" style="margin-top: -0.4rem;">
+        Every file below is named <code>..._campaign{{ campaign_slot }}_&lt;size&gt;</code> and the zip nests them
+        under a <code>campaign{{ campaign_slot }}/</code> folder, so campaigns don't overwrite each other.
+      </p>
+    {% endif %}
     <p class="subtitle">{{ creatives|length }} size{{ 's' if creatives|length != 1 else '' }} rendered, fit mode: <strong>{{ fit_mode }}</strong>.</p>
 
     {% if product_name or market or audience or campaign_message %}

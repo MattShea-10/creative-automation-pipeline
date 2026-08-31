@@ -124,6 +124,52 @@ CONTENT_PSD_SIZE = (728, 480)
 # names. See get_psd_layer_boxes() for how layer names are read.
 REQUIRED_PSD_LAYERS = ("logo", "description", "product")
 
+# Which of a quick-campaign content PSD's own layers get pushed out to
+# every OTHER size in the batch. That upload is the flagship design for
+# the campaign, so its artwork is meant to restyle the whole set, not
+# just fill its own slot -- one upload, a re-skinned campaign. Text isn't
+# in this list: the header/description fields already apply across every
+# template size on their own.
+PROPAGATED_CONTENT_PSD_LAYERS = ("background", "product", "logo", "cta")
+
+
+def _content_psd_layer_images(psd_path) -> dict:
+    """Pull a content PSD's named layers out as standalone RGBA images,
+    keyed by lowercased layer name, ready to be fed straight into the
+    same layer-override machinery a manual per-layer upload uses.
+
+    Each layer arrives from get_psd_layer_stack() as a canvas-sized image
+    that's transparent everywhere except where that layer draws. A
+    foreground layer is cropped to its own drawn content first -- that's
+    what a user uploading a logo or product cutout by hand would provide,
+    and it's what lets apply_layer_image_override() fit it into a
+    different size's box instead of scaling a mostly-empty canvas.
+    "background" is left full-canvas, since its override fills the box
+    edge to edge rather than being fitted inside it.
+
+    Returns {} when the layer stack can't be read at all -- the caller
+    treats that as "nothing to propagate" and every other size just
+    renders from its saved template unchanged, exactly as before.
+    """
+    stack = get_psd_layer_stack(psd_path)
+    if not stack:
+        return {}
+    images = {}
+    for name, layer_image in stack:
+        key = name.strip().lower()
+        if key not in PROPAGATED_CONTENT_PSD_LAYERS:
+            continue
+        if key == "background":
+            images[key] = layer_image
+            continue
+        content_box = layer_image.getbbox()
+        if content_box is None:
+            # An empty layer -- propagating it would blank that box on
+            # every other size rather than restyle it.
+            continue
+        images[key] = layer_image.crop(content_box)
+    return images
+
 # All the plain (non-file) fields captured into form_state.json for the
 # Edit button (see /edit/<job_id>) -- everything the form can prefill
 # except the multi-value "sizes" checkboxes (handled separately, since
@@ -559,7 +605,18 @@ def generate():
     # product name was given (or it didn't sanitize down to anything
     # usable), so a batch with no product name is unaffected.
     product_name_slug = _slugify_for_filename(product_name) if product_name else ""
-    file_name_prefix = product_name_slug or "creative"
+    # Which campaign card on the page this submission came from. Parsed
+    # up here rather than down with the rest of the session bookkeeping
+    # because it names files: two campaign cards in one session are two
+    # separate jobs producing the same sizes, so without it their
+    # downloads are same-named files that overwrite each other in
+    # whatever folder they're unzipped into.
+    try:
+        campaign_slot = int((request.form.get("campaign_slot") or "1").strip())
+    except ValueError:
+        campaign_slot = 1
+    campaign_label = f"campaign{campaign_slot}"
+    file_name_prefix = f"{product_name_slug}_{campaign_label}" if product_name_slug else f"creative_{campaign_label}"
     market = (request.form.get("market") or "").strip() or None
     audience = (request.form.get("audience") or "").strip() or None
     campaign_message = (request.form.get("campaign_message") or "").strip() or None
@@ -799,14 +856,22 @@ def generate():
     background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
 
-    # Saved default templates (default_templates/) define the batch.
-    # Whatever .psd files are sitting in that folder ARE the set of
-    # creatives this app exports -- one preview per saved template and
-    # nothing else -- so the scan runs on every request, rather than only
-    # on the quick-campaign content-PSD path it used to be gated behind.
-    # The "Output sizes"/"Custom sizes" controls are a fallback for an
-    # empty folder (see the sizes merge further down).
-    default_templates, default_template_paths = _default_size_templates()
+    # Saved default templates (default_templates/) define the batch, but
+    # only for a templated campaign -- one where the quick-campaign
+    # content PSD field was used. That upload is the flagship design the
+    # rest of the set is built from, so the folder is what it gets built
+    # against.
+    #
+    # A campaign WITHOUT that upload is the plain path: a hero image and
+    # the sizes asked for, nothing more. Scanning the folder there would
+    # hand every such campaign the same seven saved templates -- which is
+    # how a second campaign card, cloned blank with its file inputs
+    # reset, ended up previewing a set indistinguishable from the first
+    # one's.
+    if content_psd_provided:
+        default_templates, default_template_paths = _default_size_templates()
+    else:
+        default_templates, default_template_paths = {}, {}
     if content_psd_provided and not default_templates:
         background_notes.append(
             "default_templates/ doesn't have any saved templates yet -- only the "
@@ -814,6 +879,7 @@ def generate():
         )
     size_templates = dict(default_templates)
     size_template_paths = dict(default_template_paths)
+    content_psd_size = None
     if content_psd_provided:
         # Snapped rather than added: an upload a few pixels off a saved
         # template's size is a new version of that creative, not an extra
@@ -911,13 +977,11 @@ def generate():
                 )
                 return redirect(url_for("index"))
             layer_path = _save_upload(layer_file, uploads_dir)
-        elif content_psd_fresh:
-            # A freshly reuploaded 728x480 content PSD is a new creative --
-            # a logo/CTA/product image update from the *previous* creative
-            # almost certainly doesn't belong on this one (different
-            # layout, different layer boxes, maybe not even the same
-            # product), so it's dropped here rather than silently carried
-            # forward. Re-upload it again if it should still apply.
+        elif request.form.get(f"{field_name}_clear"):
+            # The (x) next to a carried-forward image. Without an explicit
+            # signal there'd be no way to take one back off: a file input
+            # can't be emptied on the user's behalf, so "left blank" has
+            # to keep meaning "keep what's there".
             layer_path = None
         else:
             layer_path = _carry_forward_upload(field_name, uploads_dir, prior_job_dir, prior_form_state)
@@ -941,14 +1005,27 @@ def generate():
             layer_image = auto_transparent_background(layer_image)
         layer_image_overrides[layer_name] = layer_image
 
-    # default_templates/ is the source of truth for what gets exported.
-    # When it holds saved templates, the batch is exactly those sizes
-    # plus anything explicitly uploaded on this request (a size-specific
-    # PSD template row, or the quick-campaign content PSD) -- the "Output
-    # sizes"/"Custom sizes" selections are deliberately dropped so the
-    # number of previews always reflects what's in default_templates/.
-    # With an empty folder there's nothing to drive the batch, so those
-    # selections are honored as before.
+    # The uploaded content PSD's own layers become overrides for every
+    # other template size -- the point of the quick-campaign field is
+    # "upload one flagship PSD and get the campaign", which means the
+    # other sizes have to actually take on its artwork instead of
+    # rendering from their saved templates untouched. A layer the user
+    # uploaded by hand above wins; this only fills the gaps.
+    propagated_layer_names = set()
+    if content_psd_provided:
+        for layer_name, layer_image in _content_psd_layer_images(content_psd_path).items():
+            if layer_name in layer_image_overrides:
+                continue
+            layer_image_overrides[layer_name] = layer_image
+            propagated_layer_names.add(layer_name)
+
+    # For a templated campaign, default_templates/ is the source of
+    # truth: the batch is exactly those sizes plus anything explicitly
+    # uploaded on this request (a size-specific PSD template row, or the
+    # content PSD itself), and the "Output sizes"/"Custom sizes"
+    # selections are dropped so the preview count always reflects what's
+    # in the folder. Everywhere else those selections are what drive the
+    # batch, exactly as they always did.
     if default_templates:
         sizes = sorted(set(size_templates.keys()))
     else:
@@ -1258,7 +1335,18 @@ def generate():
                 # doesn't reintroduce the old (just-replaced) background
                 # underneath whatever it's about to redraw -- see the
                 # branch inside _clean_layer_box() just below.
-                background_replaced_this_request = "background" in layer_image_overrides
+                background_replaced_this_request = "background" in layer_image_overrides and not (
+                    "background" in propagated_layer_names and (width, height) == content_psd_size
+                )
+                # Every layer actually being replaced on THIS size. The
+                # masked restore in _clean_layer_box() below reaches back
+                # into the original composite, so it has to know which
+                # layers are no longer supposed to come from there.
+                overridden_layer_names = {
+                    name
+                    for name in layer_image_overrides
+                    if not (name in propagated_layer_names and (width, height) == content_psd_size)
+                }
                 # final_image as it stood with the new background painted
                 # in but before every other layer was composited back on
                 # top -- the "clear the whole box" case below needs a
@@ -1302,8 +1390,34 @@ def generate():
                         # elsewhere) exactly as final_image already has
                         # them -- ready for apply_layer_image_override()
                         # to draw the new content into a clean box.
+                        # Wipe the box back to the new background FIRST.
+                        # The background step above restored every
+                        # original foreground layer on top of the new
+                        # backdrop, this layer's own old pixels included,
+                        # and the masked restore below deliberately
+                        # doesn't touch this layer's own area -- so
+                        # without this the old artwork survives inside
+                        # the box and the new override just draws over
+                        # it. That showed up as the previous template's
+                        # plate framing a smaller replacement cutout,
+                        # worst in the extreme aspect ratios where a
+                        # fitted cutout leaves the most margin.
+                        if background_only_image is not None:
+                            final_image.paste(
+                                background_only_image.crop(target_box), target_box[:2]
+                            )
+                        # Hide every overridden layer, not just this one
+                        # and the background. The restore below pulls
+                        # from the ORIGINAL composite, so leaving another
+                        # override's layer visible in the mask paints its
+                        # old artwork back over the replacement drawn a
+                        # moment ago -- with several overrides in play the
+                        # last one processed would resurrect all the ones
+                        # before it. That was the old template's plate
+                        # reappearing behind a new product cutout.
                         mask_source = get_psd_layer_foreground(
-                            psd_path_for_size, [layer_name, "background"]
+                            psd_path_for_size,
+                            sorted({layer_name, "background"} | overridden_layer_names),
                         )
                         if mask_source is None:
                             return
@@ -1358,6 +1472,11 @@ def generate():
                     override_image = layer_image_overrides[layer_name]
                     box = layer_boxes.get(layer_name)
                     if box is None:
+                        continue
+                    if layer_name in propagated_layer_names and (width, height) == content_psd_size:
+                        # This size IS the uploaded PSD -- re-applying its
+                        # own layers back onto itself would round-trip
+                        # them through a fit/crop for no gain.
                         continue
                     if layer_name == "background":
                         final_image = apply_layer_background_override(final_image, box, override_image)
@@ -1671,14 +1790,21 @@ def generate():
             }
         )
 
-    zip_stem = f"{product_name_slug}_creatives" if product_name_slug else "creatives"
+    zip_stem = (
+        f"{product_name_slug}_{campaign_label}_creatives"
+        if product_name_slug
+        else f"{campaign_label}_creatives"
+    )
     zip_path = job_dir / f"{zip_stem}.zip"
-    # With a product name, everything inside the zip is nested under a
-    # folder named after it -- unzipping drops one self-contained
-    # "<Product Name>/" folder wherever the user extracts to, instead of
-    # scattering every PNG/PSD loose into whatever folder they picked.
-    # No product name -- exactly the original flat layout, unchanged.
-    zip_entry_prefix = f"{product_name_slug}/" if product_name_slug else ""
+    # Everything inside the zip is nested under its campaign, and under
+    # the product name too when there is one -- so unzipping drops a
+    # self-contained "<Product Name>/campaign1/" tree wherever the user
+    # extracts to. Several campaigns from the same session can then be
+    # unzipped side by side without their same-named sizes colliding,
+    # which is the whole reason the campaign is in the path.
+    zip_entry_prefix = (
+        f"{product_name_slug}/{campaign_label}/" if product_name_slug else f"{campaign_label}/"
+    )
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for creative in creatives:
             zf.write(
@@ -1750,10 +1876,6 @@ def generate():
     # blank (an old cached page, or a non-browser client) just means this
     # job won't be grouped with any others on Edit -- never a hard error.
     session_id = (request.form.get("session_id") or "").strip() or uuid.uuid4().hex
-    try:
-        campaign_slot = int((request.form.get("campaign_slot") or "1").strip())
-    except ValueError:
-        campaign_slot = 1
 
     try:
         (job_dir / "form_state.json").write_text(
@@ -1797,6 +1919,7 @@ def generate():
         background_warnings=background_warnings,
         build_stamp=BUILD_STAMP,
         product_name=product_name,
+        campaign_slot=campaign_slot,
         market=market,
         audience=audience,
         campaign_message=campaign_message,
@@ -1808,6 +1931,24 @@ def serve_output(job_id, filename):
     job_id = secure_filename(job_id)
     filename = secure_filename(filename)
     file_path = JOBS_DIR / job_id / filename
+    if not file_path.is_file():
+        abort(404)
+    return send_file(file_path)
+
+
+@app.route("/uploads/<job_id>/<filename>")
+def serve_upload(job_id, filename):
+    """Serve one file out of a job's uploads/ folder.
+
+    Browsers refuse to pre-populate a file input, so an image carried
+    forward from a previous run has no way to show itself in the form
+    it's still active in -- the edit page points a thumbnail here
+    instead, which is the difference between "my logo is still set" and
+    an input that reads "No file chosen" and looks empty.
+    """
+    job_id = secure_filename(job_id)
+    filename = secure_filename(filename)
+    file_path = JOBS_DIR / job_id / "uploads" / filename
     if not file_path.is_file():
         abort(404)
     return send_file(file_path)
