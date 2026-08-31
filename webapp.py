@@ -342,6 +342,63 @@ def _carry_forward_upload(field_name, uploads_dir: Path, prior_job_dir, prior_fo
     return dest_path
 
 
+def _session_index_path(session_id: str) -> Path:
+    """Where a campaign session's {slot -> job_id} index lives -- see
+    _load_session_campaigns() and the session_id/campaign_slot handling in
+    generate(). Deliberately a sibling of JOBS_DIR's job folders (not
+    inside any one job's own folder), since one session covers several
+    jobs, not just one."""
+    return JOBS_DIR / "_sessions" / f"{secure_filename(session_id)}.json"
+
+
+def _load_session_campaigns(session_id, fallback_job_id):
+    """Build the list of {"prefill", "prefill_files", "edit_job_id"} dicts
+    for every campaign card that belongs to `session_id` -- i.e. every
+    "Create Campaign" card that was actually generated together on one
+    page load (see the hidden session_id/campaign_slot fields each
+    campaign card's <form> carries, and how generate() records them into
+    the session index). A campaign card that was on the page but never
+    itself submitted has nothing saved for it and can't be recovered --
+    only campaigns that were actually generated come back.
+
+    Falls back to a single-campaign list built from `fallback_job_id`
+    alone (today's pre-session-tracking behavior) whenever there's no
+    session_id, or its index can't be read, or it ends up empty -- so a
+    job from before this feature existed (or any other edge case) still
+    opens to *something* editable rather than an empty page.
+    """
+    fallback = [{
+        "prefill": {},
+        "prefill_files": {},
+        "edit_job_id": fallback_job_id,
+    }]
+    if not session_id:
+        return fallback
+    index_path = _session_index_path(session_id)
+    if not index_path.is_file():
+        return fallback
+    try:
+        slots = json.loads(index_path.read_text()).get("slots") or {}
+    except (OSError, ValueError):
+        return fallback
+    campaigns = []
+    for slot_key in sorted(slots, key=lambda k: (len(k), k)):
+        slot_job_id = slots[slot_key]
+        state_path = JOBS_DIR / slot_job_id / "form_state.json"
+        if not state_path.is_file():
+            continue
+        try:
+            slot_state = json.loads(state_path.read_text())
+        except (OSError, ValueError):
+            continue
+        campaigns.append({
+            "prefill": slot_state.get("fields") or {},
+            "prefill_files": slot_state.get("files") or {},
+            "edit_job_id": slot_job_id,
+        })
+    return campaigns or fallback
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template(
@@ -349,9 +406,8 @@ def index():
         size_presets=SIZE_PRESET_CHOICES,
         video_extensions=VIDEO_EXTENSIONS,
         build_stamp=BUILD_STAMP,
-        prefill={},
-        prefill_files={},
-        edit_job_id=None,
+        campaigns=[{"prefill": {}, "prefill_files": {}, "edit_job_id": None}],
+        session_id=uuid.uuid4().hex,
     )
 
 
@@ -363,7 +419,12 @@ def edit(job_id):
     <filename>" hint (see prefill_files) and, on re-submit, the original
     file is carried forward automatically unless the user picks a new
     one -- see _carry_forward_upload() and the edit_job_id handling in
-    generate()."""
+    generate().
+
+    When this job was generated as part of a multi-campaign page (see
+    _load_session_campaigns()), every other campaign generated alongside
+    it on that same page comes back too, each in its own editable card --
+    not just this one job in isolation."""
     state_path = JOBS_DIR / job_id / "form_state.json"
     if not state_path.is_file():
         flash(
@@ -379,14 +440,15 @@ def edit(job_id):
             "Starting a fresh form instead."
         )
         return redirect(url_for("index"))
+    session_id = state.get("session_id") or uuid.uuid4().hex
+    campaigns = _load_session_campaigns(state.get("session_id"), job_id)
     return render_template(
         "index.html",
         size_presets=SIZE_PRESET_CHOICES,
         video_extensions=VIDEO_EXTENSIONS,
         build_stamp=BUILD_STAMP,
-        prefill=state.get("fields") or {},
-        prefill_files=state.get("files") or {},
-        edit_job_id=job_id,
+        campaigns=campaigns,
+        session_id=session_id,
     )
 
 
@@ -1273,10 +1335,48 @@ def generate():
             form_state_files[field_name] = saved_path.relative_to(uploads_dir).as_posix()
         except ValueError:
             continue
+    # Which multi-campaign page (if any) this job was generated from, and
+    # which campaign card on it -- see _session_index_path()/
+    # _load_session_campaigns() and the hidden session_id/campaign_slot
+    # fields each campaign card's <form> carries. A session_id missing or
+    # blank (an old cached page, or a non-browser client) just means this
+    # job won't be grouped with any others on Edit -- never a hard error.
+    session_id = (request.form.get("session_id") or "").strip() or uuid.uuid4().hex
+    try:
+        campaign_slot = int((request.form.get("campaign_slot") or "1").strip())
+    except ValueError:
+        campaign_slot = 1
+
     try:
         (job_dir / "form_state.json").write_text(
-            json.dumps({"fields": form_state_fields, "files": form_state_files}, indent=2)
+            json.dumps(
+                {
+                    "fields": form_state_fields,
+                    "files": form_state_files,
+                    "session_id": session_id,
+                    "campaign_slot": campaign_slot,
+                },
+                indent=2,
+            )
         )
+    except OSError:
+        pass
+
+    # Best-effort, like the write above: record this job into its
+    # session's {slot -> job_id} index so a later Edit on ANY campaign
+    # generated alongside it (see _load_session_campaigns()) can bring
+    # all of them back, not just this one.
+    try:
+        session_index_path = _session_index_path(session_id)
+        session_index_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            session_state = json.loads(session_index_path.read_text())
+        except (OSError, ValueError):
+            session_state = {}
+        slots = session_state.get("slots") or {}
+        slots[str(campaign_slot)] = job_id
+        session_state["slots"] = slots
+        session_index_path.write_text(json.dumps(session_state, indent=2))
     except OSError:
         pass
 

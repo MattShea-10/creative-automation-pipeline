@@ -123,8 +123,14 @@
     {% endwith %}
 
     <div id="campaigns-container">
-      <div class="campaign-card" data-campaign-index="1">
+      {% for campaign in campaigns %}
+      {% set prefill = campaign.prefill %}
+      {% set prefill_files = campaign.prefill_files %}
+      {% set edit_job_id = campaign.edit_job_id %}
+      <div class="campaign-card" data-campaign-index="{{ loop.index }}">
         <form class="creative-form" action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
+        <input type="hidden" name="session_id" value="{{ session_id }}">
+        <input type="hidden" name="campaign_slot" value="{{ loop.index }}">
       {% if edit_job_id %}
         <input type="hidden" name="edit_job_id" value="{{ edit_job_id }}" data-edit-only>
         <div class="hint" style="margin-bottom: 1rem;" data-edit-only>Editing a previous batch -- any file field you don't change keeps its previous file automatically.</div>
@@ -133,7 +139,7 @@
       <details class="campaign-brief-box" open>
         <summary style="margin-bottom: 0.6rem;">
           <span><span class="caret">&#9656;</span>Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></span>
-          <span class="campaign-card-title">Campaign 1</span>
+          <span class="campaign-card-title">Campaign {{ loop.index }}</span>
         </summary>
         <div class="hint" style="margin-top: -0.3rem;">
           Context for this batch -- not composited into the creatives, just carried along with them on the
@@ -595,6 +601,7 @@
       <button type="submit">Generate creatives</button>
         </form>
       </div>
+      {% endfor %}
     </div>
 
     <footer>Creative Automation Pipeline -- quick-generate UI{% if build_stamp %} &middot; code build: {{ build_stamp }}{% endif %}</footer>
@@ -688,6 +695,8 @@
           card.dataset.campaignIndex = index + 1;
           var title = card.querySelector(".campaign-card-title");
           if (title) title.textContent = "Campaign " + (index + 1);
+          var slotInput = card.querySelector('[name="campaign_slot"]');
+          if (slotInput) slotInput.value = String(index + 1);
         });
       }
 
@@ -708,6 +717,15 @@
 
         var form = clone.querySelector("form");
         form.reset();
+
+        // .reset() puts campaign_slot back to whatever the card being
+        // cloned from was carrying (always "1", since new cards are
+        // always cloned from the first card) -- every card's slot needs
+        // to be its own position instead, so generate() records it under
+        // the right slot in this page's session (see _load_session_campaigns()
+        // in webapp.py).
+        var slotInput = clone.querySelector('[name="campaign_slot"]');
+        if (slotInput) slotInput.value = String(campaignCount);
 
         var contentPsdInput = clone.querySelector('[name="content_psd"]');
         if (contentPsdInput) contentPsdInput.dataset.hasPrior = "false";
