@@ -723,6 +723,14 @@ def generate():
                 )
                 return redirect(url_for("index"))
             layer_path = _save_upload(layer_file, uploads_dir)
+        elif content_psd_fresh:
+            # A freshly reuploaded 728x480 content PSD is a new creative --
+            # a logo/CTA/product image update from the *previous* creative
+            # almost certainly doesn't belong on this one (different
+            # layout, different layer boxes, maybe not even the same
+            # product), so it's dropped here rather than silently carried
+            # forward. Re-upload it again if it should still apply.
+            layer_path = None
         else:
             layer_path = _carry_forward_upload(field_name, uploads_dir, prior_job_dir, prior_form_state)
         if layer_path is None:
