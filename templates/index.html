@@ -302,18 +302,6 @@
         })();
       </script>
 
-      <div class="field">
-        <label for="header">Header / title</label>
-        <div class="hint">Shown in a banner across the top. Leave blank for no header.</div>
-        <input type="text" id="header" name="header" placeholder="e.g. HydroBoost Sports Drink" value="{{ prefill.get('header', '') }}">
-      </div>
-
-      <div class="field">
-        <label for="description">Description / message</label>
-        <div class="hint">Shown in a banner across the bottom -- the ad's caption or call-to-action.</div>
-        <textarea id="description" name="description" placeholder="e.g. Feel the Fresh. Own Your Summer.">{{ prefill.get('description', '') }}</textarea>
-      </div>
-
       <details>
         <summary>Advanced options</summary>
 
@@ -387,6 +375,12 @@
         </div>
 
         <div class="field">
+          <label for="header">Header / title</label>
+          <div class="hint">Shown in a banner across the top. Leave blank for no header.</div>
+          <input type="text" id="header" name="header" placeholder="e.g. HydroBoost Sports Drink" value="{{ prefill.get('header', '') }}">
+        </div>
+
+        <div class="field">
           <label>Header text style</label>
           <div class="hint">Choose the header's text color, and optionally remove the dark plate behind it so the text floats directly over the image (a thin outline is added automatically to keep it legible either way). "Glow" adds a soft colored halo behind the text instead of that outline.</div>
           <div class="inline-controls">
@@ -420,6 +414,12 @@
             <label><input type="radio" name="header_align" value="center" {% if prefill.get('header_align', 'center') == 'center' %}checked{% endif %}> Center</label>
             <label><input type="radio" name="header_align" value="right" {% if prefill.get('header_align', 'center') == 'right' %}checked{% endif %}> Right</label>
           </div>
+        </div>
+
+        <div class="field">
+          <label for="description">Description / message</label>
+          <div class="hint">Shown in a banner across the bottom -- the ad's caption or call-to-action.</div>
+          <textarea id="description" name="description" placeholder="e.g. Feel the Fresh. Own Your Summer.">{{ prefill.get('description', '') }}</textarea>
         </div>
 
         <div class="field">
