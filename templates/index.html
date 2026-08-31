@@ -144,12 +144,29 @@
         </div>
       </div>
 
+      <div class="field">
+        <label>Output sizes</label>
+        <div class="hint">Pick one or more groups. Leave all unchecked to use the social defaults.</div>
+        {% for value, description in size_presets %}
+          <div class="checkbox-row">
+            <input type="checkbox" id="size_{{ value }}" name="sizes" value="{{ value }}" {% if prefill.get('sizes') is not none %}{% if value in prefill.get('sizes') %}checked{% endif %}{% elif value == 'default' %}checked{% endif %}>
+            <label for="size_{{ value }}" style="font-weight: 400; margin-bottom: 0;"><span>{{ description }}</span></label>
+          </div>
+        {% endfor %}
+      </div>
+
+      <div class="field">
+        <label for="custom_sizes">Custom sizes</label>
+        <div class="hint">Comma-separated WIDTHxHEIGHT, e.g. <code>1200x628,970x250</code>. Combined with any groups checked above.</div>
+        <input type="text" id="custom_sizes" name="custom_sizes" placeholder="1200x628" value="{{ prefill.get('custom_sizes', '') }}">
+      </div>
+
       <div class="field" style="border: 1px solid var(--brand-blue); border-radius: 8px; padding: 1rem 1.1rem; background: #172554;">
         <label for="content_psd"><span class="psd-badge">PSD</span> 728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
         <div class="hint">
           Upload just this one <code>.psd</code>, sized 728x480, and every other size saved in your
           <code>default_templates/</code> folder is generated automatically alongside it. Using this field
-          <strong>ignores</strong> the "Output sizes"/"Custom sizes" choices below and the general hero image --
+          <strong>ignores</strong> the "Output sizes"/"Custom sizes" choices above and the general hero image --
           the exported batch is exactly this upload plus whatever's in <code>default_templates/</code>, nothing else.
         </div>
         <input type="file" id="content_psd" name="content_psd" accept=".psd">
@@ -228,7 +245,7 @@
             Upload a <code>.psd</code> file for a specific output size (e.g. <code>728x480</code>) and that size will
             use the flattened PSD as its background instead of the general hero image (in Advanced options below) -- just the composite
             preview Pillow renders from the PSD, no layers or effects. A size you add here is automatically included
-            in the batch even if it isn't checked/typed under "Output sizes" below. The hero image only needs to be
+            in the batch even if it isn't checked/typed under "Output sizes" above. The hero image only needs to be
             provided if some requested size has no matching template.
           </div>
           <div class="hint">
@@ -355,23 +372,6 @@
           sync();
         })();
       </script>
-
-        <div class="field" style="margin-top: 0.9rem;">
-          <label>Output sizes</label>
-          <div class="hint">Pick one or more groups. Leave all unchecked to use the social defaults.</div>
-          {% for value, description in size_presets %}
-            <div class="checkbox-row">
-              <input type="checkbox" id="size_{{ value }}" name="sizes" value="{{ value }}" {% if prefill.get('sizes') is not none %}{% if value in prefill.get('sizes') %}checked{% endif %}{% elif value == 'default' %}checked{% endif %}>
-              <label for="size_{{ value }}" style="font-weight: 400; margin-bottom: 0;"><span>{{ description }}</span></label>
-            </div>
-          {% endfor %}
-        </div>
-
-        <div class="field">
-          <label for="custom_sizes">Custom sizes</label>
-          <div class="hint">Comma-separated WIDTHxHEIGHT, e.g. <code>1200x628,970x250</code>. Combined with any groups checked above.</div>
-          <input type="text" id="custom_sizes" name="custom_sizes" placeholder="1200x628" value="{{ prefill.get('custom_sizes', '') }}">
-        </div>
 
         <div class="field">
           <label>Fit mode</label>
