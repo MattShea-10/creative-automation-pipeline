@@ -3096,25 +3096,43 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertGreater(b_, 150)
 
     def test_header_override_is_skipped_gracefully_when_template_has_no_header_layer(self):
-        # The real staged template doesn't have a "header" layer (that's
-        # a new addition a user might make on their own end) -- providing
-        # layer_header_text must not error, and the existing description
-        # override must keep working right alongside it.
-        (w, h), staged_path = self._stage_real_template()
-        data = {
-            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
-            "layer_header_text": "New headline text",
-            "layer_description_text": "New description text",
-            "header": "",
-            "description": "",
-        }
-        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
-        self.assertEqual(r.status_code, 200)
-        self.assertIn(b"updated layer(s)", r.data)
-        self.assertIn(b"description", r.data)
-        # "header" is skipped -- the field name is never named as an
-        # *applied* layer, since there's no matching layer to draw into.
-        self.assertNotIn(b": header debug", r.data)
+        # A template with no "header" layer -- providing layer_header_text
+        # must not error, and the existing description override must keep
+        # working right alongside it. Built directly via psd-tools rather
+        # than _stage_real_template(): this project's own shipped
+        # templates may or may not have a "header" layer at any given
+        # time (a user can add one on their end, as this feature expects),
+        # so this test builds a PSD it knows for certain doesn't have one,
+        # instead of assuming anything about what's currently on disk.
+        from psd_tools import PSDImage
+
+        size = (400, 300)
+        psd = PSDImage.new("RGBA", size)
+        psd.create_pixel_layer(Image.new("RGBA", size, (240, 240, 240, 255)), name="background", top=0, left=0)
+        psd.create_pixel_layer(Image.new("RGBA", (60, 40), (0, 0, 0, 255)), name="logo", top=0, left=0)
+        psd.create_pixel_layer(Image.new("RGBA", (60, 40), (0, 0, 0, 255)), name="product", top=240, left=0)
+        psd.create_pixel_layer(Image.new("RGBA", (60, 40), (0, 0, 0, 255)), name="cta", top=240, left=200)
+        psd.create_pixel_layer(
+            Image.new("RGBA", (300, 60), (240, 240, 240, 255)), name="description", top=100, left=50
+        )
+
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "no_header.psd"
+            psd.save(path)
+            data = {
+                "content_psd": (io.BytesIO(path.read_bytes()), "no_header.psd"),
+                "layer_header_text": "New headline text",
+                "layer_description_text": "New description text",
+                "header": "",
+                "description": "",
+            }
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            self.assertIn(b"updated layer(s)", r.data)
+            self.assertIn(b"description", r.data)
+            # "header" is skipped -- the field name is never named as an
+            # *applied* layer, since there's no matching layer to draw into.
+            self.assertNotIn(b": header debug", r.data)
 
     def test_header_override_draws_new_text_into_a_named_header_layer(self):
         # Built directly via psd-tools' write API rather than
@@ -3196,7 +3214,13 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # This is the actual feature request: a background-only change to
         # one uploaded PSD should be pushable across every other saved
         # default size too, the same way logo/CTA/product/description
-        # already are.
+        # already are. Sampled only at points where the PSD's own
+        # foreground (everything but "background") composite is fully
+        # transparent -- i.e. genuinely background-only pixels -- since
+        # the real staged template may have other named layers (logo,
+        # product, etc.) overlapping parts of the background layer's own
+        # box, which correctly stay untouched by a background-only
+        # override (see test_background_override_preserves_other_layers).
         (w, h), staged_path = self._stage_real_template()
         data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
@@ -3210,27 +3234,100 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertIn(b"background", r.data)
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        from src.image_ops import get_psd_layer_boxes
+        from src.image_ops import get_psd_layer_boxes, get_psd_layer_foreground
 
         box = get_psd_layer_boxes(staged_path).get("background")
         self.assertIsNotNone(box, "staged real template has no 'background' layer -- can't verify placement")
         x0, y0, x1, y1 = box
+
+        foreground = get_psd_layer_foreground(staged_path, "background")
+        self.assertIsNotNone(foreground)
+        fg_alpha = foreground.split()[3]
+        step = max(1, min(x1 - x0, y1 - y0) // 30)
+        background_only_points = [
+            (x, y)
+            for y in range(y0, y1, step)
+            for x in range(x0, x1, step)
+            if fg_alpha.getpixel((x, y)) == 0
+        ]
+        self.assertTrue(
+            background_only_points,
+            "couldn't find any pixel in the background box not also covered by another layer",
+        )
+
         with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
-            # Several points spread across the box, not just its center --
-            # apply_layer_background_override() fills edge-to-edge, so
-            # every one of these should be the overridden green, unlike
-            # the centered-with-margin behavior logo/CTA/product use.
-            points = [
-                (x0 + 3, y0 + 3),
-                (x1 - 3, y0 + 3),
-                (x0 + 3, y1 - 3),
-                (x1 - 3, y1 - 3),
-                ((x0 + x1) // 2, (y0 + y1) // 2),
+            pixels = [
+                img.getpixel((max(0, min(px, img.width - 1)), max(0, min(py, img.height - 1))))[:3]
+                for px, py in background_only_points
             ]
-            pixels = [img.getpixel((max(0, min(px, img.width - 1)), max(0, min(py, img.height - 1))))[:3] for px, py in points]
         for r_, g_, b_ in pixels:
             self.assertGreater(g_, r_, pixels)
             self.assertGreater(g_, b_, pixels)
+
+    def test_background_override_preserves_other_layers(self):
+        # Matt's actual bug report: overriding just the background was
+        # wiping out logo/product/cta/description entirely. That's
+        # because the "background" layer's own box is essentially the
+        # whole canvas (it's the bottommost, full-frame layer), so a
+        # plain opaque paste across that whole box covered up everything
+        # else already drawn there.
+        #
+        # A background-only change legitimately *can* shift a few pixels
+        # right at another layer's soft edge (a drop shadow/glow effect
+        # blending into whatever's behind it is real PSD content, not a
+        # bug) -- so this doesn't demand the other layers' entire boxes
+        # stay byte-identical. Instead it checks the pixels that are
+        # unambiguously solid content of another layer (alpha == 255 in
+        # the PSD's own "hide background" composite, i.e. definitely not
+        # background peeking through): those must be exactly unchanged.
+        (w, h), staged_path = self._stage_real_template()
+        from src.image_ops import get_psd_layer_foreground
+
+        foreground = get_psd_layer_foreground(staged_path, "background")
+        self.assertIsNotNone(foreground)
+        alpha = foreground.split()[3]
+        fg_w, fg_h = foreground.size
+        step = max(1, min(fg_w, fg_h) // 60)
+        solid_points = [
+            (x, y)
+            for y in range(0, fg_h, step)
+            for x in range(0, fg_w, step)
+            if alpha.getpixel((x, y)) == 255
+        ]
+        self.assertTrue(solid_points, "couldn't find any fully-opaque non-background pixel to verify")
+
+        baseline_data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "header": "",
+            "description": "",
+        }
+        baseline_r = self.client.post("/generate", data=baseline_data, content_type="multipart/form-data")
+        self.assertEqual(baseline_r.status_code, 200)
+        baseline_job_id = re.search(rb"/download/([0-9a-f]+)", baseline_r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / baseline_job_id / f"creative_{w}x{h}.png") as img:
+            baseline_img = img.convert("RGB").copy()
+
+        override_data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "header": "",
+            "description": "",
+        }
+        override_r = self.client.post("/generate", data=override_data, content_type="multipart/form-data")
+        self.assertEqual(override_r.status_code, 200)
+        override_job_id = re.search(rb"/download/([0-9a-f]+)", override_r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / override_job_id / f"creative_{w}x{h}.png") as img:
+            override_img = img.convert("RGB").copy()
+
+        for point in solid_points:
+            baseline_px = baseline_img.getpixel(point)
+            override_px = override_img.getpixel(point)
+            self.assertEqual(
+                baseline_px,
+                override_px,
+                f"pixel {point} -- solid content of a non-background layer -- changed after a "
+                "background-only override",
+            )
 
     def test_background_override_does_not_run_background_removal(self):
         # auto_transparent_background() would be actively harmful here --
@@ -3253,10 +3350,29 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        from src.image_ops import get_psd_layer_boxes
+        from src.image_ops import get_psd_layer_boxes, get_psd_layer_foreground
 
         box = get_psd_layer_boxes(staged_path).get("background")
-        cx, cy = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+        x0, y0, x1, y1 = box
+        # Sample a point that's genuinely background-only (not also
+        # covered by another layer -- e.g. a logo/product positioned
+        # near the box's center, see test_background_override_fills_its_
+        # layer_completely_on_saved_default_size), so this is actually
+        # checking the background upload itself, not some other layer's
+        # original content.
+        foreground = get_psd_layer_foreground(staged_path, "background")
+        fg_alpha = foreground.split()[3] if foreground is not None else None
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
+        if fg_alpha is not None and fg_alpha.getpixel((cx, cy)) != 0:
+            step = max(1, min(x1 - x0, y1 - y0) // 30)
+            for y in range(y0, y1, step):
+                for x in range(x0, x1, step):
+                    if fg_alpha.getpixel((x, y)) == 0:
+                        cx, cy = x, y
+                        break
+                else:
+                    continue
+                break
         with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
             r_, g_, b_ = img.getpixel((cx, cy))[:3]
         # Still near-white -- not composited against whatever the
@@ -3266,6 +3382,73 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertGreater(r_, 200)
         self.assertGreater(g_, 200)
         self.assertGreater(b_, 200)
+
+    def test_background_and_logo_overridden_together_dont_clobber_each_other(self):
+        # Both fields updated in the same request -- the background step
+        # runs first (see the reordering in webapp.py's render loop), so
+        # this specifically covers the "already-replaced" branch inside
+        # _clean_layer_box(): the logo override must land on the *new*
+        # background, not the template's original one, and every OTHER
+        # untouched layer (e.g. "product") must still come out exactly
+        # like an unedited render.
+        (w, h), staged_path = self._stage_real_template()
+        from src.image_ops import get_psd_layer_boxes, get_psd_layer_foreground
+
+        baseline_data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "header": "",
+            "description": "",
+        }
+        baseline_r = self.client.post("/generate", data=baseline_data, content_type="multipart/form-data")
+        self.assertEqual(baseline_r.status_code, 200)
+        baseline_job_id = re.search(rb"/download/([0-9a-f]+)", baseline_r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / baseline_job_id / f"creative_{w}x{h}.png") as img:
+            baseline_img = img.convert("RGB").copy()
+
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "layer_logo_image": (self._sample_image_bytes(size=(80, 80), color=(0, 0, 255)), "logo.png"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"background", r.data)
+        self.assertIn(b"logo", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job_id / f"creative_{w}x{h}.png") as img:
+            combined_img = img.convert("RGB").copy()
+
+        layer_boxes = get_psd_layer_boxes(staged_path)
+
+        # The new logo is really there, centered in its own box.
+        lx0, ly0, lx1, ly1 = layer_boxes["logo"]
+        r_, g_, b_ = combined_img.getpixel(((lx0 + lx1) // 2, (ly0 + ly1) // 2))[:3]
+        self.assertLess(r_, 100)
+        self.assertGreater(b_, 150)
+
+        # A layer neither field touched (e.g. "product") renders exactly
+        # like it does with no overrides at all -- wherever the PSD's own
+        # "hide background" composite says it's solid (unambiguous, not
+        # blended with whatever's behind it).
+        untouched_name = next(name for name in layer_boxes if name not in ("background", "logo"))
+        foreground = get_psd_layer_foreground(staged_path, "background")
+        alpha = foreground.split()[3]
+        ux0, uy0, ux1, uy1 = layer_boxes[untouched_name]
+        step = max(1, min(ux1 - ux0, uy1 - uy0) // 20)
+        checked_any = False
+        for y in range(uy0, uy1, step):
+            for x in range(ux0, ux1, step):
+                if alpha.getpixel((x, y)) == 255:
+                    checked_any = True
+                    self.assertEqual(
+                        baseline_img.getpixel((x, y)),
+                        combined_img.getpixel((x, y)),
+                        f"'{untouched_name}' pixel {(x, y)} changed even though neither "
+                        "field touched it",
+                    )
+        self.assertTrue(checked_any, f"no solid '{untouched_name}' pixel found to verify")
 
 
 if __name__ == "__main__":

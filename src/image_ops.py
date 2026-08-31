@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 import re
 from pathlib import Path
-from typing import List, Optional, Tuple, Union
+from typing import Iterable, List, Optional, Tuple, Union
 
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
@@ -1551,10 +1551,16 @@ def map_box_through_fit(
     return (mx0, my0, mx1, my1)
 
 
-def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Optional[Image.Image]:
-    """Return the PSD's own full composite with the named layer hidden --
-    the *true* original pixels behind that layer, straight from the file,
-    not a guess or a reconstruction.
+def _psd_composite_with_layers_hidden(
+    psd_path: Union[str, Path], layer_names: Union[str, Iterable[str]]
+) -> Optional[Image.Image]:
+    """Shared by get_psd_layer_background() and get_psd_layer_foreground()
+    just below: open `psd_path` with psd-tools, hide every top-level
+    layer whose name (case-insensitive) is in `layer_names` -- a single
+    string or any iterable of strings -- and hand back psd-tools' own
+    recomposite in whatever mode it returns (RGB or RGBA -- alpha is left
+    intact when present, since one caller wants it and the other
+    doesn't).
 
     Pillow's own PSD reader can't isolate individual layers (see
     `get_psd_layer_boxes()`'s docstring) -- every `img.seek(i)` on a
@@ -1562,15 +1568,20 @@ def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Opt
     regardless of `i`, confirmed directly against this project's own
     template files. The third-party `psd-tools` library reads PSDs more
     thoroughly and can toggle a layer's visibility and recomposite the
-    document with it hidden, which is exactly "what was behind this
-    layer" -- e.g. hiding a template's "logo" layer reveals whatever the
-    ad's actual background (a gradient, a photo, a solid color) looks
-    like at that spot, with no approximation involved.
+    document with it hidden, which is exactly "what was behind/around
+    this layer" -- e.g. hiding a template's "logo" layer reveals whatever
+    the ad's actual background (a gradient, a photo, a solid color) looks
+    like at that spot, with no approximation involved. Hiding more than
+    one layer at once is for a box that's being "re-cleaned" after the
+    background itself was already swapped elsewhere in the same request
+    (see get_psd_layer_foreground()'s docstring) -- hiding that layer
+    *and* "background" together avoids reintroducing the old background's
+    pixels into the patch.
 
     Returns None (rather than raising) if `psd-tools` isn't installed,
-    the file can't be opened, or no layer with that name exists --
-    callers should treat that as "no true-background data available" and
-    fall back to their own handling.
+    the file can't be opened, or none of the names match any layer --
+    callers should treat that as "no data available" and fall back to
+    their own handling.
     """
     try:
         from psd_tools import PSDImage
@@ -1581,26 +1592,80 @@ def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Opt
     except Exception:
         return None
 
-    target = None
-    for layer in psd:
-        if layer.name.strip().lower() == layer_name.strip().lower():
-            target = layer
-            break
-    if target is None:
+    if isinstance(layer_names, str):
+        wanted = {layer_names.strip().lower()}
+    else:
+        wanted = {name.strip().lower() for name in layer_names}
+
+    targets = [layer for layer in psd if layer.name.strip().lower() in wanted]
+    if not targets:
         return None
 
-    original_visibility = target.visible
+    original_visibility = [(layer, layer.visible) for layer in targets]
     try:
-        target.visible = False
+        for layer in targets:
+            layer.visible = False
         composite = psd.composite()
     except Exception:
         return None
     finally:
-        target.visible = original_visibility
+        for layer, visible in original_visibility:
+            layer.visible = visible
 
+    return composite
+
+
+def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Optional[Image.Image]:
+    """Return the PSD's own full composite with the named layer hidden --
+    the *true* original pixels behind that layer, straight from the file,
+    not a guess or a reconstruction, flattened to RGB.
+
+    See _psd_composite_with_layers_hidden() above for how this is built.
+    Flattening to RGB here is deliberate: this is used to patch a small
+    "clean box" behind ONE foreground layer (a logo, a CTA, a product
+    cutout) before drawing a new override into it, where the box is
+    fully repainted anyway and no transparency needs to survive.
+    get_psd_layer_foreground() just below is the RGBA counterpart, for
+    the opposite case.
+    """
+    composite = _psd_composite_with_layers_hidden(psd_path, layer_name)
     if composite is None:
         return None
     return composite.convert("RGB")
+
+
+def get_psd_layer_foreground(
+    psd_path: Union[str, Path], layer_names: Union[str, Iterable[str]]
+) -> Optional[Image.Image]:
+    """Return the PSD's own full composite with `layer_names` hidden
+    (a single layer name, or several at once), same construction as
+    get_psd_layer_background() just above -- but kept as RGBA with real
+    alpha, instead of flattened to RGB.
+
+    Wherever a hidden layer used to draw, this composite is transparent
+    (alpha 0); wherever any OTHER layer draws (a logo, a CTA button, a
+    product cutout, body/description/header text, etc.) it stays fully
+    opaque, exactly as Photoshop rendered it. Two use cases:
+
+    - Hide just "background": fill the new background image in first,
+      then alpha-composite this "everything but the background" layer
+      back on top, restoring every other layer's real, original pixels
+      pixel-for-pixel -- instead of a plain opaque paste wiping out
+      everything else already sitting in that same box (a background
+      layer's own box is typically the whole canvas, since it's the
+      bottommost, full-frame layer).
+    - Hide a specific layer (say "logo") *and* "background" together,
+      when the background was already swapped earlier in this same
+      request: alpha-compositing this on top of the current canvas
+      re-cleans that one layer's old pixels away without reintroducing
+      the old (now-replaced) background underneath them.
+
+    Returns None under the same conditions as get_psd_layer_background().
+    """
+    composite = _psd_composite_with_layers_hidden(psd_path, layer_names)
+    if composite is None:
+        return None
+    return composite.convert("RGBA")
 
 
 def get_psd_layer_text_style(psd_path: Union[str, Path], layer_name: str) -> Optional[dict]:

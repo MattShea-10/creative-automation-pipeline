@@ -55,6 +55,7 @@ from src.image_ops import (
     get_psd_canvas_size,
     get_psd_layer_background,
     get_psd_layer_boxes,
+    get_psd_layer_foreground,
     get_psd_layer_text_style,
     map_box_through_fit,
     open_as_rgb,
@@ -1107,6 +1108,22 @@ def generate():
                 psd_path_for_size = size_template_paths.get((width, height))
                 layer_boxes = get_psd_layer_boxes(psd_path_for_size)
                 applied_layers = []
+                # A pristine copy of this size's template, exactly as it
+                # renders with zero overrides -- i.e. Pillow's own
+                # embedded/flattened PSD composite (the same source used
+                # everywhere else in this app), not a psd-tools
+                # recomposite. psd-tools is the only way to toggle a
+                # layer's visibility (Pillow can't isolate layers at all
+                # -- see get_psd_layer_boxes()'s docstring), but its own
+                # from-scratch re-render of text/effects can come out
+                # visibly different from Photoshop's own flattened
+                # preview (different font hinting, missing layer
+                # effects, etc.). So psd-tools is used below only to work
+                # out *where* other layers draw (an alpha mask), and the
+                # actual pixels restored always come from this pristine
+                # copy -- guaranteeing a background-only change leaves
+                # everything else pixel-identical to an unedited render.
+                pristine_final_image = final_image.copy()
 
                 # A layer box is read straight from the PSD's own pixel
                 # space (see get_psd_layer_boxes()), but `final_image` is
@@ -1131,6 +1148,42 @@ def generate():
                         for name, box in layer_boxes.items()
                     }
 
+                def _fit_rgba_like_final_image(rgba_image):
+                    # Map a full-canvas RGBA PSD composite (psd-tools'
+                    # own coordinate space) into final_image's own
+                    # coordinate space with the *same* transform that
+                    # produced final_image itself (see the comment above
+                    # psd_canvas_size) -- center_crop_to_ratio() preserves
+                    # alpha untouched (it's just crop+resize), but
+                    # resize_to_contain() always flattens to RGB for its
+                    # letterboxed-blur look, which would silently throw
+                    # away the transparency this needs, so "contain" is
+                    # handled by hand here instead: scale to fit,
+                    # centered, onto a fully transparent canvas the
+                    # target size.
+                    if rgba_image.size == final_image.size:
+                        return rgba_image
+                    if fit_mode == "contain":
+                        target_w, target_h = final_image.size
+                        src_w, src_h = rgba_image.size
+                        scale = min(target_w / src_w, target_h / src_h)
+                        new_w = max(int(round(src_w * scale)), 1)
+                        new_h = max(int(round(src_h * scale)), 1)
+                        fitted = rgba_image.resize((new_w, new_h), Image.LANCZOS)
+                        canvas = Image.new("RGBA", (target_w, target_h), (0, 0, 0, 0))
+                        offset = ((target_w - new_w) // 2, (target_h - new_h) // 2)
+                        canvas.alpha_composite(fitted, offset)
+                        return canvas
+                    return center_crop_to_ratio(rgba_image, final_image.size)
+
+                # Was "background" also uploaded in this same request? If
+                # so it's processed first (see the reordering below) and
+                # this box's *own* clean-up needs to know that, so it
+                # doesn't reintroduce the old (just-replaced) background
+                # underneath whatever it's about to redraw -- see the
+                # branch inside _clean_layer_box() just below.
+                background_replaced_this_request = "background" in layer_image_overrides
+
                 def _clean_layer_box(target_box, layer_name):
                     # Patch in the PSD's own true pixels for this box with
                     # the named layer hidden (see get_psd_layer_background())
@@ -1139,7 +1192,32 @@ def generate():
                     # ad's actual gradient/photo), not a guess, so
                     # whatever the new content doesn't fully cover reads
                     # correctly with zero leftover trace of the old layer.
+                    nonlocal final_image
                     if psd_path_for_size is None:
+                        return
+                    if background_replaced_this_request and layer_name != "background":
+                        # The background this request started with is
+                        # already gone (replaced further up in this same
+                        # loop). Hiding just `layer_name` here (like the
+                        # plain case below) would recompose against the
+                        # PSD's *original* background and paste that back
+                        # in -- undoing part of the background override.
+                        # Hiding `layer_name` *and* "background" together
+                        # instead marks both transparent in the mask, so
+                        # pasting pristine_final_image through it (see the
+                        # comment where that's captured, above) restores
+                        # every OTHER layer's real pixels and leaves
+                        # `layer_name`'s own box (and the new background
+                        # elsewhere) exactly as final_image already has
+                        # them -- ready for apply_layer_image_override()
+                        # to draw the new content into a clean box.
+                        mask_source = get_psd_layer_foreground(
+                            psd_path_for_size, [layer_name, "background"]
+                        )
+                        if mask_source is None:
+                            return
+                        mask_source = _fit_rgba_like_final_image(mask_source)
+                        final_image.paste(pristine_final_image, mask=mask_source.split()[3])
                         return
                     clean_bg = get_psd_layer_background(psd_path_for_size, layer_name)
                     if clean_bg is None:
@@ -1160,12 +1238,37 @@ def generate():
                             clean_bg = center_crop_to_ratio(clean_bg, final_image.size)
                     final_image.paste(clean_bg.crop(target_box), target_box[:2])
 
-                for layer_name, override_image in layer_image_overrides.items():
+                # Process "background" first, no matter which order the
+                # form fields were uploaded in -- a background override
+                # fills its (whole-canvas) box completely, which would
+                # otherwise wipe out any logo/cta/product override this
+                # same request just drew if background ran after them.
+                # Running it first, then restoring every other PSD layer
+                # on top (see get_psd_layer_foreground()), means the
+                # logo/cta/product/text steps below land on the *new*
+                # background exactly like they would on the original one.
+                ordered_layer_names = sorted(
+                    layer_image_overrides.keys(), key=lambda name: name != "background"
+                )
+                for layer_name in ordered_layer_names:
+                    override_image = layer_image_overrides[layer_name]
                     box = layer_boxes.get(layer_name)
                     if box is None:
                         continue
                     if layer_name == "background":
                         final_image = apply_layer_background_override(final_image, box, override_image)
+                        foreground_mask_source = (
+                            get_psd_layer_foreground(psd_path_for_size, layer_name)
+                            if psd_path_for_size is not None
+                            else None
+                        )
+                        if foreground_mask_source is not None:
+                            foreground_mask_source = _fit_rgba_like_final_image(foreground_mask_source)
+                            # Only the alpha channel is used, as a mask --
+                            # see the comment above pristine_final_image
+                            # for why the *pixels* being restored come
+                            # from there instead of this RGBA composite.
+                            final_image.paste(pristine_final_image, mask=foreground_mask_source.split()[3])
                     else:
                         _clean_layer_box(box, layer_name)
                         final_image = apply_layer_image_override(final_image, box, override_image)
