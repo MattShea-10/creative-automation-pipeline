@@ -1093,6 +1093,31 @@ def generate():
                     background_notes.append(
                         f"{size_label(width, height)}: updated layer(s) -- " + ", ".join(applied_layers) + "."
                     )
+                    # The "Download PSD" above is a copy of the *original*
+                    # uploaded template -- once a layer override actually
+                    # changed pixels in final_image (logo/CTA/product/
+                    # description), that original copy silently stops
+                    # matching what the results page just showed as the
+                    # preview. Re-save it as a single flattened layer built
+                    # straight from final_image so the downloaded PSD looks
+                    # exactly like the preview -- this trades away the
+                    # original file's separate editable layers, but only
+                    # once there was actually something to update; a
+                    # template with no layer overrides still gets the
+                    # original fully-editable file above. Best-effort like
+                    # the copy above: a failure here just leaves that
+                    # last-copied (now-stale) file in place rather than
+                    # blocking an otherwise-successful render.
+                    try:
+                        psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
+                        save_layered_psd(
+                            [("Background", final_image)],
+                            (width, height),
+                            job_dir / psd_candidate_filename,
+                        )
+                        psd_filename = psd_candidate_filename
+                    except Exception:
+                        pass
         else:
             # Built once and reused for both calls below so render_creative()
             # (the flattened PNG preview) and render_creative_layers() (the
