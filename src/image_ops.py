@@ -2116,6 +2116,10 @@ def apply_layer_text_override(
     leading_reference_size: Optional[int] = None,
     debug: Optional[dict] = None,
     keep_alpha: bool = False,
+    glow: bool = False,
+    glow_color: Tuple[int, int, int] = (255, 255, 255),
+    glow_size: int = 25,
+    glow_opacity: int = 100,
 ) -> Image.Image:
     """Return a copy of `base_image` with `text` painted directly into
     `bbox` -- same idea as apply_layer_image_override(): whatever's
@@ -2148,11 +2152,23 @@ def apply_layer_text_override(
     couldn't be read), this falls back to a generic ~1.2x-of-font-size
     approximation.
 
-    Text is drawn flat, in `text_color`, with no outline/glow -- matching
-    a real PSD text layer, which is just a flat fill. Legibility comes
-    from painting on the PSD's own true background for this box (see
-    _clean_layer_box() in webapp.py) with the PSD's own text color, the
-    same pairing the original template already used successfully.
+    Text is drawn flat, in `text_color`, matching a real PSD text layer,
+    which is just a flat fill. Legibility normally comes from painting on
+    the PSD's own true background for this box (see _clean_layer_box() in
+    webapp.py) with the PSD's own text color, the same pairing the
+    original template already used successfully.
+
+    `glow=True` adds a soft halo behind the letterforms, in `glow_color`,
+    for the case that pairing can't handle: text over a busy photo, where
+    any flat colour loses somewhere in the frame. `glow_size` is a
+    percentage of the font size (so a halo scales with the type rather
+    than being a fixed pixel radius that looks heavy at 160x600 and
+    invisible at 1920x1080). It uses the same technique as the CTA
+    button's glow: render the glyphs as a white mask, blur its alpha,
+    boost it back up (blurring dims it a lot), tint it, and composite it
+    behind the crisp text. `glow_opacity` (0-100) scales that halo's
+    strength, for when a full-strength one is heavier than the design
+    wants -- 0 leaves the text as if no glow had been asked for.
 
     `keep_alpha=True` returns RGBA instead of flattening to RGB -- see
     apply_layer_image_override()'s own `keep_alpha` for why (a real
@@ -2207,15 +2223,46 @@ def apply_layer_text_override(
         debug["clamped"] = bool(requested_size and font.size < requested_size)
 
     total_h = line_height * len(lines)
-    text_y = y0 + padding + (max_text_height - total_h) // 2
-    for line in lines:
+    first_text_y = y0 + padding + (max_text_height - total_h) // 2
+
+    def _line_x(line):
         line_w = draw.textlength(line, font=font)
         if align == "center":
-            text_x = x0 + padding + (max_text_width - line_w) / 2
-        elif align == "right":
-            text_x = x0 + padding + (max_text_width - line_w)
+            return x0 + padding + (max_text_width - line_w) / 2
+        if align == "right":
+            return x0 + padding + (max_text_width - line_w)
+        return x0 + padding
+
+    if glow and glow_size > 0 and glow_opacity > 0:
+        # Sized off the font rather than the box: a halo that scales with
+        # the type reads the same at every output size, where a fixed
+        # pixel radius would look heavy on a 160x600 and vanish on a
+        # 1920x1080.
+        blur_radius = max(round(font.size * (glow_size / 100.0)), 1)
+        glow_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow_layer)
+        glow_y = first_text_y
+        for line in lines:
+            glow_draw.text((_line_x(line), glow_y), line, font=font, fill=(255, 255, 255, 255))
+            glow_y += line_height
+        alpha = glow_layer.split()[3].filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        # 1.6 recovers the strength a Gaussian blur costs; the opacity
+        # scale is applied in the same pass so a dialled-back glow thins
+        # out evenly instead of being clipped.
+        boost = 1.6 * (max(0, min(100, glow_opacity)) / 100.0)
+        alpha = alpha.point(lambda a: min(255, int(a * boost)))
+        colored_glow = Image.new("RGBA", canvas.size, (glow_color[0], glow_color[1], glow_color[2], 0))
+        colored_glow.putalpha(alpha)
+        if keep_alpha:
+            canvas = Image.alpha_composite(canvas, colored_glow)
         else:
-            text_x = x0 + padding
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), colored_glow).convert("RGB")
+        # alpha_composite() returns a new image -- rebind the Draw handle.
+        draw = ImageDraw.Draw(canvas)
+
+    text_y = first_text_y
+    for line in lines:
+        text_x = _line_x(line)
         draw.text(
             (text_x, text_y),
             line,

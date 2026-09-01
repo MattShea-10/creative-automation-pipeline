@@ -188,6 +188,8 @@ EDIT_TEXT_FIELD_NAMES = (
     "brand_color_1", "brand_color_2", "brand_color_3",
     "ai_hero_prompt", "ai_hero_provider",
     "upload_ai_prompt", "upload_ai_provider",
+    "layer_header_glow_color", "layer_header_glow_size", "layer_header_glow_opacity",
+    "layer_description_glow_color", "layer_description_glow_size", "layer_description_glow_opacity",
     "header", "description", "custom_sizes",
     "fit_mode",
     "header_text_color", "header_align", "header_font_size",
@@ -213,6 +215,8 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "brand_color_1_enabled", "brand_color_2_enabled", "brand_color_3_enabled",
     "ai_hero_enabled",
     "upload_ai_enabled",
+    "layer_header_glow",
+    "layer_description_glow",
 )
 
 # Euclidean RGB distance under which a pixel counts as "matching" a brand
@@ -420,6 +424,37 @@ def _slugify_for_filename(text: str, *, max_length: int = 40) -> str:
     """
     collapsed = re.sub(r"[^A-Za-z0-9]+", "_", text.strip()).strip("_")
     return collapsed[:max_length]
+
+
+GLOW_SIZE_MIN, GLOW_SIZE_MAX, GLOW_SIZE_DEFAULT = 1, 100, 25
+
+
+def _parse_glow_size(raw) -> int:
+    """A text glow's radius as a percentage of the font size.
+
+    Relative rather than absolute so one setting reads the same across
+    every output size -- a fixed pixel radius looks heavy on a 160x600 and
+    disappears on a 1920x1080. Anything unparseable or out of range falls
+    back to the default rather than erroring: a bad glow size shouldn't
+    fail a render.
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return GLOW_SIZE_DEFAULT
+    return max(GLOW_SIZE_MIN, min(GLOW_SIZE_MAX, value))
+
+
+def _parse_glow_opacity(raw) -> int:
+    """How strong a text glow is, 0-100. Same forgiving parse as the size
+    above: unusable input falls back to full strength rather than failing
+    a render over a decoration.
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 100
+    return max(0, min(100, value))
 
 
 def _save_upload(file_storage, dest_dir: Path) -> Path:
@@ -1048,6 +1083,12 @@ def generate():
     layer_header_text_color = _parse_hex_color(
         request.form.get("layer_header_text_color"), default=(26, 26, 26)
     )
+    layer_header_glow = bool(request.form.get("layer_header_glow"))
+    layer_header_glow_color = _parse_hex_color(
+        request.form.get("layer_header_glow_color"), default=(255, 255, 255)
+    )
+    layer_header_glow_size = _parse_glow_size(request.form.get("layer_header_glow_size"))
+    layer_header_glow_opacity = _parse_glow_opacity(request.form.get("layer_header_glow_opacity"))
 
     layer_description_text = (request.form.get("layer_description_text") or "").strip() or None
     # By default the description override matches whatever font family,
@@ -1065,6 +1106,14 @@ def generate():
     layer_description_use_custom_color = bool(request.form.get("layer_description_use_custom_color"))
     layer_description_text_color = _parse_hex_color(
         request.form.get("layer_description_text_color"), default=(26, 26, 26)
+    )
+    layer_description_glow = bool(request.form.get("layer_description_glow"))
+    layer_description_glow_color = _parse_hex_color(
+        request.form.get("layer_description_glow_color"), default=(255, 255, 255)
+    )
+    layer_description_glow_size = _parse_glow_size(request.form.get("layer_description_glow_size"))
+    layer_description_glow_opacity = _parse_glow_opacity(
+        request.form.get("layer_description_glow_opacity")
     )
 
     layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
@@ -1631,7 +1680,16 @@ def generate():
                         )
                     applied_layers.append(layer_name)
                 def _apply_text_layer_override(
-                    layer_key, text, font_family, font_size, use_custom_color, text_color
+                    layer_key,
+                    text,
+                    font_family,
+                    font_size,
+                    use_custom_color,
+                    text_color,
+                    glow=False,
+                    glow_color=(255, 255, 255),
+                    glow_size=GLOW_SIZE_DEFAULT,
+                    glow_opacity=100,
                 ):
                     # Shared by every text-layer override (description,
                     # header, ...) -- reads that named layer's own PSD
@@ -1730,6 +1788,10 @@ def generate():
                         bold=effective_bold,
                         leading=effective_leading,
                         leading_reference_size=leading_reference_size,
+                        glow=glow,
+                        glow_color=glow_color,
+                        glow_size=glow_size,
+                        glow_opacity=glow_opacity,
                         debug=text_debug,
                     )
                     # Same call again, but onto a transparent canvas with
@@ -1747,6 +1809,10 @@ def generate():
                         bold=effective_bold,
                         leading=effective_leading,
                         leading_reference_size=leading_reference_size,
+                        glow=glow,
+                        glow_color=glow_color,
+                        glow_size=glow_size,
+                        glow_opacity=glow_opacity,
                         keep_alpha=True,
                     )
                     applied_layers.append(layer_key)
@@ -1776,6 +1842,7 @@ def generate():
                 # layer: new words, a colour, a family, a size.
                 if (
                     layer_header_text
+                    or layer_header_glow
                     or layer_header_use_custom_color
                     or layer_header_font_family
                     or layer_header_font_size
@@ -1787,9 +1854,14 @@ def generate():
                         layer_header_font_size,
                         layer_header_use_custom_color,
                         layer_header_text_color,
+                        glow=layer_header_glow,
+                        glow_color=layer_header_glow_color,
+                        glow_size=layer_header_glow_size,
+                        glow_opacity=layer_header_glow_opacity,
                     )
                 if (
                     layer_description_text
+                    or layer_description_glow
                     or layer_description_use_custom_color
                     or layer_description_font_family
                     or layer_description_font_size
@@ -1801,6 +1873,10 @@ def generate():
                         layer_description_font_size,
                         layer_description_use_custom_color,
                         layer_description_text_color,
+                        glow=layer_description_glow,
+                        glow_color=layer_description_glow_color,
+                        glow_size=layer_description_glow_size,
+                        glow_opacity=layer_description_glow_opacity,
                     )
                 if applied_layers:
                     background_notes.append(

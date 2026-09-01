@@ -2234,6 +2234,70 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
 
 
+class LayerTextGlowTest(unittest.TestCase):
+    """The glow behind a text-layer override: a soft halo in its own
+    colour, sized as a percentage of the font so one setting reads the
+    same at every output size, and dimmable."""
+
+    def _canvas(self, size=(400, 200)):
+        return Image.new("RGB", size, (120, 120, 120))
+
+    def _render(self, **kwargs):
+        from src.image_ops import apply_layer_text_override
+
+        return apply_layer_text_override(
+            self._canvas(), (20, 20, 380, 180), "Glow", exact_font_size=48, **kwargs
+        )
+
+    def _colour_count(self, image, predicate):
+        return sum(1 for px in image.convert("RGB").getdata() if predicate(px))
+
+    def test_glow_puts_its_colour_around_the_text(self):
+        plain = self._render(text_color=(0, 0, 0))
+        glowed = self._render(text_color=(0, 0, 0), glow=True, glow_color=(255, 0, 0), glow_size=30)
+        self.assertNotEqual(list(plain.getdata()), list(glowed.getdata()))
+        # Reddish pixels exist only once a red glow was asked for.
+        reddish = lambda px: px[0] > 150 and px[1] < 110 and px[2] < 110
+        self.assertEqual(self._colour_count(plain, reddish), 0)
+        self.assertGreater(self._colour_count(glowed, reddish), 0)
+
+    def test_a_bigger_glow_spreads_further(self):
+        small = self._render(text_color=(0, 0, 0), glow=True, glow_color=(255, 0, 0), glow_size=10)
+        big = self._render(text_color=(0, 0, 0), glow=True, glow_color=(255, 0, 0), glow_size=60)
+        reddish = lambda px: px[0] > 140 and px[1] < 120 and px[2] < 120
+        self.assertGreater(self._colour_count(big, reddish), self._colour_count(small, reddish))
+
+    def test_opacity_dims_the_glow_and_zero_removes_it(self):
+        full = self._render(text_color=(0, 0, 0), glow=True, glow_color=(255, 0, 0), glow_size=30)
+        faint = self._render(
+            text_color=(0, 0, 0), glow=True, glow_color=(255, 0, 0), glow_size=30, glow_opacity=20
+        )
+        none = self._render(
+            text_color=(0, 0, 0), glow=True, glow_color=(255, 0, 0), glow_size=30, glow_opacity=0
+        )
+        reddish = lambda px: px[0] > 150 and px[1] < 110 and px[2] < 110
+        self.assertGreater(self._colour_count(full, reddish), self._colour_count(faint, reddish))
+        # Zero opacity is indistinguishable from never asking for a glow.
+        plain = self._render(text_color=(0, 0, 0))
+        self.assertEqual(list(none.getdata()), list(plain.getdata()))
+
+    def test_the_words_are_unchanged_by_a_glow(self):
+        # The halo goes behind the letterforms -- it must not move or
+        # resize the text itself.
+        from src.image_ops import apply_layer_text_override
+
+        debug_plain, debug_glow = {}, {}
+        apply_layer_text_override(
+            self._canvas(), (20, 20, 380, 180), "Glow", exact_font_size=48, debug=debug_plain
+        )
+        apply_layer_text_override(
+            self._canvas(), (20, 20, 380, 180), "Glow", exact_font_size=48,
+            glow=True, glow_size=30, debug=debug_glow,
+        )
+        self.assertEqual(debug_plain["font_size"], debug_glow["font_size"])
+        self.assertEqual(debug_plain["lines"], debug_glow["lines"])
+
+
 class ContentPsdQuickModeTest(unittest.TestCase):
     """Covers the single-input "quick campaign" content_psd field: the
     upload renders as its own size (keyed by its actual pixel dimensions,

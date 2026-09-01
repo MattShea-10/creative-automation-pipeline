@@ -307,6 +307,29 @@
           </div>
           <div class="hint" style="margin-top: -0.2rem;">
             By default the header text matches whatever font family, size, and color the PSD's own
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_header_glow">
+              <input type="checkbox" id="layer_header_glow" name="layer_header_glow" value="1" {% if prefill.get('layer_header_glow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Glow behind header text</span>
+            </label>
+            <label for="layer_header_glow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow color</span>
+              <input type="color" id="layer_header_glow_color" name="layer_header_glow_color" value="{{ prefill.get('layer_header_glow_color', '#ffffff') }}">
+            </label>
+            <label for="layer_header_glow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow size %</span>
+              <input type="number" class="font-size-input" id="layer_header_glow_size" name="layer_header_glow_size" min="1" max="100" placeholder="25" value="{{ prefill.get('layer_header_glow_size', '') }}">
+            </label>
+            <label for="layer_header_glow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow opacity %</span>
+              <input type="number" class="font-size-input" id="layer_header_glow_opacity" name="layer_header_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_header_glow_opacity', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            A soft halo behind the letterforms -- for header text sitting over a photo, where any flat colour
+            loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
+            same at every output size.
+          </div>
             <code>header</code> text layer was set to in Photoshop (when readable). Set the font/size above
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
@@ -351,6 +374,29 @@
           </div>
           <div class="hint" style="margin-top: -0.2rem;">
             By default the description text matches whatever font family, size, and color the PSD's own
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_description_glow">
+              <input type="checkbox" id="layer_description_glow" name="layer_description_glow" value="1" {% if prefill.get('layer_description_glow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Glow behind description text</span>
+            </label>
+            <label for="layer_description_glow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow color</span>
+              <input type="color" id="layer_description_glow_color" name="layer_description_glow_color" value="{{ prefill.get('layer_description_glow_color', '#ffffff') }}">
+            </label>
+            <label for="layer_description_glow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow size %</span>
+              <input type="number" class="font-size-input" id="layer_description_glow_size" name="layer_description_glow_size" min="1" max="100" placeholder="25" value="{{ prefill.get('layer_description_glow_size', '') }}">
+            </label>
+            <label for="layer_description_glow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow opacity %</span>
+              <input type="number" class="font-size-input" id="layer_description_glow_opacity" name="layer_description_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_description_glow_opacity', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            A soft halo behind the letterforms -- for description text sitting over a photo, where any flat colour
+            loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
+            same at every output size.
+          </div>
             <code>description</code> text layer was set to in Photoshop (when readable). Set the font/size above
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
