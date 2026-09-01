@@ -22,6 +22,12 @@ from .ideogram_provider import IdeogramProvider
 # Selectable providers, in the order they're offered.
 PROVIDER_NAMES = ["pollinations", "ideogram"]
 
+# What an unset, unsubmitted or unrecognised provider field falls back
+# to. Named rather than repeated as a literal, because code that has to
+# tell "the user chose this" from "nothing was submitted" needs to test
+# against it -- see the provider reconciliation in webapp.generate().
+DEFAULT_PROVIDER_NAME = PROVIDER_NAMES[0]
+
 # Plus the offline placeholder, which the CLI can still ask for by name.
 ALL_PROVIDER_NAMES = PROVIDER_NAMES + ["mock"]
 
@@ -45,5 +51,6 @@ __all__ = [
     "IdeogramProvider",
     "get_provider",
     "PROVIDER_NAMES",
+    "DEFAULT_PROVIDER_NAME",
     "ALL_PROVIDER_NAMES",
 ]

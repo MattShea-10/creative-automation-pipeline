@@ -83,6 +83,7 @@ from src.image_ops import (
 )
 from src.providers import (
     ALL_PROVIDER_NAMES,
+    DEFAULT_PROVIDER_NAME,
     PROVIDER_NAMES,
     ImageProviderError,
     MockImageProvider,
@@ -1011,6 +1012,30 @@ def generate():
     ai_hero_provider = request.form.get("ai_hero_provider", "pollinations")
     if ai_hero_provider not in ALL_PROVIDER_NAMES:
         ai_hero_provider = "pollinations"
+
+    # The two generators each have their own provider select, but they
+    # are one choice: nobody means "the paid model here, the free one
+    # there". They used to be able to disagree, and the consequence was
+    # nasty to read -- pick Ideogram in Upload Creative, leave Manual
+    # Creative on its Pollinations default, and the results page reports
+    # a Pollinations failure while the form plainly shows Ideogram
+    # selected. The form now keeps them in step; this covers what the
+    # form can't reach: a saved batch from before that was true, a
+    # disabled select that posted nothing, a non-browser client.
+    #
+    # The non-default value wins in a disagreement, because "pollinations"
+    # is exactly what an unset or unsubmitted field yields -- so the other
+    # one is the deliberate choice, whichever section it came from.
+    if upload_ai_provider != ai_hero_provider:
+        chosen = next(
+            (
+                name
+                for name in (upload_ai_provider, ai_hero_provider)
+                if name != DEFAULT_PROVIDER_NAME
+            ),
+            DEFAULT_PROVIDER_NAME,
+        )
+        upload_ai_provider = ai_hero_provider = chosen
 
     # Campaign brief -- product name / market / audience / campaign
     # message. Purely informational context about *this* batch: it isn't

@@ -702,9 +702,16 @@
             <div class="inline-controls" style="margin-top: 0.5rem;">
               <label class="provider-control" for="ai_hero_provider" style="font-weight: 400;">
                 <span style="white-space: nowrap;">Provider</span>
+                {# Falls back to the Upload Creative provider, not to a
+                   hard-coded default: the two selects are one choice
+                   (the script keeps them in step), and a saved form
+                   from before that was true would otherwise reopen with
+                   them disagreeing -- the exact state that produced a
+                   Pollinations failure while Ideogram was selected. #}
+                {% set hero_provider = prefill.get('ai_hero_provider') or prefill.get('upload_ai_provider') or 'pollinations' %}
                 <select class="font-family-select" id="ai_hero_provider" name="ai_hero_provider">
-                  <option value="pollinations" {% if prefill.get('ai_hero_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
-                  <option value="ideogram" {% if prefill.get('ai_hero_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
+                  <option value="pollinations" {% if hero_provider == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
+                  <option value="ideogram" {% if hero_provider == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
                 </select>
               </label>
             </div>
@@ -1078,6 +1085,26 @@
             });
           });
         }
+      }
+
+      // One provider choice, two dropdowns. Upload Creative and Manual
+      // Creative each have their own generator and each had its own
+      // provider select, defaulting to Pollinations -- so picking
+      // Ideogram in one left the other still on Pollinations, and a run
+      // with both generators on produced a Pollinations failure that
+      // read as "Ideogram is broken". Nobody means "use the paid model
+      // here and the free one there"; they mean "use this model".
+      var providerSelects = root.querySelectorAll(
+        '[name="upload_ai_provider"], [name="ai_hero_provider"]'
+      );
+      if (providerSelects.length > 1) {
+        providerSelects.forEach(function (select) {
+          select.addEventListener("change", function () {
+            providerSelects.forEach(function (other) {
+              if (other !== select) other.value = select.value;
+            });
+          });
+        });
       }
 
       // "Hide layers": a hidden layer isn't drawn at all, so every

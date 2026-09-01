@@ -3722,6 +3722,43 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         )
         self.assertGreater(greens, rendered.width * rendered.height * 0.2)
 
+    def test_a_deliberate_provider_choice_wins_over_the_other_default(self):
+        # Upload Creative and Manual Creative each have a provider
+        # select, but they are one choice. They used to be able to
+        # disagree, and the result was misleading: pick Ideogram in one,
+        # leave the other on its Pollinations default, and the results
+        # page reported a POLLINATIONS failure while the form plainly
+        # showed Ideogram selected -- which reads as "Ideogram is
+        # broken". The non-default value wins, because "pollinations" is
+        # exactly what an unset or unsubmitted field yields.
+        self._write_template_with_a_background_layer("prov-300x250.psd", (300, 250))
+        seen = {}
+        original = webapp.get_provider
+
+        def spy(name):
+            seen[name] = seen.get(name, 0) + 1
+            return webapp.MockImageProvider()
+
+        webapp.get_provider = spy
+        try:
+            r = self.client.post(
+                "/generate",
+                data={
+                    "ai_hero_enabled": "1",
+                    "ai_hero_provider": "pollinations",
+                    "upload_ai_enabled": "1",
+                    "upload_ai_provider": "ideogram",
+                    "header": "",
+                    "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        finally:
+            webapp.get_provider = original
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("pollinations", seen, seen)
+        self.assertIn("ideogram", seen)
+
     def test_upload_ai_fills_each_templates_background_layer(self):
         # The generated artwork reaches the templates as a background
         # override, which is what leaves each template's own logo,
