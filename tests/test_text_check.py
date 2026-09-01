@@ -139,6 +139,75 @@ class RetryLoopTest(unittest.TestCase):
         self.assertFalse(result.available)
 
 
+@unittest.skipUnless(ocr_available(), "Tesseract isn't installed")
+class RemoveTextTest(unittest.TestCase):
+    def test_small_lettering_is_painted_out_and_stays_out(self):
+        dirty = _image_with_text("SALE", size=(1200, 900))
+        found = find_text(dirty)
+        self.assertTrue(found.found_text)
+        cleaned, removed, reason = webapp.remove_text(dirty, found)
+        self.assertIsNone(reason)
+        self.assertGreater(removed, 0)
+        # Verified, not assumed: inpainting can leave enough of a word
+        # behind to still be read, and claiming a clean image that isn't
+        # is worse than not trying.
+        self.assertFalse(find_text(cleaned).found_text, find_text(cleaned).summary())
+
+    def test_it_refuses_text_too_large_to_reconstruct(self):
+        # Painting out means inventing what was behind the words. Across
+        # half a frame that produces a smear more distracting than the
+        # lettering was, so it declines instead of quietly wrecking the
+        # image.
+        huge = Image.new("RGB", (900, 300), (230, 230, 230))
+        ImageDraw.Draw(huge).text((10, 40), "SALE", fill=(0, 0, 0), font=_font(240))
+        found = find_text(huge)
+        self.assertTrue(found.found_text)
+        cleaned, removed, reason = webapp.remove_text(huge, found)
+        self.assertIsNotNone(reason)
+        self.assertEqual(removed, 0)
+        self.assertIs(cleaned, huge)  # handed back untouched, not smeared
+
+    def test_a_refusal_warns_instead_of_claiming_a_fix(self):
+        huge = Image.new("RGB", (900, 300), (230, 230, 230))
+        ImageDraw.Draw(huge).text((10, 40), "SALE", fill=(0, 0, 0), font=_font(240))
+        found = find_text(huge)
+        _image, note, warning = webapp._clean_text_out(huge, found, "backdrop", 3)
+        self.assertIsNone(note)
+        self.assertIn("wasn't painted out", warning)
+        self.assertIn("3 attempts", warning)
+
+    def test_a_success_is_reported_as_a_note_not_a_warning(self):
+        dirty = _image_with_text("SALE", size=(1200, 900))
+        found = find_text(dirty)
+        _image, note, warning = webapp._clean_text_out(dirty, found, "backdrop", 1)
+        self.assertIsNone(warning)
+        self.assertIn("painted out", note)
+        self.assertIn("1 attempt", note)
+
+
+@unittest.skipUnless(ocr_available(), "Tesseract isn't installed")
+class PageSegmentationTest(unittest.TestCase):
+    def test_more_than_one_segmentation_mode_is_tried(self):
+        # The shipped default was mode 3 alone ("fully automatic page
+        # segmentation"), which assumes a scanned document. Benchmarked
+        # against real generated backdrops with text painted on, it found
+        # nothing at all -- 0 of 8, at every size tried -- so the check
+        # was live, passing its own tests, and detecting nothing.
+        from src.text_check import PAGE_SEGMENTATION_MODES
+
+        self.assertGreater(len(PAGE_SEGMENTATION_MODES), 1)
+        self.assertIn(6, PAGE_SEGMENTATION_MODES)
+        self.assertIn(11, PAGE_SEGMENTATION_MODES)
+
+    def test_the_same_word_found_by_two_modes_is_counted_once(self):
+        # The modes overlap heavily. Triple-counting a word would inflate
+        # the covered area and trip the "too large to paint out" limit on
+        # a single short word.
+        result = find_text(_image_with_text("SALE", size=(1200, 900)))
+        boxes = [f.box for f in result.findings]
+        self.assertEqual(len(boxes), len(set(boxes)))
+
+
 class OcrUnavailableTest(unittest.TestCase):
     def test_a_missing_engine_is_reported_not_treated_as_clean(self):
         # "Couldn't check" and "checked, clean" are different facts and

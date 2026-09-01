@@ -89,7 +89,7 @@ from src.providers import (
     get_provider,
 )
 from src.storage import SUPPORTED_EXTENSIONS
-from src.text_check import TextCheckResult, find_text, ocr_available
+from src.text_check import TextCheckResult, find_text, ocr_available, remove_text
 
 # Sane bounds for a user-supplied font size, in pixels -- just a safety
 # valve against nonsense input (0, negative, absurdly huge); the autofit
@@ -374,6 +374,49 @@ def _generate_text_free(provider, prompt: str, width: int, height: int):
         if not result.available or not result.found_text:
             break
     return image, used, attempts, result
+
+
+def _clean_text_out(image, result, label: str, attempts: int):
+    """Last resort once the retries are spent: paint the text out.
+
+    Returns (image, note, warning). Free -- no API call -- which is why
+    it runs before giving up and warning, and why it is worth attempting
+    even on a detection that might be a false alarm.
+
+    Painting out means inventing what was behind the words, so it is only
+    convincing on small, isolated lettering; remove_text() refuses
+    anything larger rather than trading readable text for an obvious
+    smear, and this reports that refusal plainly instead of implying the
+    image was fixed.
+    """
+    attempt_word = f"{attempts} attempt{'s' if attempts != 1 else ''}"
+    cleaned, removed, reason = remove_text(image, result)
+    if reason:
+        return (
+            image,
+            None,
+            f"The generated {label} has readable text in it ({result.summary()}) after "
+            f"{attempt_word}, and it wasn't painted out: {reason}. Try a different prompt "
+            "or provider, or supply your own image.",
+        )
+
+    # Verify rather than assume. Inpainting can leave enough of a word
+    # behind to still be read, and claiming a clean image that isn't is
+    # worse than not trying.
+    after = find_text(cleaned)
+    if after.found_text:
+        return (
+            cleaned,
+            None,
+            f"The generated {label} had text in it after {attempt_word}; painting it out "
+            f"left some behind ({after.summary()}). Worth a look before shipping.",
+        )
+    return (
+        cleaned,
+        f"Text was found in the generated {label} after {attempt_word} "
+        f"({result.summary()}) and painted out.",
+        None,
+    )
 
 
 def _default_template_sizes() -> list:
@@ -1296,13 +1339,13 @@ def generate():
                     "text in it."
                 )
             if upload_ai_text.found_text:
-                background_warnings_pending.append(
-                    f"The generated backdrop still has readable text in it "
-                    f"({upload_ai_text.summary()}) after {upload_ai_attempts} attempt"
-                    f"{'s' if upload_ai_attempts > 1 else ''}. Models bake in garbled "
-                    "lettering no matter how firmly the prompt asks them not to. Try a "
-                    "different prompt or provider, or upload your own hero image."
+                upload_ai_image, cleaned_note, cleaned_warning = _clean_text_out(
+                    upload_ai_image, upload_ai_text, "backdrop", upload_ai_attempts
                 )
+                if cleaned_note:
+                    background_notes_pending += " " + cleaned_note
+                if cleaned_warning:
+                    background_warnings_pending.append(cleaned_warning)
             elif not upload_ai_text.available:
                 background_warnings_pending.append(
                     "Couldn't check the generated backdrop for text -- Tesseract isn't "
@@ -1664,12 +1707,13 @@ def generate():
                 )
             background_notes.append(note)
             if hero_text.found_text:
-                background_warnings.append(
-                    f"The generated hero image still has readable text in it "
-                    f"({hero_text.summary()}) after {hero_attempts} attempt"
-                    f"{'s' if hero_attempts > 1 else ''}. Try a different prompt or provider, "
-                    "or supply your own image."
+                generated_image, cleaned_note, cleaned_warning = _clean_text_out(
+                    generated_image, hero_text, "hero image", hero_attempts
                 )
+                if cleaned_note:
+                    background_notes.append(cleaned_note)
+                if cleaned_warning:
+                    background_warnings.append(cleaned_warning)
         except ImageProviderError as exc:
             # Mirrors src/pipeline.py's own resilience (never let a flaky
             # free API turn into a hard failure) -- falls back to the
