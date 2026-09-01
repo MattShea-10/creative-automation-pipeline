@@ -204,7 +204,7 @@
         </div>
       </details>
 
-      <details class="upload-creative-box">
+      <details class="upload-creative-box" open>
         <summary>Upload Creative</summary>
         <label for="content_psd"><span class="psd-badge">PSD</span> 728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
         <div class="hint">
@@ -1008,8 +1008,14 @@
         // Campaign brief (it holds the required fields) always starts
         // open -- regardless of whatever state the card being cloned
         // from happened to be in when the button was clicked.
-        clone.querySelectorAll("details.upload-creative-box, details.manual-creative-box").forEach(function (d) {
+        // Manual Creative starts collapsed on a fresh card; Upload
+        // Creative doesn't, since it holds the content PSD field and the
+        // artwork generator -- the two things a new campaign starts from.
+        clone.querySelectorAll("details.manual-creative-box").forEach(function (d) {
           d.removeAttribute("open");
+        });
+        clone.querySelectorAll("details.upload-creative-box").forEach(function (d) {
+          d.setAttribute("open", "");
         });
         var brief = clone.querySelector("details.campaign-brief-box");
         if (brief) brief.setAttribute("open", "");
