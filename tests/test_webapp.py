@@ -3177,6 +3177,34 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         return r
 
+    def test_every_server_rendered_campaign_card_gets_its_own_handlers(self):
+        # Editing a multi-campaign batch renders several cards at once.
+        # initCreativeForm() looks its elements up with singular
+        # querySelector calls, so it has to run once PER CARD -- passing
+        # `document` wired the first card and left every other one inert:
+        # no dimming, no "Keep this image" handling, no Manual Creative
+        # lockout. Cards added by the button were fine (initialised
+        # individually), which is what made this hard to see.
+        session_id = "sess_two_cards"
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        self._generate_campaign(session_id, 1, (10, 10, 200))
+        r2 = self._generate_campaign(session_id, 2, (200, 10, 10))
+        job_id = re.search(rb"/download/([0-9a-f]+)", r2.data).group(1).decode()
+
+        page = self.client.get(f"/edit/{job_id}").data.decode()
+        # The scenario is real: this page genuinely carries two cards,
+        # each with its own copy of the controls.
+        self.assertEqual(page.count('class="campaign-card"'), 2)
+        # The input itself -- a bare name= count also matches the
+        # script's own selector string.
+        self.assertEqual(page.count('type="checkbox" id="upload_ai_keep"'), 2)
+
+        self.assertIn("initialCards.forEach(initCreativeForm)", page)
+        # The document-wide call may survive only as the no-cards
+        # fallback -- never as the unconditional entry point it was.
+        self.assertNotIn("\n      initCreativeForm(document);", page)
+        self.assertIn("else initCreativeForm(document);", page)
+
     def test_download_campaigns_bundles_every_campaigns_zip(self):
         # Each campaign card is its own job with its own zip, so grabbing
         # a whole multi-campaign page otherwise means visiting each

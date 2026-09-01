@@ -1304,7 +1304,18 @@
       }
 
       addBtn.addEventListener("click", addCampaignCard);
-      initCreativeForm(document);
+
+      // Per card, not once for the document. Every lookup inside
+      // initCreativeForm is a singular querySelector, so passing
+      // `document` wired the FIRST card and silently left every other
+      // one inert -- no dimming, no "keep" handling, no Manual Creative
+      // lockout. Cards cloned by the button were fine (they're
+      // initialised individually above); the ones that broke were the
+      // server-rendered set you get back from editing a multi-campaign
+      // batch, which is exactly where those controls get used.
+      var initialCards = document.querySelectorAll(".campaign-card");
+      if (initialCards.length) initialCards.forEach(initCreativeForm);
+      else initCreativeForm(document);
     })();
   </script>
 </body>
