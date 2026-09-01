@@ -36,7 +36,7 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 
 from src.creative_render import render_creative, render_creative_layers
-from src.psd_export import save_layered_psd
+from src.psd_export import save_layered_psd, set_type_layer_colors
 from src.compliance import check_profanity, check_trademark_text
 from src.image_ops import (
     get_psd_text_layers,
@@ -1624,6 +1624,17 @@ def generate():
                     box = layer_boxes.get(layer_key)
                     if box is None:
                         return
+                    if not text:
+                        # Restyling, not rewriting. Someone who picked a
+                        # colour or a font without retyping the words
+                        # means "this layer, in that colour" -- so the
+                        # layer's own text is read back out of the PSD and
+                        # redrawn. Without this the whole override was
+                        # gated behind the text box, and changing only the
+                        # colour did nothing at all.
+                        text = (get_psd_text_layers(psd_path_for_size) or {}).get(layer_key) if psd_path_for_size else None
+                        if not text:
+                            return
                     # full_box: a text override replaces what was in the
                     # box rather than printing over it -- see
                     # _clean_layer_box() for why a text layer needs this
@@ -1731,7 +1742,14 @@ def generate():
                             "instead so the text stays inside the box."
                         )
 
-                if layer_header_text:
+                # Any of these on their own is a reason to redraw the
+                # layer: new words, a colour, a family, a size.
+                if (
+                    layer_header_text
+                    or layer_header_use_custom_color
+                    or layer_header_font_family
+                    or layer_header_font_size
+                ):
                     _apply_text_layer_override(
                         "header",
                         layer_header_text,
@@ -1740,7 +1758,12 @@ def generate():
                         layer_header_use_custom_color,
                         layer_header_text_color,
                     )
-                if layer_description_text:
+                if (
+                    layer_description_text
+                    or layer_description_use_custom_color
+                    or layer_description_font_family
+                    or layer_description_font_size
+                ):
                     _apply_text_layer_override(
                         "description",
                         layer_description_text,
@@ -1796,6 +1819,26 @@ def generate():
                             )
                             shutil.copy(psd_path_for_size, job_dir / source_candidate_filename)
                             source_psd_filename = source_candidate_filename
+                            # Carry a custom text colour into the live
+                            # text too. The rendered PSD beside this one
+                            # has the colour baked into pixels; here it
+                            # stays an editable type layer that simply
+                            # opens in the right colour.
+                            live_text_colors = {}
+                            if layer_header_use_custom_color:
+                                live_text_colors["header"] = layer_header_text_color
+                            if layer_description_use_custom_color:
+                                live_text_colors["description"] = layer_description_text_color
+                            if live_text_colors:
+                                recoloured = set_type_layer_colors(
+                                    job_dir / source_candidate_filename, live_text_colors
+                                )
+                                if recoloured:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: source PSD's live text recoloured -- "
+                                        + ", ".join(recoloured)
+                                        + "."
+                                    )
                         psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
                         save_layered_psd(
                             export_layers,

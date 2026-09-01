@@ -51,6 +51,75 @@ REUPLOAD_LAYER_NAMES = {
 }
 
 
+def set_type_layer_colors(psd_path, colors: dict) -> list:
+    """Recolour live Photoshop type layers in the PSD at `psd_path`, in
+    place, keeping them editable text.
+
+    `colors` maps a lowercased layer name to an (r, g, b) tuple. Only
+    layers that are real type layers and are named in it are touched;
+    everything else in the file is left exactly as it was.
+
+    A type layer's colour lives in its text engine data, as a FillColor
+    per style run -- so a run of text with mixed colours has several, and
+    all of them are set. The floats are stored as psd-tools' own Float
+    objects and mutated in place: replacing the list with plain Python
+    numbers parses fine but blows up on save, since the writer expects
+    objects that know how to serialize themselves.
+
+    Returns the names of the layers actually recoloured. Best-effort by
+    design -- a file psd-tools can't parse, or a type layer whose engine
+    data is shaped unexpectedly, returns [] rather than raising, because
+    this only ever decorates a download that is already correct.
+
+    One caveat worth knowing: this rewrites the text's styling, not the
+    rasterized preview Photoshop caches alongside it. Photoshop re-renders
+    the type layer on open, so the colour is right there; a viewer that
+    only reads the cached composite may still show the old colour.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return []
+
+    wanted = {name.strip().lower(): rgb for name, rgb in colors.items()}
+    recoloured = []
+    for layer in psd:
+        name = layer.name.strip().lower()
+        if name not in wanted or getattr(layer, "kind", None) != "type":
+            continue
+        red, green, blue = wanted[name]
+        try:
+            runs = layer.engine_dict["StyleRun"]["RunArray"]
+        except Exception:
+            continue
+        touched = False
+        for run in runs:
+            try:
+                fill = run["StyleSheet"]["StyleSheetData"]["FillColor"]
+                values = fill["Values"]
+            except Exception:
+                continue
+            # Values are [alpha, r, g, b] as 0..1 floats for an RGB fill.
+            for index, component in enumerate((1.0, red / 255, green / 255, blue / 255)):
+                if index < len(values):
+                    values[index].value = component
+            touched = True
+        if touched:
+            recoloured.append(layer.name)
+
+    if not recoloured:
+        return []
+    try:
+        psd.save(psd_path)
+    except Exception:
+        return []
+    return recoloured
+
+
 def _tight_bbox_crop(layer_img: Image.Image) -> Tuple[Image.Image, int, int]:
     """Crop `layer_img` (RGBA, full canvas size) down to its own non-empty
     content's bounding box, returning (cropped_image, left, top).

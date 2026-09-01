@@ -18,7 +18,13 @@ from psd_tools import PSDImage
 
 from src.creative_render import render_creative, render_creative_layers
 from src.image_ops import get_psd_backdrop, get_psd_layer_background, get_psd_layer_boxes
-from src.psd_export import REUPLOAD_LAYER_NAMES, _tight_bbox_crop, build_layered_psd, save_layered_psd
+from src.psd_export import (
+    REUPLOAD_LAYER_NAMES,
+    _tight_bbox_crop,
+    build_layered_psd,
+    save_layered_psd,
+    set_type_layer_colors,
+)
 
 
 class PsdExportTest(unittest.TestCase):
@@ -78,6 +84,47 @@ class PsdExportTest(unittest.TestCase):
         dest = self.tmp_dir / "no-background.psd"
         save_layered_psd([("logo", logo)], size, dest, layer_names={})
         self.assertIsNone(get_psd_backdrop(dest))
+
+    REAL_TEMPLATE = Path(__file__).resolve().parent.parent / "default_templates" / "tester-1080x1080.psd"
+
+    @unittest.skipUnless(
+        REAL_TEMPLATE.is_file(),
+        "needs a real template with a live type layer -- the synthetic fixtures have none",
+    )
+    def test_set_type_layer_colors_recolours_live_text_in_place(self):
+        # Recolouring a type layer has to leave it editable text. The
+        # colour lives in the text engine data, so this checks it both
+        # survives a save and doesn't cost the layer its text.
+        dest = self.tmp_dir / "recoloured.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+
+        before = PSDImage.open(dest)
+        original = [l for l in before if l.kind == "type" and l.name == "description"][0]
+        original_text = original.text
+
+        recoloured = set_type_layer_colors(dest, {"description": (255, 0, 0)})
+        self.assertEqual(recoloured, ["description"])
+
+        after = PSDImage.open(dest)
+        layer = [l for l in after if l.name == "description"][0]
+        self.assertEqual(layer.kind, "type", "recolouring must not rasterize the layer")
+        self.assertEqual(layer.text, original_text, "the words must survive untouched")
+        fill = layer.engine_dict["StyleRun"]["RunArray"][0]["StyleSheet"]["StyleSheetData"]["FillColor"]
+        # [alpha, r, g, b] as 0..1 floats.
+        self.assertEqual([round(float(v), 3) for v in fill["Values"]], [1.0, 1.0, 0.0, 0.0])
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_set_type_layer_colors_ignores_layers_it_was_not_asked_about(self):
+        dest = self.tmp_dir / "untouched.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        self.assertEqual(set_type_layer_colors(dest, {"logo": (255, 0, 0)}), [])
+
+    def test_set_type_layer_colors_on_an_unreadable_file_is_a_no_op(self):
+        # Best-effort by design: this only decorates a download that is
+        # already correct, so a bad file returns [] rather than raising.
+        junk = self.tmp_dir / "not-a.psd"
+        junk.write_bytes(b"nope")
+        self.assertEqual(set_type_layer_colors(junk, {"description": (1, 2, 3)}), [])
 
     def test_build_layered_psd_rejects_empty_layer_list(self):
         with self.assertRaises(ValueError):

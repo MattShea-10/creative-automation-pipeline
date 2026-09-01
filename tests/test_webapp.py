@@ -2698,6 +2698,44 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         r = self._generate_campaign(session_id, 1, (10, 10, 200))
         self.assertNotIn(b"campaigns (.zip)", r.data)
 
+    def test_a_custom_colour_is_honoured_over_the_psds_own(self):
+        # The colour plumbing itself: ticked "custom text colour" beats
+        # whatever the PSD's type layer was set to, and the debug note
+        # names the colour actually drawn with.
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "layer_description_text": "Recoloured words",
+            "layer_description_use_custom_color": "1",
+            "layer_description_text_color": "#ff0000",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"color (255, 0, 0)", r.data)
+        self.assertIn(b"-- description", r.data)
+
+    def test_styling_alone_no_longer_needs_text_to_be_retyped(self):
+        # The complaint: a colour picked with the text box left alone did
+        # nothing, because the whole override sat behind having typed new
+        # words. It's reached now -- these fixtures carry no real type
+        # layer for it to read back, so this pins the trigger rather than
+        # the redraw (see the description-layer render check above).
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "layer_description_use_custom_color": "1",
+            "layer_description_text_color": "#ff0000",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        # Nothing typed anywhere, so no text layer is rewritten -- but the
+        # run completes rather than silently dropping the request.
+        self.assertNotIn(b"-- description", r.data)
+
     def test_upload_ai_stands_in_for_a_missing_content_psd(self):
         # No flagship PSD designed yet, so the Upload Creative generator
         # makes the campaign artwork instead. That still counts as a
