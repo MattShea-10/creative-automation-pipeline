@@ -1632,7 +1632,17 @@ def generate():
                         # redrawn. Without this the whole override was
                         # gated behind the text box, and changing only the
                         # colour did nothing at all.
-                        text = (get_psd_text_layers(psd_path_for_size) or {}).get(layer_key) if psd_path_for_size else None
+                        # visible_only: a layer switched off in Photoshop
+                        # has no words to restyle. Without this, styling
+                        # one of them redrew hidden text onto every
+                        # creative -- and since a hidden header's box
+                        # tends to sit over the logo, clearing that box
+                        # first wiped most of the logo out with it.
+                        text = (
+                            (get_psd_text_layers(psd_path_for_size, visible_only=True) or {}).get(layer_key)
+                            if psd_path_for_size
+                            else None
+                        )
                         if not text:
                             return
                     # full_box: a text override replaces what was in the

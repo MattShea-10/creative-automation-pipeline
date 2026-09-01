@@ -1411,7 +1411,7 @@ def get_psd_layer_stack(psd_path: Union[str, Path]) -> Optional[List[Tuple[str, 
     return stack
 
 
-def get_psd_text_layers(psd_path: Union[str, Path]) -> dict:
+def get_psd_text_layers(psd_path: Union[str, Path], visible_only: bool = False) -> dict:
     """Return {lowercased layer name: text content} for every top-level
     text (type) layer in the PSD at `psd_path` -- the actual words someone
     typed into that layer in Photoshop (e.g. a "description" layer baked
@@ -1422,6 +1422,13 @@ def get_psd_text_layers(psd_path: Union[str, Path]) -> dict:
     flagged language typed into one of the web form's own fields --
     otherwise that check would be trivially bypassable by putting the
     text in the PSD instead of the form.
+
+    `visible_only=True` additionally skips layers switched off in
+    Photoshop. The profanity check wants them -- text hidden in a file is
+    still text someone shipped, and skipping it would make the check
+    trivially bypassable. Anything that *renders* a layer's words wants
+    the opposite: a layer the designer turned off must stay off, not get
+    resurrected onto the creative.
 
     A layer with no text (an empty type layer) is skipped. Returns {} if
     `psd-tools` isn't installed, the file can't be opened, or it isn't a
@@ -1442,6 +1449,8 @@ def get_psd_text_layers(psd_path: Union[str, Path]) -> dict:
     for layer in psd:
         name = (layer.name or "").strip()
         if not name or layer.kind != "type":
+            continue
+        if visible_only and not layer.visible:
             continue
         try:
             text = layer.text
