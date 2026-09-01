@@ -2698,6 +2698,118 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         r = self._generate_campaign(session_id, 1, (10, 10, 200))
         self.assertNotIn(b"campaigns (.zip)", r.data)
 
+    def test_upload_ai_stands_in_for_a_missing_content_psd(self):
+        # No flagship PSD designed yet, so the Upload Creative generator
+        # makes the campaign artwork instead. That still counts as a
+        # templated campaign: default_templates/ drives the batch and the
+        # generated image fills each template's background layer.
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "upload_ai_enabled": "1",
+            "upload_ai_provider": "mock",
+            "upload_ai_prompt": "a runner mid-stride",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Campaign artwork generated with AI (mock)", r.data)
+        self.assertIn(b"a runner mid-stride", r.data)
+        # The saved template is the batch -- not the social defaults.
+        self.assertEqual(r.data.count(b'class="card"'), 1)
+        self.assertIn(b"970x90", r.data)
+        self.assertNotIn(b"1080x1080", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        self.assertTrue(
+            (webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png").is_file()
+        )
+
+    def _write_template_with_a_background_layer(self, filename, size):
+        """A saved template carrying all four named layers this app looks
+        for. The hand-rolled _sample_psd_bytes() fixtures only carry
+        logo/description/product, so a background override has no box to
+        land in -- fine for most tests, useless for this one.
+        """
+        from src.psd_export import save_layered_psd
+
+        width, height = size
+        background = Image.new("RGBA", size, (30, 180, 30, 255))
+        logo = Image.new("RGBA", size, (0, 0, 0, 0))
+        logo.paste((255, 255, 255, 255), (2, 2, max(3, width // 4), max(3, height // 4)))
+        description = Image.new("RGBA", size, (0, 0, 0, 0))
+        description.paste((200, 200, 200, 255), (2, height // 2, max(3, width // 3), height - 2))
+        product = Image.new("RGBA", size, (0, 0, 0, 0))
+        product.paste((10, 10, 10, 255), (width // 2, height // 3, width - 2, height - 2))
+        dest = webapp.DEFAULT_TEMPLATES_DIR / filename
+        save_layered_psd(
+            [
+                ("background", background),
+                ("logo", logo),
+                ("description", description),
+                ("product", product),
+            ],
+            size,
+            dest,
+            layer_names={},
+        )
+        return dest
+
+    def test_upload_ai_fills_each_templates_background_layer(self):
+        # The generated artwork reaches the templates as a background
+        # override, which is what leaves each template's own logo,
+        # product and CTA where they were designed.
+        self._write_template_with_a_background_layer("gen-300x250.psd", (300, 250))
+        data = {
+            "upload_ai_enabled": "1",
+            "upload_ai_provider": "mock",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"300x250: updated layer(s) -- background", r.data)
+
+    def test_a_content_psd_wins_over_the_upload_generator(self):
+        # Upload a 728x480 and it supplies the artwork -- the generator is
+        # skipped entirely rather than spending ~40 seconds on an image
+        # nothing would use.
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "upload_ai_enabled": "1",
+            "upload_ai_provider": "mock",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn(b"Campaign artwork generated with AI", r.data)
+
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        self.assertFalse(
+            (webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png").exists()
+        )
+
+    def test_upload_ai_does_not_override_a_hand_uploaded_background(self):
+        # A background image the user picked themselves still wins over
+        # the generated one -- the generator fills a gap, it doesn't
+        # overrule a choice.
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "upload_ai_enabled": "1",
+            "upload_ai_provider": "mock",
+            "layer_background_image": (self._sample_image_bytes(color=(7, 7, 7)), "bg.png"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        e = self.client.get(f"/edit/{job_id}")
+        # The cached background chip shows the uploaded file, not the
+        # generated one.
+        self.assertIn(b"bg.png", e.data)
+
     def test_content_psd_wrong_extension_flashes(self):
         data = {
             "content_psd": (self._sample_image_bytes(), "content.png"),

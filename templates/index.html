@@ -80,7 +80,8 @@
     .ai-hero-callout .hint { @apply text-yellow-200/70; }
     /* Untick the box and the prompt/provider stay put, just dimmed --
        visibly inactive rather than gone. */
-    #ai_hero_options.is-inactive, .ai-hero-callout [data-role="ai-hero-options"].is-inactive { @apply opacity-60; }
+    #ai_hero_options.is-inactive, .ai-hero-callout [data-role="ai-hero-options"].is-inactive,
+    [data-role="upload-ai-options"].is-inactive, .ai-hero-callout.is-inactive { @apply opacity-60; }
     .ai-badge {
       @apply inline-block bg-yellow-500 text-slate-900 text-[0.68rem] font-bold uppercase tracking-wide rounded px-[0.4rem] py-[0.05rem] mr-1 align-middle;
     }
@@ -216,6 +217,35 @@
         </div>
         <input type="file" id="content_psd" name="content_psd" accept=".psd" data-has-prior="{{ 'true' if prefill_files.get('content_psd') else 'false' }}">
         {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+
+        <div class="ai-hero-callout" style="margin-top: 0.9rem;">
+          <div class="checkbox-row" style="margin: 0;">
+            <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
+            <span><span class="ai-badge">AI</span> No content PSD yet? Generate the campaign artwork instead -- it stands in for the
+            728x480 upload above, and every size saved in <code>default_templates/</code> is built from it
+            (uses a real GenAI provider -- can take up to ~40 seconds)</span>
+          </div>
+          <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
+            <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+            <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
+            <div class="inline-controls" style="margin-top: 0.5rem;">
+              <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Provider</span>
+                <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
+                  <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
+                  <option value="huggingface" {% if prefill.get('upload_ai_provider') == 'huggingface' %}selected{% endif %}>Hugging Face SDXL (needs a token)</option>
+                  <option value="mock" {% if prefill.get('upload_ai_provider') == 'mock' %}selected{% endif %}>Offline placeholder (no network)</option>
+                </select>
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.4rem;">
+              Ignored if you upload a content PSD above -- that always wins. The generated image fills each
+              template's <code>background</code> layer, so the logo, product and CTA the templates already
+              carry stay where they were designed. Upload your own under "Background image" below to override
+              it. If the provider fails, the offline placeholder is used and a warning explains why.
+            </div>
+          </div>
+        </div>
 
         <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
@@ -713,6 +743,33 @@
       // nothing on screen to say why. The server ignores both fields
       // unless ai_hero_enabled is actually set, so showing them costs
       // nothing.
+      // The Upload Creative generator: dimmed when unticked, and disabled
+      // outright once a content PSD is chosen, since the upload always
+      // wins and generating artwork nothing would use is pure waiting.
+      var uploadAiCheckbox = root.querySelector('[name="upload_ai_enabled"]');
+      var uploadAiOptions = root.querySelector('[data-role="upload-ai-options"]');
+      var uploadAiBox = uploadAiCheckbox ? uploadAiCheckbox.closest(".ai-hero-callout") : null;
+      var contentPsdForAi = root.querySelector('[name="content_psd"]');
+      if (uploadAiCheckbox && uploadAiOptions) {
+        var syncUploadAi = function () {
+          var hasContentPsd =
+            contentPsdForAi &&
+            ((contentPsdForAi.files && contentPsdForAi.files.length > 0) ||
+              contentPsdForAi.dataset.hasPrior === "true");
+          uploadAiCheckbox.disabled = !!hasContentPsd;
+          uploadAiOptions.querySelectorAll("input, select").forEach(function (el) {
+            el.disabled = !!hasContentPsd;
+          });
+          uploadAiOptions.classList.toggle(
+            "is-inactive", !!hasContentPsd || !uploadAiCheckbox.checked
+          );
+          if (uploadAiBox) uploadAiBox.classList.toggle("is-inactive", !!hasContentPsd);
+        };
+        uploadAiCheckbox.addEventListener("change", syncUploadAi);
+        if (contentPsdForAi) contentPsdForAi.addEventListener("change", syncUploadAi);
+        syncUploadAi();
+      }
+
       var aiHeroCheckbox = root.querySelector('[name="ai_hero_enabled"]');
       var aiHeroOptions = root.querySelector('[data-role="ai-hero-options"]');
       if (aiHeroCheckbox && aiHeroOptions) {

@@ -187,6 +187,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "product_name", "market", "audience", "campaign_message",
     "brand_color_1", "brand_color_2", "brand_color_3",
     "ai_hero_prompt", "ai_hero_provider",
+    "upload_ai_prompt", "upload_ai_provider",
     "header", "description", "custom_sizes",
     "fit_mode",
     "header_text_color", "header_align", "header_font_size",
@@ -211,6 +212,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "layer_description_use_custom_color",
     "brand_color_1_enabled", "brand_color_2_enabled", "brand_color_3_enabled",
     "ai_hero_enabled",
+    "upload_ai_enabled",
 )
 
 # Euclidean RGB distance under which a pixel counts as "matching" a brand
@@ -224,6 +226,10 @@ BRAND_COLOR_MATCH_TOLERANCE = 30
 # generated ourselves rather than something the user uploaded -- see the
 # hero_fresh/hero_path block above.
 AI_GENERATED_HERO_FILENAME = "ai_generated_hero.png"
+# The Upload Creative generator's output -- the campaign artwork used
+# when no content PSD was designed. Named apart from the hero image so
+# the two never overwrite each other in a job that used both.
+AI_GENERATED_CAMPAIGN_FILENAME = "ai_generated_campaign.png"
 
 # Matches a WxH size anywhere in a filename (not just at the start --
 # real-world default-template files look like "tester-728x480.psd" or
@@ -614,6 +620,17 @@ def generate():
     # provider abstraction (src/providers/) the CLI pipeline
     # (src/pipeline.py) already calls -- this is the first thing in the
     # web app that actually invokes it.
+    # The Upload Creative panel's own generator: stands in for a content
+    # PSD the user hasn't designed yet. Same providers, same prompt
+    # handling as the Manual Creative one below, but a different job --
+    # this one supplies the campaign's artwork to the saved templates
+    # rather than a hero image for a plain render.
+    upload_ai_enabled = bool(request.form.get("upload_ai_enabled"))
+    upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
+    upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
+    if upload_ai_provider not in PROVIDER_NAMES:
+        upload_ai_provider = "pollinations"
+
     ai_hero_enabled = bool(request.form.get("ai_hero_enabled"))
     ai_hero_prompt = (request.form.get("ai_hero_prompt") or "").strip() or None
     ai_hero_provider = request.form.get("ai_hero_provider", "pollinations")
@@ -866,6 +883,40 @@ def generate():
         # general hero image are still ignored in this mode either way.
         sizes = []
 
+    # No content PSD, but the Upload Creative generator is on: make the
+    # campaign's artwork instead of requiring a flagship PSD to exist
+    # first. It's generated at the content PSD's own size so it plays the
+    # same role -- source artwork the saved templates are built from --
+    # and it's fed in as a background-layer override further down, which
+    # is what carries it onto every template size.
+    upload_ai_image = None
+    upload_ai_path = None
+    if upload_ai_enabled and not content_psd_provided:
+        upload_ai_prompt_text = upload_ai_prompt or (
+            f"professional studio product photo of {product_name or 'the product'}, clean background"
+        )
+        try:
+            upload_ai_image = get_provider(upload_ai_provider).generate(
+                upload_ai_prompt_text, width=CONTENT_PSD_SIZE[0], height=CONTENT_PSD_SIZE[1]
+            )
+            background_notes_pending = (
+                f"Campaign artwork generated with AI ({upload_ai_provider}) in place of a content "
+                f"PSD -- prompt: \"{upload_ai_prompt_text}\"."
+            )
+        except ImageProviderError as exc:
+            # Same resilience as the hero generator: a flaky free API
+            # degrades to the offline placeholder rather than failing the
+            # whole run, and says so instead of quietly looking worse.
+            upload_ai_image = MockImageProvider().generate(upload_ai_prompt_text)
+            background_notes_pending = (
+                f"Campaign artwork: the '{upload_ai_provider}' AI provider failed ({exc}) -- used the "
+                f"offline placeholder generator instead. Prompt: \"{upload_ai_prompt_text}\"."
+            )
+        upload_ai_path = uploads_dir / AI_GENERATED_CAMPAIGN_FILENAME
+        upload_ai_image.save(upload_ai_path)
+    else:
+        background_notes_pending = None
+
     # Profanity check, PSD text layers -- same hard gate as the typed
     # form fields above, just sourced from whatever's actually typed into
     # a text layer inside a freshly uploaded PSD (e.g. a template's
@@ -884,6 +935,8 @@ def generate():
 
     background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
+    if background_notes_pending:
+        background_notes.append(background_notes_pending)
 
     # Saved default templates (default_templates/) define the batch, but
     # only for a templated campaign -- one where the quick-campaign
@@ -897,7 +950,7 @@ def generate():
     # how a second campaign card, cloned blank with its file inputs
     # reset, ended up previewing a set indistinguishable from the first
     # one's.
-    if content_psd_provided:
+    if content_psd_provided or upload_ai_image is not None:
         default_templates, default_template_paths = _default_size_templates()
     else:
         default_templates, default_template_paths = {}, {}
@@ -1041,6 +1094,13 @@ def generate():
     # rendering from their saved templates untouched. A layer the user
     # uploaded by hand above wins; this only fills the gaps.
     propagated_layer_names = set()
+    if upload_ai_image is not None and "background" not in layer_image_overrides:
+        # The generated artwork reaches the templates the same way an
+        # uploaded content PSD's own background layer does -- as a
+        # background override, fitted to each size's background box. A
+        # background image the user uploaded by hand still wins.
+        layer_image_overrides["background"] = upload_ai_image.convert("RGBA")
+        layer_upload_paths["layer_background_image"] = upload_ai_path
     if content_psd_provided:
         for layer_name, layer_image in _content_psd_layer_images(content_psd_path).items():
             if layer_name in layer_image_overrides:
