@@ -10,6 +10,7 @@ venv/
 
 # Environment / secrets
 .env
+.env.backup-*
 
 # Generated at runtime -- real job data (uploaded creatives, campaign
 # briefs, rendered PNG/PSD output) and AI-hero-image cache, not source.

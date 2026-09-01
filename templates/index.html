@@ -88,6 +88,23 @@
        visibly inactive rather than gone. */
     #ai_hero_options.is-inactive, .ai-hero-callout [data-role="ai-hero-options"].is-inactive,
     [data-role="upload-ai-options"].is-inactive, .ai-hero-callout.is-inactive { @apply opacity-60; }
+    /* "Keep this image" is a harder off than the dimming above: these
+       controls aren't merely inactive, they're disabled, and an edit to
+       one would be silently ignored. Dimmed further and made inert, so
+       it reads as unavailable rather than just quiet.
+
+       This needs its own rule -- the shared `.is-inactive` selector list
+       above is a fixed list of element selectors, not a class rule, so a
+       new wrapper that toggles the class gets no styling at all until
+       it's named here. That is exactly what happened the first time:
+       ticking the box disabled the inputs but changed nothing visible,
+       because the only greying browsers give a disabled input on this
+       dark theme is invisible, and a checkbox's own <span> label never
+       greys at all. */
+    [data-role="upload-ai-fresh"].is-inactive {
+      @apply opacity-40;
+      pointer-events: none;
+    }
     .ai-badge {
       @apply inline-block bg-yellow-500 text-slate-900 text-[0.68rem] font-bold uppercase tracking-wide rounded px-[0.4rem] py-[0.05rem] mr-1 align-middle;
     }

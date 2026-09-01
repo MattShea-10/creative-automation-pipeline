@@ -2298,7 +2298,14 @@ class PaidProviderTest(unittest.TestCase):
         from src.providers.base import ImageProviderError
         from src.providers.ideogram_provider import IdeogramProvider
 
-        saved = {k: os.environ.pop(k, None) for k in ("IDEOGRAM_API_KEY",)}
+        saved = {k: os.environ.get(k) for k in ("IDEOGRAM_API_KEY", "IDEOGRAM_MODEL")}
+        os.environ.pop("IDEOGRAM_API_KEY", None)
+        # Pinned, not inherited: webapp calls load_dotenv() at import, so
+        # without this the assertion below reads whoever's running the
+        # suite. A real .env with a key accidentally on the model line
+        # made this fail for a reason that had nothing to do with the
+        # missing key it was checking.
+        os.environ["IDEOGRAM_MODEL"] = "ideogram-v3"
         try:
             with self.assertRaises(ImageProviderError) as caught:
                 IdeogramProvider()
@@ -2309,7 +2316,9 @@ class PaidProviderTest(unittest.TestCase):
             self.assertIn("subscription", message)
         finally:
             for key, value in saved.items():
-                if value is not None:
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
                     os.environ[key] = value
 
     def test_exactly_two_providers_are_offered_and_mock_is_not_one_of_them(self):
@@ -3440,7 +3449,10 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         webapp.app.config["TESTING"] = True
         page = webapp.app.test_client().get("/").data.decode()
 
-        start = page.index('data-role="upload-ai-fresh"')
+        # '<div ' included on purpose: the same attribute now appears in
+        # a CSS selector further up the page, and matching that instead
+        # sends the div-walk below off through unbalanced markup.
+        start = page.index('<div data-role="upload-ai-fresh"')
         cursor, depth = page.index(">", start) + 1, 1
         while depth:
             match = re.compile(r"<(/?)div\b").search(page, cursor)
@@ -3459,6 +3471,25 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # predates the field", and a disabled input submits neither way.
         self.assertIn('name="upload_ai_background_style_seen"', wrapper)
         self.assertIn('input:not([type="hidden"]), select, textarea', page)
+
+        # Disabling the inputs is only half of it. The greying comes from
+        # a CSS rule on the wrapper's is-inactive class, and the shared
+        # .is-inactive declaration is a fixed list of element selectors
+        # -- a new wrapper toggling that class gets no styling until it
+        # is named. First time round it wasn't, so ticking the box
+        # disabled the controls and changed nothing visible: the only
+        # greying a browser gives a disabled input on this dark theme is
+        # invisible, and a checkbox's own <span> label never greys.
+        self.assertIn('[data-role="upload-ai-fresh"].is-inactive', page)
+
+    def test_template_edits_reach_a_running_server(self):
+        # Jinja compiles a template once and caches it for the process's
+        # lifetime, and the dev reloader only watches .py files -- so
+        # without this an edit to index.html changed nothing in a running
+        # server, silently, while still serving the old markup. That
+        # reads as "the fix didn't work" rather than "the server hasn't
+        # seen the fix".
+        self.assertTrue(webapp.app.config["TEMPLATES_AUTO_RELOAD"])
 
     def test_keep_this_image_reuses_the_previous_runs_artwork(self):
         # The point of the checkbox: adjust anything else about the

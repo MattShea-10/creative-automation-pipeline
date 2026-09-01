@@ -447,6 +447,13 @@ SIZE_PRESET_CHOICES = [
 app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
 app.secret_key = os.environ.get("WEBAPP_SECRET_KEY", secrets.token_hex(16))
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB -- generous enough for a short product video
+# Jinja compiles a template once and caches it for the life of the
+# process. The dev reloader only watches .py files, so without this an
+# edit to templates/index.html changed nothing in a running server --
+# silently, with the old markup still being served. That reads as "the
+# fix didn't work" rather than "the server hasn't seen the fix", and cost
+# a real debugging session.
+app.config["TEMPLATES_AUTO_RELOAD"] = True
 
 
 def _allowed(filename: str, extensions) -> bool:
