@@ -24,6 +24,16 @@ from __future__ import annotations
 import io
 import json
 import os
+
+try:  # optional, same as src/main.py -- a missing python-dotenv isn't fatal
+    from dotenv import load_dotenv
+except ImportError:  # pragma: no cover
+    load_dotenv = None
+else:
+    # The CLI has always read .env; the web app never did, so a token or
+    # model set there was silently ignored and "HUGGINGFACE_API_TOKEN is
+    # not set" came back from a form that had it configured all along.
+    load_dotenv()
 import re
 import secrets
 import shutil
