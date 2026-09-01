@@ -78,6 +78,9 @@
     code { @apply bg-slate-800 px-[0.35rem] py-[0.1rem] rounded text-[0.85em] text-slate-300; }
     .ai-hero-callout { @apply border border-yellow-600 bg-yellow-950/40 rounded-md px-4 py-3; }
     .ai-hero-callout .hint { @apply text-yellow-200/70; }
+    /* Untick the box and the prompt/provider stay put, just dimmed --
+       visibly inactive rather than gone. */
+    #ai_hero_options.is-inactive, .ai-hero-callout [data-role="ai-hero-options"].is-inactive { @apply opacity-60; }
     .ai-badge {
       @apply inline-block bg-yellow-500 text-slate-900 text-[0.68rem] font-bold uppercase tracking-wide rounded px-[0.4rem] py-[0.05rem] mr-1 align-middle;
     }
@@ -401,7 +404,7 @@
             <input type="checkbox" id="ai_hero_enabled" name="ai_hero_enabled" value="1" {% if prefill.get('ai_hero_enabled') %}checked{% endif %}>
             <span><span class="ai-badge">AI</span> Generate a hero image with AI if no hero image ends up covering a size (uses a real GenAI image-generation provider -- can take up to ~40 seconds)</span>
           </div>
-          <div id="ai_hero_options" data-role="ai-hero-options" hidden style="margin-top: 0.6rem;">
+          <div id="ai_hero_options" data-role="ai-hero-options" style="margin-top: 0.6rem;">
             <label for="ai_hero_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
             <input type="text" id="ai_hero_prompt" name="ai_hero_prompt" placeholder="Leave blank to auto-build from product name / header" value="{{ prefill.get('ai_hero_prompt', '') }}">
             <div class="inline-controls" style="margin-top: 0.5rem;">
@@ -703,11 +706,18 @@
     // cloned campaign card added later (see addCampaignCard() below),
     // even though clones get their own unique ids (see remapIds()).
     function initCreativeForm(root) {
+      // The AI prompt and provider stay visible whether or not the box
+      // is ticked -- ticking it just dims/undims them. They used to be
+      // hidden outright and revealed by this handler, which made the
+      // control disappear entirely whenever the script didn't run, with
+      // nothing on screen to say why. The server ignores both fields
+      // unless ai_hero_enabled is actually set, so showing them costs
+      // nothing.
       var aiHeroCheckbox = root.querySelector('[name="ai_hero_enabled"]');
       var aiHeroOptions = root.querySelector('[data-role="ai-hero-options"]');
       if (aiHeroCheckbox && aiHeroOptions) {
         var syncHero = function () {
-          aiHeroOptions.hidden = !aiHeroCheckbox.checked;
+          aiHeroOptions.classList.toggle("is-inactive", !aiHeroCheckbox.checked);
         };
         aiHeroCheckbox.addEventListener("change", syncHero);
         syncHero();
