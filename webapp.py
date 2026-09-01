@@ -252,6 +252,54 @@ AI_GENERATED_CAMPAIGN_FILENAME = "ai_generated_campaign.png"
 _SIZE_IN_FILENAME_RE = re.compile(r"(\d+)\s*[xX]\s*(\d+)")
 
 
+# Nothing useful comes of asking a provider for more than this, and the
+# wait grows with the pixels.
+MAX_GENERATED_EDGE = 2048
+
+
+def _default_template_sizes() -> list:
+    """The sizes saved in default_templates/, read from the filenames
+    alone.
+
+    _default_size_templates() below answers the same question but opens
+    every PSD to do it -- several seconds and a lot of memory for seven
+    multi-megabyte files. Callers that only need the dimensions (sizing a
+    generated image to fit them, say) shouldn't pay that.
+    """
+    sizes = []
+    if not DEFAULT_TEMPLATES_DIR.is_dir():
+        return sizes
+    for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
+            continue
+        match = _SIZE_IN_FILENAME_RE.search(path.name)
+        if match:
+            sizes.append((int(match.group(1)), int(match.group(2))))
+    return sizes
+
+
+def _generation_size(sizes, fallback) -> tuple:
+    """How big to ask a provider for an image that has to cover `sizes`.
+
+    A generated image is cropped to fill each output size, so it needs to
+    be at least as wide as the widest and as tall as the tallest -- taken
+    independently, since a 1920x1080 and a 1080x1920 in the same batch
+    together demand 1920x1920. Generating at the old flat 728x480 meant
+    every size above that was an upscale, which is exactly what a blurry
+    background looks like.
+
+    Capped per edge, and never smaller than the fallback.
+    """
+    widths = [w for w, _h in sizes if w > 0]
+    heights = [h for _w, h in sizes if h > 0]
+    if not widths or not heights:
+        return fallback
+    return (
+        max(fallback[0], min(max(widths), MAX_GENERATED_EDGE)),
+        max(fallback[1], min(max(heights), MAX_GENERATED_EDGE)),
+    )
+
+
 def _default_size_templates() -> tuple:
     """Scan DEFAULT_TEMPLATES_DIR (non-recursive) for .psd files whose
     filename encodes a WxH size, and return (templates, template_paths) --
@@ -1002,12 +1050,16 @@ def generate():
             f"professional studio product photo of {product_name or 'the product'}, clean background"
         )
         try:
+            upload_ai_width, upload_ai_height = _generation_size(
+                _default_template_sizes(), CONTENT_PSD_SIZE
+            )
             upload_ai_image = get_provider(upload_ai_provider).generate(
-                upload_ai_prompt_text, width=CONTENT_PSD_SIZE[0], height=CONTENT_PSD_SIZE[1]
+                upload_ai_prompt_text, width=upload_ai_width, height=upload_ai_height
             )
             background_notes_pending = (
-                f"Campaign artwork generated with AI ({upload_ai_provider}) in place of a content "
-                f"PSD -- prompt: \"{upload_ai_prompt_text}\"."
+                f"Campaign artwork generated with AI ({upload_ai_provider}) at "
+                f"{upload_ai_image.width}x{upload_ai_image.height} -- prompt: "
+                f"\"{upload_ai_prompt_text}\"."
             )
         except ImageProviderError as exc:
             # Same resilience as the hero generator: a flaky free API
@@ -1300,9 +1352,13 @@ def generate():
             "clean background"
         )
         try:
-            generated_image = get_provider(ai_hero_provider).generate(prompt)
+            hero_width, hero_height = _generation_size(sizes, (1024, 1024))
+            generated_image = get_provider(ai_hero_provider).generate(
+                prompt, width=hero_width, height=hero_height
+            )
             background_notes.append(
-                f"Hero image generated with AI ({ai_hero_provider}) -- prompt: \"{prompt}\"."
+                f"Hero image generated with AI ({ai_hero_provider}) at "
+                f"{generated_image.width}x{generated_image.height} -- prompt: \"{prompt}\"."
             )
         except ImageProviderError as exc:
             # Mirrors src/pipeline.py's own resilience (never let a flaky

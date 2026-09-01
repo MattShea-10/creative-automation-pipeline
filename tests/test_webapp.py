@@ -2234,6 +2234,65 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
 
 
+class GeneratedBackgroundFidelityTest(unittest.TestCase):
+    """A generated background has to arrive big enough not to be upscaled,
+    and be fitted without distortion."""
+
+    def test_generation_size_covers_the_widest_and_tallest_template(self):
+        # Taken per axis: a 1920x1080 and a 1080x1920 in the same batch
+        # together demand 1920x1920, or one of them is an upscale.
+        sizes = [(160, 600), (720, 480), (1080, 1920), (1920, 1080)]
+        self.assertEqual(webapp._generation_size(sizes, (728, 480)), (1920, 1920))
+
+    def test_generation_size_is_capped_and_never_below_the_fallback(self):
+        self.assertEqual(
+            webapp._generation_size([(5000, 4000)], (728, 480)),
+            (webapp.MAX_GENERATED_EDGE, webapp.MAX_GENERATED_EDGE),
+        )
+        self.assertEqual(webapp._generation_size([], (728, 480)), (728, 480))
+        self.assertEqual(webapp._generation_size([(100, 100)], (728, 480)), (728, 480))
+
+    def test_template_sizes_are_read_without_opening_the_psds(self):
+        # Filenames only -- opening seven multi-megabyte PSDs to learn
+        # their dimensions is a cost this caller shouldn't pay.
+        orig = webapp.DEFAULT_TEMPLATES_DIR
+        tmp = tempfile.mkdtemp()
+        webapp.DEFAULT_TEMPLATES_DIR = Path(tmp)
+        try:
+            (Path(tmp) / "tester-1920x1080.psd").write_bytes(b"not a real psd")
+            (Path(tmp) / "tester-160x600.psd").write_bytes(b"also not one")
+            (Path(tmp) / "notes.txt").write_text("ignored")
+            self.assertEqual(
+                sorted(webapp._default_template_sizes()), [(160, 600), (1920, 1080)]
+            )
+        finally:
+            webapp.DEFAULT_TEMPLATES_DIR = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_filling_a_box_never_distorts_the_image(self):
+        # Crop-to-fill, not stretch-to-fit. A circle placed dead centre
+        # survives every crop below, so its bounding box measures
+        # distortion rather than cropping -- it must stay round.
+        from src.image_ops import center_crop_to_ratio
+
+        source = Image.new("RGB", (1200, 400), (255, 255, 255))
+        ImageDraw.Draw(source).ellipse([560, 160, 640, 240], fill=(255, 0, 0))
+
+        for target in [(400, 400), (200, 800), (900, 300), (1920, 1080)]:
+            out = center_crop_to_ratio(source, target).convert("RGB")
+            self.assertEqual(out.size, target)
+            red = [
+                (x, y)
+                for x in range(out.width)
+                for y in range(out.height)
+                if out.getpixel((x, y))[0] > 180 and out.getpixel((x, y))[1] < 80
+            ]
+            self.assertTrue(red, target)
+            width = max(x for x, _ in red) - min(x for x, _ in red) + 1
+            height = max(y for _, y in red) - min(y for _, y in red) + 1
+            self.assertAlmostEqual(width / height, 1.0, delta=0.02, msg=f"{target}: {width}x{height}")
+
+
 class LayerTextGlowTest(unittest.TestCase):
     """The glow behind a text-layer override: a soft halo in its own
     colour, sized as a percentage of the font so one setting reads the
