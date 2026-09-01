@@ -2345,6 +2345,45 @@ class LayerTextGlowTest(unittest.TestCase):
         )
         self.assertEqual(list(none.getdata()), list(plain.getdata()))
 
+    def test_band_blur_softens_its_edges_into_a_gradient(self):
+        # A hard rectangle has no mid-tones between band and artwork;
+        # blurring its alpha creates the fade, and more blur trades solid
+        # core for gradient.
+        from src.image_ops import apply_layer_text_override
+
+        base = Image.new("RGB", (400, 200), (240, 120, 60))
+        box = (20, 20, 380, 180)
+
+        def counts(blur):
+            out = apply_layer_text_override(
+                base.copy(), box, "Band", exact_font_size=40,
+                show_background=True, background_color=(0, 0, 0),
+                background_opacity=100, background_blur=blur,
+            ).convert("RGB")
+            data = list(out.getdata())
+            solid = sum(1 for px in data if px == (0, 0, 0))
+            mid = sum(1 for px in data if 40 < px[0] < 200)
+            return solid, mid
+
+        hard_solid, hard_mid = counts(0)
+        soft_solid, soft_mid = counts(15)
+        self.assertEqual(hard_mid, 0, "an unblurred band has a hard edge")
+        self.assertGreater(soft_mid, 0, "a blurred band fades into the artwork")
+        self.assertLess(soft_solid, hard_solid)
+
+    def test_band_blur_zero_is_the_same_as_no_blur(self):
+        from src.image_ops import apply_layer_text_override
+
+        base = Image.new("RGB", (400, 200), (240, 120, 60))
+        box = (20, 20, 380, 180)
+        kwargs = dict(
+            exact_font_size=40, show_background=True,
+            background_color=(0, 0, 0), background_opacity=100,
+        )
+        plain = apply_layer_text_override(base.copy(), box, "Band", **kwargs)
+        zero = apply_layer_text_override(base.copy(), box, "Band", background_blur=0, **kwargs)
+        self.assertEqual(list(plain.getdata()), list(zero.getdata()))
+
     def test_the_band_does_not_fill_the_whole_layer_box(self):
         # Sized to the lines, not the box -- a band filling a tall box
         # would swamp a template with room around its text.

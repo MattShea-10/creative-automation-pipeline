@@ -351,6 +351,10 @@
               <span style="white-space: nowrap;">Band opacity %</span>
               <input type="number" class="font-size-input" id="layer_header_background_opacity" name="layer_header_background_opacity" min="0" max="100" placeholder="60" value="{{ prefill.get('layer_header_background_opacity', '') }}">
             </label>
+            <label for="layer_header_background_blur" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band blur %</span>
+              <input type="number" class="font-size-input" id="layer_header_background_blur" name="layer_header_background_blur" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_header_background_blur', '') }}">
+            </label>
           </div>
           <div class="hint" style="margin-top: -0.2rem;">
             A flat band behind the header lines -- the blunter answer to the same problem the glow solves, and the
@@ -444,6 +448,10 @@
             <label for="layer_description_background_opacity" style="font-weight: 400;">
               <span style="white-space: nowrap;">Band opacity %</span>
               <input type="number" class="font-size-input" id="layer_description_background_opacity" name="layer_description_background_opacity" min="0" max="100" placeholder="60" value="{{ prefill.get('layer_description_background_opacity', '') }}">
+            </label>
+            <label for="layer_description_background_blur" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band blur %</span>
+              <input type="number" class="font-size-input" id="layer_description_background_blur" name="layer_description_background_blur" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_description_background_blur', '') }}">
             </label>
           </div>
           <div class="hint" style="margin-top: -0.2rem;">

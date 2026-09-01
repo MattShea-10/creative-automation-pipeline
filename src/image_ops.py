@@ -2225,6 +2225,7 @@ def apply_layer_text_override(
     show_background: bool = False,
     background_color: Tuple[int, int, int] = (0, 0, 0),
     background_opacity: int = 60,
+    background_blur: int = 0,
 ) -> Image.Image:
     """Return a copy of `base_image` with `text` painted directly into
     `bbox` -- same idea as apply_layer_image_override(): whatever's
@@ -2279,9 +2280,16 @@ def apply_layer_text_override(
     the same idea as the header/message banners render_creative() draws,
     and the blunter answer to the same problem a glow solves. It spans
     the layer box's width and only the lines' own height, so it reads as
-    a banner rather than filling the whole layer. `background_color` and
-    `background_opacity` (0-100) style it; a band is drawn under the glow,
-    so the two can be combined.
+    a banner rather than filling the whole layer. `background_color`,
+    `background_opacity` (0-100) and `background_blur` style it; a band is
+    drawn under the glow, so the two can be combined.
+
+    `background_blur` (0-100, as a percentage of the band's height) softens
+    the band's edges into a gradient instead of a hard rectangle -- the
+    difference between a label bar and a wash the text sits in. It's
+    applied to the band's alpha before compositing, so the band fades out
+    at its edges rather than the artwork behind it being blurred. 0, the
+    default, keeps the hard edge.
 
     `keep_alpha=True` returns RGBA instead of flattening to RGB -- see
     apply_layer_image_override()'s own `keep_alpha` for why (a real
@@ -2363,6 +2371,14 @@ def apply_layer_text_override(
                 round(255 * max(0, min(100, background_opacity)) / 100.0),
             ),
         )
+        if background_blur > 0:
+            # Blurring the band's own alpha, not the artwork behind it --
+            # the band fades out at its edges while whatever it sits on
+            # stays sharp. Sized off the band's height so one setting
+            # reads the same at every output size, like the glow's.
+            band_h = max(band_bottom - band_top, 1)
+            blur_px = max(round(band_h * (max(0, min(100, background_blur)) / 100.0)), 1)
+            band.putalpha(band.split()[3].filter(ImageFilter.GaussianBlur(radius=blur_px)))
         if keep_alpha:
             canvas = Image.alpha_composite(canvas, band)
         else:

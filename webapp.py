@@ -191,8 +191,10 @@ EDIT_TEXT_FIELD_NAMES = (
     "upload_ai_prompt", "upload_ai_provider",
     "layer_header_glow_color", "layer_header_glow_size", "layer_header_glow_opacity",
     "layer_header_align", "layer_header_background_color", "layer_header_background_opacity",
+    "layer_header_background_blur",
     "layer_description_glow_color", "layer_description_glow_size", "layer_description_glow_opacity",
     "layer_description_align", "layer_description_background_color", "layer_description_background_opacity",
+    "layer_description_background_blur",
     "layer_cta_text", "layer_cta_font_family", "layer_cta_font_size",
     "layer_cta_button_color", "layer_cta_text_color",
     "layer_cta_glow_color", "layer_cta_glow_size", "layer_cta_glow_opacity",
@@ -452,6 +454,18 @@ def _parse_glow_size(raw) -> int:
     except (TypeError, ValueError):
         return GLOW_SIZE_DEFAULT
     return max(GLOW_SIZE_MIN, min(GLOW_SIZE_MAX, value))
+
+
+def _parse_band_blur(raw) -> int:
+    """How soft a text band's edges are, 0-100 as a percentage of its
+    height. 0 (the default, and what unusable input falls back to) keeps
+    the hard rectangle edge.
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, value))
 
 
 def _parse_glow_opacity(raw) -> int:
@@ -1106,6 +1120,7 @@ def generate():
     layer_header_background_opacity = _parse_glow_opacity(
         request.form.get("layer_header_background_opacity")
     )
+    layer_header_background_blur = _parse_band_blur(request.form.get("layer_header_background_blur"))
 
     layer_description_text = (request.form.get("layer_description_text") or "").strip() or None
     # By default the description override matches whatever font family,
@@ -1139,6 +1154,9 @@ def generate():
     )
     layer_description_background_opacity = _parse_glow_opacity(
         request.form.get("layer_description_background_opacity")
+    )
+    layer_description_background_blur = _parse_band_blur(
+        request.form.get("layer_description_background_blur")
     )
 
     # The CTA layer's own text override. No position field, unlike the
@@ -1740,6 +1758,7 @@ def generate():
                     show_background=False,
                     background_color=(0, 0, 0),
                     background_opacity=60,
+                    background_blur=0,
                 ):
                     # Shared by every text-layer override (description,
                     # header, ...) -- reads that named layer's own PSD
@@ -1846,6 +1865,7 @@ def generate():
                         show_background=show_background,
                         background_color=background_color,
                         background_opacity=background_opacity,
+                        background_blur=background_blur,
                         debug=text_debug,
                     )
                     # Same call again, but onto a transparent canvas with
@@ -1871,6 +1891,7 @@ def generate():
                         show_background=show_background,
                         background_color=background_color,
                         background_opacity=background_opacity,
+                        background_blur=background_blur,
                         keep_alpha=True,
                     )
                     applied_layers.append(layer_key)
@@ -1921,6 +1942,7 @@ def generate():
                         show_background=layer_header_background,
                         background_color=layer_header_background_color,
                         background_opacity=layer_header_background_opacity,
+                        background_blur=layer_header_background_blur,
                     )
                 if (
                     layer_description_text
@@ -1945,6 +1967,7 @@ def generate():
                         show_background=layer_description_background,
                         background_color=layer_description_background_color,
                         background_opacity=layer_description_background_opacity,
+                        background_blur=layer_description_background_blur,
                     )
                 if layer_cta_text and "cta" not in layer_image_overrides:
                     # Skipped when a CTA image was uploaded for this run:
