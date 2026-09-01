@@ -7,3 +7,7 @@ opencv-python-headless>=4.8.0
 Flask>=3.0.0
 psd-tools>=1.9.0
 better-profanity>=0.7.0
+# Optional: the no-text check on generated backdrops. Needs the Tesseract
+# binary too (macOS: brew install tesseract). Without either, the check
+# reports itself as unavailable and the run carries on.
+pytesseract>=0.3.10

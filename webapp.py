@@ -89,6 +89,7 @@ from src.providers import (
     get_provider,
 )
 from src.storage import SUPPORTED_EXTENSIONS
+from src.text_check import TextCheckResult, find_text, ocr_available
 
 # Sane bounds for a user-supplied font size, in pixels -- just a safety
 # valve against nonsense input (0, negative, absurdly huge); the autofit
@@ -294,11 +295,85 @@ MAX_GENERATED_EDGE = 2048
 # "softly out of focus" stapled to it, and the blur that came back was
 # the model doing exactly as asked. Legibility behind text is what the
 # band and glow controls are for; the backdrop itself should be sharp.
+# Appended to EVERY generated-image prompt, whatever else is switched on.
+# Lettering is the one thing a backdrop can never want -- the template's
+# own header, description and CTA sit on top of it -- and asking costs
+# nothing, so it isn't left to a checkbox the way the styling guidance
+# below is. Prevention only, though: models ignore this often enough that
+# it is verified afterwards rather than trusted (see NO_TEXT_ESCALATION
+# and the OCR check in src/text_check.py).
+NO_TEXT_CLAUSE = "no text, no words, no lettering, no numbers, no watermarks, no signage"
+
+# Used on a retry, once a generation has actually come back with text in
+# it. Blunter and more repetitive on purpose: the polite phrasing above
+# has already demonstrably failed for this prompt.
+NO_TEXT_ESCALATION = (
+    "absolutely no text anywhere in the image, no words, no letters, no numbers, "
+    "no captions, no labels, no signs, no posters, no packaging text, no watermark, "
+    "a completely textless photographic background"
+)
+
+def _env_int(name: str, default: int) -> int:
+    """An integer setting from the environment, falling back to `default`
+    for anything unusable. `or default` on the raw value, not a get()
+    default: a .env written from the example ships bare "NAME=" lines,
+    and an empty string is present as far as os.environ is concerned."""
+    try:
+        return int(os.environ.get(name) or default)
+    except (TypeError, ValueError):
+        return default
+
+
+# How many times to regenerate when the check finds text. Each retry is
+# another API call -- real money on a paid provider -- so this is
+# deliberately small, and 0 turns the retries off while leaving the
+# warning in place.
+AI_TEXT_RETRY_LIMIT = max(0, _env_int("AI_TEXT_RETRIES", 2))
+
 BACKGROUND_PROMPT_GUIDANCE = (
     "sharp focus, crisp fine detail, high resolution, professional photography, "
-    "no faces, no text, no lettering, no logos, "
+    "no faces, no logos, "
     "even lighting, plenty of empty space for overlaid text"
 )
+
+
+def _generate_text_free(provider, prompt: str, width: int, height: int):
+    """Generate `prompt`, and regenerate if the result has text baked in.
+
+    Returns (image, prompt_used, attempts, leftover_findings) where
+    `leftover_findings` is a TextCheckResult describing what's still in
+    the image that came back -- empty when the picture came out clean, and
+    `available=False` when Tesseract isn't installed and nothing could be
+    checked at all.
+
+    Note the ordering: the image returned is always the LAST one
+    generated, not the cleanest one seen. Each retry asks harder, so the
+    last is the best-steered attempt; picking a "winner" across attempts
+    would mean holding several full-size images in memory to choose
+    between shades of wrong.
+    """
+    attempts = 0
+    result = TextCheckResult(available=False)
+    image = None
+    used = prompt
+    # The offline placeholder draws the prompt across its own gradient on
+    # purpose -- that is what makes it recognisable as a placeholder. It
+    # would fail the check every single time, burn the whole retry budget
+    # regenerating an image that is text by design, and pay for several
+    # seconds of OCR to learn nothing.
+    verify = getattr(provider, "name", "") != "mock"
+    while attempts <= (AI_TEXT_RETRY_LIMIT if verify else 0):
+        # First attempt asks politely; every retry escalates, since the
+        # polite phrasing has by then demonstrably failed for this prompt.
+        used = prompt if attempts == 0 else f"{prompt}, {NO_TEXT_ESCALATION}"
+        image = provider.generate(used, width=width, height=height)
+        attempts += 1
+        if not verify:
+            break
+        result = find_text(image)
+        if not result.available or not result.found_text:
+            break
+    return image, used, attempts, result
 
 
 def _default_template_sizes() -> list:
@@ -1150,7 +1225,7 @@ def generate():
     # Both are raised before background_notes/background_warnings exist,
     # so they wait here and are flushed onto those lists below.
     background_notes_pending = None
-    background_warning_pending = None
+    background_warnings_pending = []
     kept_ai_path = None
     if upload_ai_enabled and upload_ai_keep:
         # Carried forward from the previous run's job folder under its own
@@ -1190,18 +1265,50 @@ def generate():
         )
         if upload_ai_background_style:
             upload_ai_prompt_text = f"{upload_ai_prompt_text}, {BACKGROUND_PROMPT_GUIDANCE}"
+        # Always, checkbox or not -- see NO_TEXT_CLAUSE. The styling
+        # guidance above is a matter of taste and gets a checkbox; a
+        # backdrop wanting no lettering is not.
+        upload_ai_prompt_text = f"{upload_ai_prompt_text}, {NO_TEXT_CLAUSE}"
         try:
             upload_ai_width, upload_ai_height = _generation_size(
                 _default_template_sizes(), CONTENT_PSD_SIZE
             )
-            upload_ai_image = get_provider(upload_ai_provider).generate(
-                upload_ai_prompt_text, width=upload_ai_width, height=upload_ai_height
+            (
+                upload_ai_image,
+                upload_ai_prompt_used,
+                upload_ai_attempts,
+                upload_ai_text,
+            ) = _generate_text_free(
+                get_provider(upload_ai_provider),
+                upload_ai_prompt_text,
+                upload_ai_width,
+                upload_ai_height,
             )
             background_notes_pending = (
                 f"Campaign artwork generated with AI ({upload_ai_provider}) at "
                 f"{upload_ai_image.width}x{upload_ai_image.height} -- prompt: "
-                f"\"{upload_ai_prompt_text}\"."
+                f"\"{upload_ai_prompt_used}\"."
             )
+            if upload_ai_attempts > 1:
+                background_notes_pending += (
+                    f" Regenerated {upload_ai_attempts - 1} more time"
+                    f"{'s' if upload_ai_attempts > 2 else ''} because the first result had "
+                    "text in it."
+                )
+            if upload_ai_text.found_text:
+                background_warnings_pending.append(
+                    f"The generated backdrop still has readable text in it "
+                    f"({upload_ai_text.summary()}) after {upload_ai_attempts} attempt"
+                    f"{'s' if upload_ai_attempts > 1 else ''}. Models bake in garbled "
+                    "lettering no matter how firmly the prompt asks them not to. Try a "
+                    "different prompt or provider, or upload your own hero image."
+                )
+            elif not upload_ai_text.available:
+                background_warnings_pending.append(
+                    "Couldn't check the generated backdrop for text -- Tesseract isn't "
+                    "installed (macOS: brew install tesseract). The image may have "
+                    "lettering baked into it; give it a look before shipping."
+                )
             if (
                 upload_ai_image.width < upload_ai_width
                 or upload_ai_image.height < upload_ai_height
@@ -1216,7 +1323,7 @@ def generate():
                 upload_ai_image = upscale_to_cover(
                     upload_ai_image, (upload_ai_width, upload_ai_height)
                 )
-                background_warning_pending = (
+                background_warnings_pending.append(
                     f"The '{upload_ai_provider}' provider returned "
                     f"{upload_ai_image.width}x{upload_ai_image.height} for a requested "
                     f"{upload_ai_width}x{upload_ai_height} -- sizes larger than that are upscaled "
@@ -1263,8 +1370,7 @@ def generate():
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
     if background_notes_pending:
         background_notes.append(background_notes_pending)
-    if background_warning_pending:
-        background_warnings.append(background_warning_pending)
+    background_warnings.extend(background_warnings_pending)
 
     # Saved default templates (default_templates/) define the batch, but
     # only for a templated campaign -- one where the quick-campaign
@@ -1538,15 +1644,32 @@ def generate():
             f"professional studio product photo of {product_name or headline or 'the product'}, "
             "clean background"
         )
+        # Same reasoning as the campaign artwork: the header, message and
+        # CTA are composited on top of this, so anything the model writes
+        # underneath is a defect. Asked for every time, then verified.
+        prompt = f"{prompt}, {NO_TEXT_CLAUSE}"
         try:
             hero_width, hero_height = _generation_size(sizes, (1024, 1024))
-            generated_image = get_provider(ai_hero_provider).generate(
-                prompt, width=hero_width, height=hero_height
+            generated_image, prompt, hero_attempts, hero_text = _generate_text_free(
+                get_provider(ai_hero_provider), prompt, hero_width, hero_height
             )
-            background_notes.append(
+            note = (
                 f"Hero image generated with AI ({ai_hero_provider}) at "
                 f"{generated_image.width}x{generated_image.height} -- prompt: \"{prompt}\"."
             )
+            if hero_attempts > 1:
+                note += (
+                    f" Regenerated {hero_attempts - 1} more time"
+                    f"{'s' if hero_attempts > 2 else ''} because the first result had text in it."
+                )
+            background_notes.append(note)
+            if hero_text.found_text:
+                background_warnings.append(
+                    f"The generated hero image still has readable text in it "
+                    f"({hero_text.summary()}) after {hero_attempts} attempt"
+                    f"{'s' if hero_attempts > 1 else ''}. Try a different prompt or provider, "
+                    "or supply your own image."
+                )
         except ImageProviderError as exc:
             # Mirrors src/pipeline.py's own resilience (never let a flaky
             # free API turn into a hard failure) -- falls back to the

@@ -3740,7 +3740,15 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         off = self._prompt_used(
             upload_ai_prompt="marathon runners", upload_ai_background_style_seen="1"
         )
-        self.assertEqual(off, "marathon runners")
+        # Unticking drops the styling guidance -- but not the no-text
+        # clause, which is asked for on every generation regardless. The
+        # styling is a matter of taste; a backdrop wanting no lettering
+        # underneath the header, message and CTA is not.
+        self.assertNotIn("sharp focus", off)
+        self.assertNotIn("no faces", off)
+        self.assertTrue(off.startswith("marathon runners"), off)
+        self.assertIn("no text", off)
+        self.assertIn("no lettering", on)
 
     def test_a_new_prompt_on_edit_regenerates_and_restyles(self):
         # Reopening a batch, changing the prompt and re-running has to
