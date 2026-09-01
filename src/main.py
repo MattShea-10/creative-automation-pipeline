@@ -24,7 +24,7 @@ except ImportError:
 from .brief_loader import load_brief
 from .image_ops import parse_sizes
 from .pipeline import CreativePipeline
-from .providers import PROVIDER_NAMES, get_provider
+from .providers import ALL_PROVIDER_NAMES, get_provider
 from .storage import LocalAssetStore
 
 
@@ -33,7 +33,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--brief", required=True, help="Path to a campaign brief (YAML or JSON).")
     parser.add_argument(
         "--provider",
-        choices=PROVIDER_NAMES,
+        choices=ALL_PROVIDER_NAMES,
         default=os.environ.get("IMAGE_PROVIDER", "pollinations"),
         help="GenAI image provider to use (default: %(default)s). "
         "Falls back to the offline mock provider automatically if the call fails.",

@@ -14,13 +14,14 @@ The brief asks for "best-fit APIs available" rather than naming a specific
 vendor, and Firefly's API requires an Adobe enterprise account that isn't
 available here. Instead, the image-generation step sits behind a small
 provider interface (`src/providers/`) so any vendor can be plugged in.
-Three providers ship out of the box:
+Two are offered in the UI, plus an offline placeholder used as the
+automatic fallback:
 
 | Provider | Cost | Setup | Notes |
 |---|---|---|---|
-| `pollinations` (default) | Free | None -- no signup, no API key | Plain HTTP GET to image.pollinations.ai. Lowest friction for reviewing this project, but no uptime/quality SLA. |
-| `huggingface` | Free tier | Free HF account + token | Hits the HF Inference API (defaults to Stable Diffusion XL). A reasonable stand-in for a "real" hosted diffusion model. |
-| `mock` | Free | None | Fully offline. Renders a deterministic placeholder (gradient + label) instead of calling any network API. |
+| `pollinations` (default) | Free | None -- no signup, no API key | Plain HTTP GET to image.pollinations.ai. Lowest friction for reviewing this project, but no uptime/quality SLA, and lower resolution. |
+| `ideogram` | Paid | API key + funded API balance | Ideogram 3.0. Much stronger output, and the better choice for design-led backdrops. Billed separately from an ideogram.ai subscription -- plan credits buy nothing here. |
+| `mock` | Free | None | Fully offline. Renders a deterministic placeholder (gradient + label) instead of calling any network API. Not offered in the UI; it is what a failed provider falls back to, and is available to the CLI as `--provider mock`. |
 
 **Automatic fallback:** if the selected live provider fails for any reason
 (network blocked, rate limited, model cold-starting, etc.), the pipeline
@@ -30,7 +31,7 @@ means the pipeline -- and the demo recording -- never hard-fails just
 because a free API had a bad moment. Pass `--no-fallback` to disable this
 and fail loudly instead.
 
-Swapping in Adobe Firefly, OpenAI's Images API, Stability AI, etc. later is
+Swapping in Adobe Firefly, Stability AI, etc. later is
 just writing one more small class in `src/providers/` that implements
 `ImageProvider.generate(prompt, width, height) -> PIL.Image` and registering
 it in `src/providers/__init__.py`. Nothing else in the pipeline changes.
@@ -47,9 +48,9 @@ python -m src.main --brief briefs/sample_campaign.yaml
 # Force fully-offline mode (no network calls at all):
 python -m src.main --brief briefs/sample_campaign.yaml --provider mock
 
-# Use Hugging Face instead (needs a free token in .env, see .env.example):
-cp .env.example .env   # then fill in HUGGINGFACE_API_TOKEN
-python -m src.main --brief briefs/sample_campaign.yaml --provider huggingface
+# Use Ideogram instead (needs a paid key in .env, see .env.example):
+cp .env.example .env   # then fill in IDEOGRAM_API_KEY
+python -m src.main --brief briefs/sample_campaign.yaml --provider ideogram
 ```
 
 Useful flags: `--sizes` (comma-separated `WIDTHxHEIGHT` pixel sizes, e.g.
@@ -762,7 +763,7 @@ src/
     base.py
     mock_provider.py
     pollinations_provider.py
-    huggingface_provider.py
+    ideogram_provider.py
 briefs/               # example campaign briefs (YAML + JSON)
 assets/
   brand/logo.png      # sample brand logo

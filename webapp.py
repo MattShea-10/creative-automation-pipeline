@@ -81,7 +81,13 @@ from src.image_ops import (
     size_label,
     size_name,
 )
-from src.providers import PROVIDER_NAMES, ImageProviderError, MockImageProvider, get_provider
+from src.providers import (
+    ALL_PROVIDER_NAMES,
+    PROVIDER_NAMES,
+    ImageProviderError,
+    MockImageProvider,
+    get_provider,
+)
 from src.storage import SUPPORTED_EXTENSIONS
 
 # Sane bounds for a user-supplied font size, in pixels -- just a safety
@@ -814,7 +820,10 @@ def generate():
     upload_ai_enabled = bool(request.form.get("upload_ai_enabled"))
     upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
-    if upload_ai_provider not in PROVIDER_NAMES:
+    # ALL_PROVIDER_NAMES, not PROVIDER_NAMES: the offline placeholder is
+    # deliberately absent from the dropdowns but still accepted if asked
+    # for by name, which is how the tests render without a network.
+    if upload_ai_provider not in ALL_PROVIDER_NAMES:
         upload_ai_provider = "pollinations"
     # Defaults ON -- see BACKGROUND_PROMPT_GUIDANCE. The checkbox is
     # absent from a form that predates it, so the default has to survive
@@ -827,7 +836,7 @@ def generate():
     ai_hero_enabled = bool(request.form.get("ai_hero_enabled"))
     ai_hero_prompt = (request.form.get("ai_hero_prompt") or "").strip() or None
     ai_hero_provider = request.form.get("ai_hero_provider", "pollinations")
-    if ai_hero_provider not in PROVIDER_NAMES:
+    if ai_hero_provider not in ALL_PROVIDER_NAMES:
         ai_hero_provider = "pollinations"
 
     # Campaign brief -- product name / market / audience / campaign

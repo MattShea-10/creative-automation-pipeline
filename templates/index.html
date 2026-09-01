@@ -239,10 +239,7 @@
                 <span style="white-space: nowrap;">Provider</span>
                 <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
                   <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
-                  <option value="huggingface" {% if prefill.get('upload_ai_provider') == 'huggingface' %}selected{% endif %}>Hugging Face SDXL (needs a token)</option>
-                  <option value="openai" {% if prefill.get('upload_ai_provider') == 'openai' %}selected{% endif %}>OpenAI DALL-E 3 (needs a paid API key)</option>
                   <option value="ideogram" {% if prefill.get('upload_ai_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
-                  <option value="mock" {% if prefill.get('upload_ai_provider') == 'mock' %}selected{% endif %}>Offline placeholder (no network)</option>
                 </select>
               </label>
             </div>
@@ -638,17 +635,15 @@
                 <span style="white-space: nowrap;">Provider</span>
                 <select class="font-family-select" id="ai_hero_provider" name="ai_hero_provider">
                   <option value="pollinations" {% if prefill.get('ai_hero_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
-                  <option value="huggingface" {% if prefill.get('ai_hero_provider') == 'huggingface' %}selected{% endif %}>Hugging Face SDXL (needs a token)</option>
-                  <option value="openai" {% if prefill.get('ai_hero_provider') == 'openai' %}selected{% endif %}>OpenAI DALL-E 3 (needs a paid API key)</option>
                   <option value="ideogram" {% if prefill.get('ai_hero_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
-                  <option value="mock" {% if prefill.get('ai_hero_provider') == 'mock' %}selected{% endif %}>Offline placeholder (no network)</option>
                 </select>
               </label>
             </div>
             <div class="hint" style="margin-top: 0.4rem;">
               Generated once and reused for every size that needs it. If the chosen provider fails (free APIs
               occasionally do), the offline placeholder is used instead and a warning explains why.
-              Hugging Face SDXL needs <code>HUGGINGFACE_API_TOKEN</code> set in <code>.env</code>.
+              Ideogram needs <code>IDEOGRAM_API_KEY</code> set in <code>.env</code>, and a funded
+              balance on the API account (billed separately from an ideogram.ai subscription).
             </div>
           </div>
         </div>

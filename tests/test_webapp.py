@@ -759,31 +759,32 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertNotIn(b"generated with AI", r.data)
 
     def test_generate_ai_hero_provider_failure_falls_back_to_mock_with_warning(self):
-        # huggingface_provider.py raises ImageProviderError immediately if
-        # HUGGINGFACE_API_TOKEN isn't set -- exercises the fallback path
-        # that mirrors src/pipeline.py's own resilience (never let one
-        # flaky/misconfigured provider hard-fail the whole request).
+        # ideogram_provider.py raises ImageProviderError immediately if
+        # IDEOGRAM_API_KEY isn't set -- exercises the fallback path that
+        # mirrors src/pipeline.py's own resilience (never let one
+        # flaky/misconfigured provider hard-fail the whole request), and
+        # does it without touching the network.
         import os
 
-        old_token = os.environ.pop("HUGGINGFACE_API_TOKEN", None)
+        old_key = os.environ.pop("IDEOGRAM_API_KEY", None)
         try:
             data = {
                 "sizes": ["1080x1080"],
                 "fit_mode": "crop",
                 "ai_hero_enabled": "1",
-                "ai_hero_provider": "huggingface",
+                "ai_hero_provider": "ideogram",
             }
             r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         finally:
-            if old_token is not None:
-                os.environ["HUGGINGFACE_API_TOKEN"] = old_token
+            if old_key is not None:
+                os.environ["IDEOGRAM_API_KEY"] = old_key
         self.assertEqual(r.status_code, 200)
         self.assertIn(b'class="card"', r.data)  # still renders successfully via the mock fallback
         text = r.get_data(as_text=True)
         self.assertIn('class="background-warnings"', text)
         warnings_block = text.split('class="background-warnings"')[1].split("</ul>")[0]
-        self.assertIn("huggingface", warnings_block)
-        self.assertIn("HUGGINGFACE_API_TOKEN", warnings_block)
+        self.assertIn("ideogram", warnings_block)
+        self.assertIn("IDEOGRAM_API_KEY", warnings_block)
 
     def test_generate_rejects_unsupported_file_extension(self):
         data = {
@@ -2236,20 +2237,9 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
 
 class PaidProviderTest(unittest.TestCase):
-    """The two key-based providers. Nothing here touches the network --
-    what matters is the size negotiation and that a missing key fails
-    with something a person can act on."""
-
-    def test_openai_snaps_a_request_to_a_size_the_model_renders(self):
-        # The API rejects any size outside its list, so a 1920x1080
-        # request has to become the landscape option -- not the square
-        # one, which is closer in area but wrong in shape.
-        from src.providers.openai_provider import MODEL_SIZES, _closest_supported
-
-        sizes = MODEL_SIZES["dall-e-3"]
-        self.assertEqual(_closest_supported(1920, 1080, sizes), (1792, 1024))
-        self.assertEqual(_closest_supported(1080, 1920, sizes), (1024, 1792))
-        self.assertEqual(_closest_supported(1200, 1200, sizes), (1024, 1024))
+    """Ideogram, the one key-based provider. Nothing here touches the
+    network -- what matters is the size negotiation and that a missing or
+    misconfigured key fails with something a person can act on."""
 
     def test_ideogram_snaps_a_request_to_an_aspect_it_renders(self):
         # Ideogram takes a named ratio rather than pixels.
@@ -2266,23 +2256,11 @@ class PaidProviderTest(unittest.TestCase):
         # os.environ is concerned -- so a get() default never fires. That
         # built a "/v1//generate" URL and 404'd on the first real call.
         from src.providers.ideogram_provider import DEFAULT_MODEL, IdeogramProvider
-        from src.providers.openai_provider import OpenAIProvider
 
-        saved = {
-            k: os.environ.get(k)
-            for k in ("IDEOGRAM_API_KEY", "IDEOGRAM_MODEL", "OPENAI_API_KEY", "OPENAI_IMAGE_MODEL")
-        }
-        os.environ.update(
-            {
-                "IDEOGRAM_API_KEY": "k",
-                "IDEOGRAM_MODEL": "",
-                "OPENAI_API_KEY": "k",
-                "OPENAI_IMAGE_MODEL": "",
-            }
-        )
+        saved = {k: os.environ.get(k) for k in ("IDEOGRAM_API_KEY", "IDEOGRAM_MODEL")}
+        os.environ.update({"IDEOGRAM_API_KEY": "k", "IDEOGRAM_MODEL": ""})
         try:
             self.assertEqual(IdeogramProvider().model, DEFAULT_MODEL)
-            self.assertTrue(OpenAIProvider().model)
         finally:
             for key, value in saved.items():
                 if value is None:
@@ -2319,35 +2297,39 @@ class PaidProviderTest(unittest.TestCase):
     def test_a_missing_key_says_what_to_do_about_it(self):
         from src.providers.base import ImageProviderError
         from src.providers.ideogram_provider import IdeogramProvider
-        from src.providers.openai_provider import OpenAIProvider
 
-        saved = {k: os.environ.pop(k, None) for k in ("OPENAI_API_KEY", "IDEOGRAM_API_KEY")}
+        saved = {k: os.environ.pop(k, None) for k in ("IDEOGRAM_API_KEY",)}
         try:
             with self.assertRaises(ImageProviderError) as caught:
-                OpenAIProvider()
-            message = str(caught.exception)
-            self.assertIn("OPENAI_API_KEY", message)
-            # The trap worth naming: a ChatGPT plan is not API access.
-            self.assertIn("ChatGPT", message)
-
-            with self.assertRaises(ImageProviderError) as caught:
                 IdeogramProvider()
-            self.assertIn("IDEOGRAM_API_KEY", str(caught.exception))
+            message = str(caught.exception)
+            self.assertIn("IDEOGRAM_API_KEY", message)
+            # The trap worth naming: an ideogram.ai subscription is not
+            # API access -- its credits buy nothing here.
+            self.assertIn("subscription", message)
         finally:
             for key, value in saved.items():
                 if value is not None:
                     os.environ[key] = value
 
-    def test_both_are_selectable_in_the_form_and_accepted_by_the_server(self):
+    def test_exactly_two_providers_are_offered_and_mock_is_not_one_of_them(self):
+        # The offline placeholder is the automatic fallback, not a choice
+        # -- it stays constructible by name for the CLI and pipeline.py,
+        # but must never appear in a dropdown.
         import webapp as _webapp
+        from src.providers import ALL_PROVIDER_NAMES, get_provider
 
-        self.assertIn("openai", _webapp.PROVIDER_NAMES)
-        self.assertIn("ideogram", _webapp.PROVIDER_NAMES)
+        self.assertEqual(_webapp.PROVIDER_NAMES, ["pollinations", "ideogram"])
+        self.assertIn("mock", ALL_PROVIDER_NAMES)
+        self.assertTrue(get_provider("mock"))
+
         _webapp.app.config["TESTING"] = True
         page = _webapp.app.test_client().get("/").data.decode()
-        # Both AI sections offer both providers.
-        self.assertEqual(page.count('value="openai"'), 2)
+        # Both AI sections offer both providers, and nothing else.
+        self.assertEqual(page.count('value="pollinations"'), 2)
         self.assertEqual(page.count('value="ideogram"'), 2)
+        for gone in ("openai", "huggingface", "mock"):
+            self.assertNotIn('value="%s"' % gone, page)
 
 
 class PollinationsSeedTest(unittest.TestCase):
