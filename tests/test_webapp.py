@@ -3319,6 +3319,65 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # run completes rather than silently dropping the request.
         self.assertNotIn(b"-- description", r.data)
 
+    def _render_with(self, **extra):
+        """One templated run, returning the rendered 300x250 creative."""
+        data = {
+            "upload_hero_image": (self._sample_image_bytes(color=(9, 9, 200)), "hero.png"),
+            "header": "",
+            "description": "",
+        }
+        data.update(extra)
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        path = next((Path(self.tmp_dir) / job_id).glob("*300x250*.png"))
+        return Image.open(path).convert("RGB"), r.get_data(as_text=True)
+
+    def test_hiding_a_layer_removes_its_pixels(self):
+        # The template's logo layer is a white block. Hiding it has to
+        # leave the backdrop showing through where the block was -- not
+        # a blank patch, and not the block still sitting there.
+        self._write_template_with_a_background_layer("hide-300x250.psd", (300, 250))
+        shown, _page = self._render_with()
+        hidden, page = self._render_with(layer_logo_hidden="1")
+
+        def white_pixels(image):
+            return sum(
+                1 for r, g, b in image.getdata() if r > 230 and g > 230 and b > 230
+            )
+
+        self.assertGreater(white_pixels(shown), 200, "the fixture should show a white logo block")
+        self.assertLess(white_pixels(hidden), white_pixels(shown) // 4)
+        self.assertIn("logo (hidden)", page)
+
+    def test_hiding_wins_over_content_supplied_for_the_same_layer(self):
+        # "Hide it" and "put this in it" contradict each other. Drawing
+        # the upload would render exactly what was asked to disappear,
+        # into a box already wiped clean for it.
+        self._write_template_with_a_background_layer("hide2-300x250.psd", (300, 250))
+        _shown, page = self._render_with(
+            layer_logo_hidden="1",
+            layer_logo_image=(self._sample_image_bytes(color=(250, 5, 5)), "logo.png"),
+        )
+        self.assertIn("logo (hidden)", page)
+        self.assertNotIn("updated layer(s) -- logo,", page)
+
+    def test_a_hide_alone_is_enough_to_trigger_the_layer_pass(self):
+        # The whole layer block is gated on there being something to do.
+        # A hide-only run has no text and no uploads, so without the gate
+        # naming it the request would sail past and change nothing.
+        self._write_template_with_a_background_layer("hide3-300x250.psd", (300, 250))
+        _image, page = self._render_with(layer_product_hidden="1")
+        self.assertIn("product (hidden)", page)
+
+    def test_the_form_offers_a_hide_box_for_every_hideable_layer(self):
+        page = self.client.get("/").data.decode()
+        for layer in webapp.HIDEABLE_LAYER_NAMES:
+            self.assertIn('name="layer_%s_hidden"' % layer, page)
+        # Not background: it sits behind everything, so hiding it leaves
+        # a hole rather than a cleaner creative.
+        self.assertNotIn('name="layer_background_hidden"', page)
+
     def test_a_switched_off_text_layer_is_greyed_out_on_the_form(self):
         # A layer turned off in Photoshop has no visible words to
         # restyle, so the form disables its fields instead of accepting
@@ -3328,7 +3387,9 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         # These synthetic templates carry no type layers at all, so both
         # groups come back disabled with their explanation.
-        self.assertIn(b"layer-text-group\" disabled", page.data.replace(b"'", b'"'))
+        markup = page.data.replace(b"'", b'"')
+        for layer in (b"header", b"description"):
+            self.assertIn(b'data-layer-controls="' + layer + b'" disabled', markup)
         self.assertIn(b"switched off in your saved", page.data)
 
     def test_fields_stay_enabled_when_the_layer_is_switched_on(self):

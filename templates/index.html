@@ -50,6 +50,14 @@
        submission, with no per-input markup and no JS. */
     .layer-text-group { @apply border-0 p-0 m-0 min-w-0; }
     .layer-text-group[disabled] { @apply opacity-50; }
+    /* A layer switched off by its "Hide layers" checkbox. Its own
+       controls are disabled too, but a disabled input is barely
+       distinguishable on this dark theme and a <label>'s text never
+       greys at all -- so the dimming has to be explicit. */
+    [data-layer-controls].is-layer-hidden {
+      @apply opacity-40;
+      pointer-events: none;
+    }
     .layer-off-note { @apply text-amber-300 mt-3; }
     .campaign-brief-box { background: #1e293b; }
     .campaign-brief-box > summary { @apply uppercase tracking-wide; }
@@ -319,13 +327,34 @@
             can't edit a PSD's live text layer directly. These are PSD updates only -- they don't affect the
             general hero-image tool below.
           </div>
+          <div class="field" style="margin-top: 0.8rem; margin-bottom: 0.2rem;">
+            <label style="font-weight: 400;">Hide layers</label>
+            <div class="hint" style="margin-top: -0.2rem;">
+              Leave a layer out of every template size. The box it occupied is wiped back to the template's own
+              backdrop, so what's behind it shows through rather than a blank patch. Hiding wins over anything
+              else set for that layer -- files and text you've entered stay put and come back when you unhide.
+              <code>background</code> isn't offered: it sits behind everything, so hiding it leaves a hole
+              rather than a cleaner creative. Replace it instead, with the hero image or the generator above.
+            </div>
+            <div class="inline-controls" style="margin-top: 0.4rem;">
+              {% for layer in hideable_layers %}
+                <label for="layer_{{ layer }}_hidden" style="font-weight: 400;">
+                  <input type="checkbox" id="layer_{{ layer }}_hidden" name="layer_{{ layer }}_hidden" value="1"
+                         data-role="layer-hide" data-layer="{{ layer }}"
+                         {% if prefill.get('layer_' ~ layer ~ '_hidden') %}checked{% endif %}>
+                  {{ layer }}
+                </label>
+              {% endfor %}
+            </div>
+          </div>
+
           {% set header_editable = 'header' in editable_text_layers %}
           {% if not header_editable %}
             <div class="hint layer-off-note">The <code>header</code> layer is switched off in your saved
             templates, so there are no visible words to restyle -- these fields are disabled. Turn the layer
             on in Photoshop and re-save the template to use them.</div>
           {% endif %}
-          <fieldset class="layer-text-group"{% if not header_editable %} disabled{% endif %}>
+          <fieldset class="layer-text-group" data-layer-controls="header"{% if not header_editable %} disabled{% endif %}>
           <div class="field" style="margin-top: 0.6rem; margin-bottom: 0.6rem;">
             <label for="layer_header_text" style="font-weight: 400;">Header text</label>
             <input type="text" id="layer_header_text" name="layer_header_text" placeholder="e.g. Summer Sale" value="{{ prefill.get('layer_header_text', '') }}">
@@ -423,7 +452,7 @@
             templates, so there are no visible words to restyle -- these fields are disabled. Turn the layer
             on in Photoshop and re-save the template to use them.</div>
           {% endif %}
-          <fieldset class="layer-text-group"{% if not description_editable %} disabled{% endif %}>
+          <fieldset class="layer-text-group" data-layer-controls="description"{% if not description_editable %} disabled{% endif %}>
           <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_description_text" style="font-weight: 400;">Description text</label>
             <input type="text" id="layer_description_text" name="layer_description_text" placeholder="e.g. First 500 get free cans" value="{{ prefill.get('layer_description_text', '') }}">
@@ -514,7 +543,7 @@
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
           </fieldset>
-          <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
+          <div class="field" data-layer-controls="cta" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_cta_text" style="font-weight: 400;">CTA button text</label>
             <input type="text" id="layer_cta_text" name="layer_cta_text" placeholder="e.g. Claim my spot" value="{{ prefill.get('layer_cta_text', '') }}">
           </div>
@@ -566,15 +595,15 @@
           </div>
 
           <div class="inline-controls" style="margin-top: 0.4rem;">
-            <label for="layer_logo_image" style="font-weight: 400;">
+            <label for="layer_logo_image" data-layer-controls="logo" style="font-weight: 400;">
               <span style="white-space: nowrap;">Logo image</span>
               <input type="file" id="layer_logo_image" name="layer_logo_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
-            <label for="layer_cta_image" style="font-weight: 400;">
+            <label for="layer_cta_image" data-layer-controls="cta" style="font-weight: 400;">
               <span style="white-space: nowrap;">CTA image</span>
               <input type="file" id="layer_cta_image" name="layer_cta_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
-            <label for="layer_product_image" style="font-weight: 400;">
+            <label for="layer_product_image" data-layer-controls="product" style="font-weight: 400;">
               <span style="white-space: nowrap;">Product image</span>
               <input type="file" id="layer_product_image" name="layer_product_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
@@ -1046,6 +1075,50 @@
           keepForm.addEventListener("submit", function () {
             freshFields.querySelectorAll("input, select, textarea").forEach(function (el) {
               el.disabled = false;
+            });
+          });
+        }
+      }
+
+      // "Hide layers": a hidden layer isn't drawn at all, so every
+      // control that would style or fill it is greyed out rather than
+      // left accepting input the server will discard. Same shape as the
+      // "Keep this image" handler above, including the re-enable on
+      // submit -- a disabled control posts nothing, which would quietly
+      // wipe the text and settings the user expects to find waiting
+      // when they unhide the layer.
+      var hideBoxes = root.querySelectorAll('[data-role="layer-hide"]');
+      if (hideBoxes.length) {
+        var syncHidden = function () {
+          hideBoxes.forEach(function (box) {
+            var targets = root.querySelectorAll(
+              '[data-layer-controls="' + box.dataset.layer + '"]'
+            );
+            targets.forEach(function (target) {
+              target.classList.toggle("is-layer-hidden", box.checked);
+              target.querySelectorAll("input, select, textarea").forEach(function (el) {
+                // A fieldset disabled for a different reason (its layer
+                // is switched off in the saved template) must stay
+                // disabled when this box is unticked.
+                if (target.tagName === "FIELDSET" && target.disabled) return;
+                el.disabled = box.checked;
+              });
+            });
+          });
+        };
+        hideBoxes.forEach(function (box) {
+          box.addEventListener("change", syncHidden);
+        });
+        syncHidden();
+
+        var hideForm = hideBoxes[0].form;
+        if (hideForm) {
+          hideForm.addEventListener("submit", function () {
+            root.querySelectorAll("[data-layer-controls]").forEach(function (target) {
+              if (target.tagName === "FIELDSET" && target.disabled) return;
+              target.querySelectorAll("input, select, textarea").forEach(function (el) {
+                el.disabled = false;
+              });
             });
           });
         }

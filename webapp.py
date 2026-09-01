@@ -232,6 +232,12 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_description_font_family", "layer_description_font_size", "layer_description_text_color",
     "psd_size_1", "psd_size_2", "psd_size_3", "psd_size_4",
 )
+# Layers offered a "hide" checkbox. Deliberately not "background": it
+# sits behind everything and hiding it leaves a hole rather than a
+# cleaner creative -- the way to change a backdrop is to replace it,
+# which the tool already does in three other places.
+HIDEABLE_LAYER_NAMES = ("header", "description", "logo", "cta", "product")
+
 EDIT_CHECKBOX_FIELD_NAMES = (
     "header_no_background", "header_glow",
     "message_no_background", "message_glow",
@@ -248,7 +254,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "layer_header_background",
     "layer_description_background",
     "layer_cta_glow",
-)
+) + tuple(f"layer_{name}_hidden" for name in HIDEABLE_LAYER_NAMES)
 
 # Euclidean RGB distance under which a pixel counts as "matching" a brand
 # color for find_missing_brand_colors() -- see that function's docstring
@@ -867,6 +873,7 @@ def index():
         campaigns=[{"prefill": {}, "prefill_files": {}, "edit_job_id": None}],
         session_id=uuid.uuid4().hex,
         editable_text_layers=_editable_text_layers(),
+        hideable_layers=HIDEABLE_LAYER_NAMES,
     )
 
 
@@ -909,6 +916,7 @@ def edit(job_id):
         campaigns=campaigns,
         session_id=session_id,
         editable_text_layers=_editable_text_layers(),
+        hideable_layers=HIDEABLE_LAYER_NAMES,
     )
 
 
@@ -1601,6 +1609,14 @@ def generate():
     layer_cta_glow_size = _parse_glow_size(request.form.get("layer_cta_glow_size"))
     layer_cta_glow_opacity = _parse_glow_opacity(request.form.get("layer_cta_glow_opacity"))
 
+    # Layers to leave out of every size entirely. A hide wins over any
+    # content supplied for the same layer: "hide it" and "put this in it"
+    # are contradictory, and honouring both would draw the thing that was
+    # just asked to disappear.
+    hidden_layer_names = {
+        name for name in HIDEABLE_LAYER_NAMES if request.form.get(f"layer_{name}_hidden")
+    }
+
     layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
     layer_upload_paths: dict = {}  # {field_name: Path} -- for form_state.json, see below
     for layer_name, field_name in (
@@ -1645,6 +1661,11 @@ def generate():
         # strip away.
         if layer_name != "background":
             layer_image = auto_transparent_background(layer_image)
+        if layer_name in hidden_layer_names:
+            # Kept in layer_upload_paths above, so the file survives an
+            # Edit and comes back the moment the layer is unhidden -- it
+            # just isn't drawn while the hide is on.
+            continue
         layer_image_overrides[layer_name] = layer_image
 
     # The uploaded content PSD's own layers become overrides for every
@@ -1941,7 +1962,12 @@ def generate():
             # per size, since every template size has its own layout).
             # A size whose PSD doesn't have a given named layer just skips
             # that one override rather than erroring the whole request.
-            if (layer_header_text or layer_description_text or layer_image_overrides) and (width, height) in size_template_paths:
+            if (
+                layer_header_text
+                or layer_description_text
+                or layer_image_overrides
+                or hidden_layer_names
+            ) and (width, height) in size_template_paths:
                 psd_path_for_size = size_template_paths.get((width, height))
                 layer_boxes = get_psd_layer_boxes(psd_path_for_size)
                 applied_layers = []
@@ -2039,7 +2065,7 @@ def generate():
                     name
                     for name in layer_image_overrides
                     if not (name in propagated_layer_names and (width, height) == content_psd_size)
-                }
+                } | hidden_layer_names
                 # final_image as it stood with the new background painted
                 # in but before every other layer was composited back on
                 # top -- the "clear the whole box" case below needs a
@@ -2202,6 +2228,20 @@ def generate():
                             keep_alpha=True,
                         )
                     applied_layers.append(layer_name)
+
+                # Wipe each hidden layer's box back to the backdrop.
+                # full_box=True on purpose: hiding means the whole box
+                # goes, not just the layer's own pixels within it, which
+                # is the same "replace, don't overprint" reasoning the
+                # text overrides use.
+                for layer_name in sorted(hidden_layer_names):
+                    hidden_box = layer_boxes.get(layer_name)
+                    if hidden_box is None:
+                        # This size's template simply has no such layer.
+                        continue
+                    _clean_layer_box(hidden_box, layer_name, full_box=True)
+                    applied_layers.append(f"{layer_name} (hidden)")
+
                 def _apply_text_layer_override(
                     layer_key,
                     text,
@@ -2227,6 +2267,13 @@ def generate():
                     # apply_layer_text_override() for the actual
                     # shrink-to-fit/leading-scaling behavior.
                     nonlocal final_image
+                    if layer_key in hidden_layer_names:
+                        # Hidden wins over any styling or wording set for
+                        # the same layer. The two instructions contradict
+                        # each other, and drawing the text would mean
+                        # rendering exactly what was asked to disappear
+                        # -- on top of a box already wiped clean for it.
+                        return
                     box = layer_boxes.get(layer_key)
                     if box is None:
                         return
@@ -2428,7 +2475,11 @@ def generate():
                         background_opacity=layer_description_background_opacity,
                         background_blur=layer_description_background_blur,
                     )
-                if layer_cta_text and "cta" not in layer_image_overrides:
+                if (
+                    layer_cta_text
+                    and "cta" not in layer_image_overrides
+                    and "cta" not in hidden_layer_names
+                ):
                     # Skipped when a CTA image was uploaded for this run:
                     # that upload IS the button, and drawing one over it
                     # would bury what the user just supplied.
