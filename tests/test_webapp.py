@@ -2255,10 +2255,10 @@ class PaidProviderTest(unittest.TestCase):
         # Ideogram takes a named ratio rather than pixels.
         from src.providers.ideogram_provider import _closest_aspect
 
-        self.assertEqual(_closest_aspect(1920, 1080), "ASPECT_16_9")
-        self.assertEqual(_closest_aspect(1080, 1920), "ASPECT_9_16")
-        self.assertEqual(_closest_aspect(1200, 1200), "ASPECT_1_1")
-        self.assertEqual(_closest_aspect(720, 480), "ASPECT_3_2")
+        self.assertEqual(_closest_aspect(1920, 1080), "16x9")
+        self.assertEqual(_closest_aspect(1080, 1920), "9x16")
+        self.assertEqual(_closest_aspect(1200, 1200), "1x1")
+        self.assertEqual(_closest_aspect(720, 480), "3x2")
 
     def test_a_missing_key_says_what_to_do_about_it(self):
         from src.providers.base import ImageProviderError
@@ -3293,8 +3293,8 @@ class ContentPsdQuickModeTest(unittest.TestCase):
                 return {"data": [{"url": "https://example.invalid/generated.png"}]}
 
         def fake_post(url, headers=None, json=None, timeout=None):
-            seen["prompt"] = json["image_request"]["prompt"]
-            seen["aspect"] = json["image_request"]["aspect_ratio"]
+            seen["prompt"] = json["prompt"]
+            seen["aspect"] = json["aspect_ratio"]
             seen["key"] = (headers or {}).get("Api-Key")
             return _Resp()
 
@@ -3324,7 +3324,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # guidance appended, and the key went in the header.
         self.assertTrue(seen["prompt"].startswith("a stadium at dusk"), seen["prompt"])
         self.assertEqual(seen["key"], "test-key")
-        self.assertEqual(seen["aspect"], "ASPECT_3_2")  # 300x250 is closest to 3:2
+        self.assertEqual(seen["aspect"], "5x4")  # 300x250 -> nearest named ratio
 
         # And its pixels are in the creative, via the background layer.
         self.assertIn(b"300x250: updated layer(s) -- background", r.data)
