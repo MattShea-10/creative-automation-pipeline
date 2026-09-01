@@ -2281,6 +2281,35 @@ class LayerTextGlowTest(unittest.TestCase):
         plain = self._render(text_color=(0, 0, 0))
         self.assertEqual(list(none.getdata()), list(plain.getdata()))
 
+    def test_a_bigger_glow_is_not_a_weaker_one(self):
+        # The regression this guards: a blur spreads a fixed amount of
+        # alpha over a bigger area, so turning the size UP used to make
+        # the halo fainter -- the opposite of what the control says. The
+        # glyphs are thickened with the radius now, so peak strength
+        # holds as the spread grows.
+        from src.image_ops import apply_layer_text_override
+
+        base = Image.new("RGB", (600, 300), (240, 120, 60))
+        box = (20, 20, 580, 280)
+        plain = apply_layer_text_override(
+            base.copy(), box, "First 500", text_color=(255, 255, 255), exact_font_size=90
+        )
+
+        def peak_delta(glow_size):
+            glowed = apply_layer_text_override(
+                base.copy(), box, "First 500", text_color=(255, 255, 255), exact_font_size=90,
+                glow=True, glow_color=(0, 0, 0), glow_size=glow_size,
+            )
+            return max(
+                abs(a[0] - b[0]) for a, b in zip(list(plain.getdata()), list(glowed.getdata()))
+            )
+
+        small, large = peak_delta(10), peak_delta(80)
+        self.assertGreater(small, 100, "a glow has to actually be visible")
+        self.assertGreaterEqual(
+            large, small - 20, "a wider glow must not be dimmer than a tight one"
+        )
+
     def test_the_words_are_unchanged_by_a_glow(self):
         # The halo goes behind the letterforms -- it must not move or
         # resize the text itself.

@@ -2118,7 +2118,7 @@ def apply_layer_text_override(
     keep_alpha: bool = False,
     glow: bool = False,
     glow_color: Tuple[int, int, int] = (255, 255, 255),
-    glow_size: int = 25,
+    glow_size: int = 12,
     glow_opacity: int = 100,
 ) -> Image.Image:
     """Return a copy of `base_image` with `text` painted directly into
@@ -2241,9 +2241,23 @@ def apply_layer_text_override(
         blur_radius = max(round(font.size * (glow_size / 100.0)), 1)
         glow_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
         glow_draw = ImageDraw.Draw(glow_layer)
+        # The glyphs are thickened before blurring. Blurring spreads a
+        # fixed amount of alpha over a bigger area, so without this a
+        # larger radius produced a FAINTER halo -- turning the size up to
+        # make a glow more visible made it disappear instead. Growing the
+        # source with the radius keeps the halo's strength roughly
+        # constant and lets size mean spread, which is what it says.
+        stroke = max(1, round(blur_radius * 0.8))
         glow_y = first_text_y
         for line in lines:
-            glow_draw.text((_line_x(line), glow_y), line, font=font, fill=(255, 255, 255, 255))
+            glow_draw.text(
+                (_line_x(line), glow_y),
+                line,
+                font=font,
+                fill=(255, 255, 255, 255),
+                stroke_width=stroke,
+                stroke_fill=(255, 255, 255, 255),
+            )
             glow_y += line_height
         alpha = glow_layer.split()[3].filter(ImageFilter.GaussianBlur(radius=blur_radius))
         # 1.6 recovers the strength a Gaussian blur costs; the opacity

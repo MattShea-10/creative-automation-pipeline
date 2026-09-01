@@ -426,7 +426,7 @@ def _slugify_for_filename(text: str, *, max_length: int = 40) -> str:
     return collapsed[:max_length]
 
 
-GLOW_SIZE_MIN, GLOW_SIZE_MAX, GLOW_SIZE_DEFAULT = 1, 100, 25
+GLOW_SIZE_MIN, GLOW_SIZE_MAX, GLOW_SIZE_DEFAULT = 1, 100, 12
 
 
 def _parse_glow_size(raw) -> int:
