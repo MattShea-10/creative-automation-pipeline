@@ -2311,6 +2311,48 @@ class GeneratedBackgroundFidelityTest(unittest.TestCase):
     """A generated background has to arrive big enough not to be upscaled,
     and be fitted without distortion."""
 
+    def _edge_contrast(self, image):
+        from PIL import ImageFilter
+        import statistics
+
+        edges = image.convert("L").filter(ImageFilter.FIND_EDGES)
+        return statistics.pstdev(list(edges.getdata()))
+
+    def _detailed_source(self, size=(768, 768)):
+        source = Image.new("RGB", size, (40, 60, 90))
+        draw = ImageDraw.Draw(source)
+        for i in range(0, max(size), 24):
+            draw.line([(i, 0), (i, size[1])], fill=(230, 220, 200), width=2)
+        return source
+
+    def test_upscaling_a_short_provider_result_keeps_more_bite(self):
+        # A provider that caps below what the batch needs leaves every
+        # size to enlarge from the same small source. Doing it once, with
+        # a sharpening pass, holds far more edge contrast than a plain
+        # enlargement -- which is most of what reads as sharpness.
+        from src.image_ops import upscale_to_cover
+
+        source = self._detailed_source()
+        plain = source.resize((1920, 1920), Image.LANCZOS)
+        ours = upscale_to_cover(source, (1920, 1920))
+        self.assertEqual(ours.size, (1920, 1920))
+        self.assertGreater(self._edge_contrast(ours), self._edge_contrast(plain) * 1.2)
+
+    def test_upscaling_preserves_aspect_and_covers_both_axes(self):
+        from src.image_ops import upscale_to_cover
+
+        out = upscale_to_cover(Image.new("RGB", (768, 768), (0, 0, 0)), (1920, 1080))
+        self.assertGreaterEqual(out.width, 1920)
+        self.assertGreaterEqual(out.height, 1080)
+        self.assertAlmostEqual(out.width / out.height, 1.0, delta=0.01)
+
+    def test_an_image_already_big_enough_is_left_alone(self):
+        # Costs nothing on a provider that honours the request.
+        from src.image_ops import upscale_to_cover
+
+        big = Image.new("RGB", (2400, 2400), (10, 10, 10))
+        self.assertIs(upscale_to_cover(big, (1920, 1920)), big)
+
     def test_generation_size_covers_the_widest_and_tallest_template(self):
         # Taken per axis: a 1920x1080 and a 1080x1920 in the same batch
         # together demand 1920x1920, or one of them is an upscale.

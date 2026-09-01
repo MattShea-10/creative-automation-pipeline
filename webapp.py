@@ -50,6 +50,7 @@ from src.image_ops import (
     apply_layer_background_override,
     apply_layer_image_override,
     apply_layer_cta_override,
+    upscale_to_cover,
     apply_layer_text_override,
     auto_transparent_background,
     center_crop_to_ratio,
@@ -1109,6 +1110,12 @@ def generate():
                 # anything smaller than the batch needs gets upscaled into
                 # the bigger sizes, and "why is this blurry" is otherwise
                 # a mystery with no visible cause.
+                # Make the shortfall up once, here, rather than letting
+                # every output size enlarge from the same small source
+                # separately and unsharpened.
+                upload_ai_image = upscale_to_cover(
+                    upload_ai_image, (upload_ai_width, upload_ai_height)
+                )
                 background_warning_pending = (
                     f"The '{upload_ai_provider}' provider returned "
                     f"{upload_ai_image.width}x{upload_ai_image.height} for a requested "

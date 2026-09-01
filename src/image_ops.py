@@ -2106,6 +2106,49 @@ def _sample_edge_color(image: Image.Image, bbox: Tuple[int, int, int, int]) -> T
     return (r, g, b)
 
 
+def upscale_to_cover(
+    image: Image.Image, target: Tuple[int, int], sharpen: bool = True
+) -> Image.Image:
+    """Enlarge `image` until it covers `target` on both axes, preserving
+    its aspect ratio, and restore some of the bite the enlargement costs.
+
+    For when a provider hands back less than was asked for -- Pollinations
+    returns 768x768 however large a size is requested -- and the shortfall
+    would otherwise be made up by each output size upscaling on its own,
+    from the same too-small source, with no sharpening at all.
+
+    Enlarging is interpolation: it invents no detail and softens every
+    edge it touches. An unsharp mask can't invent detail either, but it
+    restores local contrast at edges, which is most of what reads as
+    sharpness. Radius scales with the enlargement -- a 2.5x blow-up
+    smears over more pixels than a 1.2x one, so a fixed radius would
+    under-correct the first and halo the second.
+
+    Returns the image untouched when it already covers the target, so
+    this costs nothing on a provider that honours the request.
+    """
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return image
+    scale = max(target[0] / width, target[1] / height)
+    if scale <= 1.0:
+        return image
+
+    enlarged = image.resize(
+        (max(round(width * scale), 1), max(round(height * scale), 1)), Image.LANCZOS
+    )
+    if not sharpen:
+        return enlarged
+    # Tuned to stay clear of visible haloing: percent rises with the
+    # scale factor but is capped, and the threshold leaves flat areas
+    # (sky, gradients, bokeh) alone so noise isn't amplified.
+    radius = min(0.6 + (scale - 1.0) * 0.7, 2.4)
+    percent = int(min(60 + (scale - 1.0) * 45, 140))
+    return enlarged.filter(
+        ImageFilter.UnsharpMask(radius=radius, percent=percent, threshold=3)
+    )
+
+
 def apply_layer_cta_override(
     base_image: Image.Image,
     bbox: Tuple[int, int, int, int],
