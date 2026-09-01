@@ -1308,6 +1308,15 @@ def generate():
     # uploaded by hand above wins; this only fills the gaps.
     propagated_layer_names = set()
     if upload_ai_image is not None and "background" not in layer_image_overrides:
+        # Deliberately NOT recorded in layer_upload_paths: that dict is
+        # what gets carried forward on an Edit, and a generated image
+        # carried forward is poison. It would come back as though the
+        # user had uploaded it, outrank the fresh generation, and
+        # overwrite the new file on its way past -- so changing the
+        # prompt and re-running produced a byte-identical result and
+        # looked like the generator was ignoring you. A generated image
+        # belongs to the run that generated it.
+        #
         # The generated artwork reaches the templates the same way an
         # uploaded content PSD's own background layer does -- as a
         # background override, fitted to each size's background box.
@@ -1319,7 +1328,6 @@ def generate():
         # change the backdrop". A background image uploaded by hand
         # outranks both -- an explicit file beats a generated one.
         layer_image_overrides["background"] = upload_ai_image.convert("RGBA")
-        layer_upload_paths["layer_background_image"] = upload_ai_path
     if content_psd_provided:
         for layer_name, layer_image in _content_psd_layer_images(content_psd_path).items():
             if layer_name in layer_image_overrides:

@@ -3188,10 +3188,49 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertTrue(
             (webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png").is_file()
         )
-        # It went in as the background-layer override, which is what
-        # carries it across every template size.
+        # It is NOT offered back as a cached upload on the edit page --
+        # a generated image belongs to the run that generated it, and
+        # carrying it forward would outrank the next run's generation.
         e = self.client.get(f"/edit/{job_id}")
-        self.assertIn(b"ai_generated_campaign.png", e.data)
+        self.assertNotIn(b"ai_generated_campaign.png", e.data)
+
+    def test_a_new_prompt_on_edit_regenerates_and_restyles(self):
+        # Reopening a batch, changing the prompt and re-running has to
+        # produce a different backdrop. It didn't: the generated file was
+        # recorded as a background upload, so the edit carried the old
+        # one forward, overwrote the fresh generation on its way past and
+        # outranked it -- byte-identical output from a different prompt.
+        self._write_template_with_a_background_layer("regen-300x250.psd", (300, 250))
+
+        def run(prompt, edit_of=None):
+            data = {
+                "upload_ai_enabled": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": prompt,
+                "header": "",
+                "description": "",
+            }
+            if edit_of:
+                data["edit_job_id"] = edit_of
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+            job = webapp.JOBS_DIR / job_id
+            return (
+                job_id,
+                (job / "uploads" / "ai_generated_campaign.png").read_bytes(),
+                (job / "creative_campaign1_300x250.png").read_bytes(),
+            )
+
+        first_id, first_art, first_render = run("blue ocean")
+        _second_id, second_art, second_render = run("red desert", edit_of=first_id)
+        self.assertNotEqual(first_art, second_art, "the new prompt must regenerate")
+        self.assertNotEqual(first_render, second_render, "and the creatives must follow it")
+
+        # The prompt itself comes back on the edit page, so it can be edited
+        # rather than retyped from scratch.
+        e = self.client.get(f"/edit/{first_id}")
+        self.assertIn(b"blue ocean", e.data)
 
     def test_upload_ai_does_not_override_a_hand_uploaded_background(self):
         # A background image the user picked themselves still wins over
