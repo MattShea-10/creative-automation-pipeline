@@ -2290,6 +2290,32 @@ class PaidProviderTest(unittest.TestCase):
                 else:
                     os.environ[key] = value
 
+    def test_an_api_key_on_the_model_line_is_caught_not_404d(self):
+        # Real mishap: the key was pasted onto the IDEOGRAM_MODEL line as
+        # well as the key line. The model is a URL path segment, so every
+        # request went to /v1/<the key>/generate and came back 404 --
+        # which reads as "the endpoint is wrong", not "your .env is".
+        from src.providers.base import ImageProviderError
+        from src.providers.ideogram_provider import IdeogramProvider
+
+        saved = {k: os.environ.get(k) for k in ("IDEOGRAM_API_KEY", "IDEOGRAM_MODEL")}
+        os.environ["IDEOGRAM_API_KEY"] = "k"
+        os.environ["IDEOGRAM_MODEL"] = "vv9UIWVxrNKzkie21HWnRViZCrlDztWl1UJ6joUSJ" * 2
+        try:
+            with self.assertRaises(ImageProviderError) as caught:
+                IdeogramProvider()
+            self.assertIn("IDEOGRAM_MODEL", str(caught.exception))
+            self.assertIn("IDEOGRAM_API_KEY", str(caught.exception))
+            # And a legitimate slug still passes.
+            os.environ["IDEOGRAM_MODEL"] = "ideogram-v4"
+            self.assertEqual(IdeogramProvider().model, "ideogram-v4")
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_a_missing_key_says_what_to_do_about_it(self):
         from src.providers.base import ImageProviderError
         from src.providers.ideogram_provider import IdeogramProvider

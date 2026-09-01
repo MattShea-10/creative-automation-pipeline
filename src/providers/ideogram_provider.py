@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import io
 import os
+import re
 
 import requests
 from PIL import Image
@@ -22,6 +23,9 @@ from .base import ImageProvider, ImageProviderError
 
 API_BASE = "https://api.ideogram.ai"
 DEFAULT_MODEL = "ideogram-v3"
+
+# The model is a path segment, so it has to look like one.
+MODEL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,31}$")
 
 # The API takes a named ratio ("16x9"), not pixel dimensions. A requested
 # size is matched to the closest of these and the result is center-cropped
@@ -59,6 +63,18 @@ class IdeogramProvider(ImageProvider):
         # empty string is present as far as os.environ is concerned. That
         # produced a "/v1//generate" URL and a 404 on the first call.
         self.model = model or os.environ.get("IDEOGRAM_MODEL") or DEFAULT_MODEL
+        if not MODEL_RE.match(self.model):
+            # The model goes straight into the URL path, so anything that
+            # isn't a model slug produces a mystifying 404 rather than an
+            # obvious configuration error. This has actually happened: an
+            # API key pasted onto the IDEOGRAM_MODEL line as well as the
+            # key line, and the request went to /v1/<the key>/generate.
+            raise ImageProviderError(
+                f"IDEOGRAM_MODEL is set to something that isn't a model name "
+                f"({len(self.model)} characters). It should be a short slug such as "
+                f"'ideogram-v3' or 'ideogram-v4' -- the API key belongs on the "
+                f"IDEOGRAM_API_KEY line instead."
+            )
         self.timeout = timeout
         self._last_json_error = None
         if not self.api_token:
