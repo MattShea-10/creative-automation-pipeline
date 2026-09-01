@@ -189,6 +189,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "brand_color_1", "brand_color_2", "brand_color_3",
     "ai_hero_prompt", "ai_hero_provider",
     "upload_ai_prompt", "upload_ai_provider",
+    "upload_ai_background_style",
     "layer_header_glow_color", "layer_header_glow_size", "layer_header_glow_opacity",
     "layer_header_align", "layer_header_background_color", "layer_header_background_opacity",
     "layer_header_background_blur",
@@ -255,6 +256,25 @@ _SIZE_IN_FILENAME_RE = re.compile(r"(\d+)\s*[xX]\s*(\d+)")
 # Nothing useful comes of asking a provider for more than this, and the
 # wait grows with the pixels.
 MAX_GENERATED_EDGE = 2048
+
+# Appended to a background prompt unless the user turns it off.
+#
+# Generative models are worst at exactly the things a backdrop doesn't
+# need: faces, hands, crowds and lettering. A prompt like "marathon
+# runners" asks for all four at once, and the melted faces and garbled
+# race bibs that come back are what reads as "distortion" -- the model
+# doing its worst on subjects that were never wanted, behind a template
+# that already has its own product, logo and text.
+#
+# Steering the same idea toward an out-of-focus establishing shot keeps
+# the subject matter and drops the failure modes. It also composites
+# better: a busy, sharp photo fights the overlaid text, a soft one
+# doesn't.
+BACKGROUND_PROMPT_GUIDANCE = (
+    "wide establishing background photograph, shallow depth of field, softly out of focus, "
+    "no people in the foreground, no faces, no text, no lettering, no logos, "
+    "even lighting, plenty of empty space for overlaid text"
+)
 
 
 def _default_template_sizes() -> list:
@@ -779,6 +799,13 @@ def generate():
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
     if upload_ai_provider not in PROVIDER_NAMES:
         upload_ai_provider = "pollinations"
+    # Defaults ON -- see BACKGROUND_PROMPT_GUIDANCE. The checkbox is
+    # absent from a form that predates it, so the default has to survive
+    # "not submitted", which is why this reads the marker field.
+    upload_ai_background_style = bool(
+        request.form.get("upload_ai_background_style")
+        or not request.form.get("upload_ai_background_style_seen")
+    )
 
     ai_hero_enabled = bool(request.form.get("ai_hero_enabled"))
     ai_hero_prompt = (request.form.get("ai_hero_prompt") or "").strip() or None
@@ -1051,9 +1078,17 @@ def generate():
     background_notes_pending = None
     background_warning_pending = None
     if upload_ai_enabled:
+        # A backdrop, not a product shot. This used to ask for
+        # "professional studio product photo of X", which is the wrong
+        # brief entirely for a layer that sits *behind* the template's
+        # own product, logo and CTA -- two competing subjects in one
+        # frame.
         upload_ai_prompt_text = upload_ai_prompt or (
-            f"professional studio product photo of {product_name or 'the product'}, clean background"
+            f"abstract branded backdrop suggesting {product_name or 'the product'}, "
+            "subtle gradient, soft lighting"
         )
+        if upload_ai_background_style:
+            upload_ai_prompt_text = f"{upload_ai_prompt_text}, {BACKGROUND_PROMPT_GUIDANCE}"
         try:
             upload_ai_width, upload_ai_height = _generation_size(
                 _default_template_sizes(), CONTENT_PSD_SIZE

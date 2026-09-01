@@ -244,6 +244,17 @@
                 </select>
               </label>
             </div>
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="hidden" name="upload_ai_background_style_seen" value="1">
+              <input type="checkbox" id="upload_ai_background_style" name="upload_ai_background_style" value="1" {% if prefill.get('upload_ai_background_style', True) %}checked{% endif %}>
+              <span>Optimize the prompt for backdrops <span style="font-weight: 400; color: var(--muted);">(recommended)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Adds "out of focus, no faces, no text, space for overlaid text" to your prompt. Models are worst
+              at faces, hands and lettering -- exactly what a backdrop doesn't need -- so asking for a soft
+              establishing shot instead removes most of what reads as distortion, and sits better behind the
+              template's own product and text. The full prompt used is shown on the results page.
+            </div>
             <div class="hint" style="margin-top: 0.4rem;">
               The generated image fills each template's <code>background</code> layer only, so the logo,
               product, CTA and text those templates carry stay where they were designed -- including a content

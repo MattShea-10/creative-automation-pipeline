@@ -3267,6 +3267,39 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         e = self.client.get(f"/edit/{job_id}")
         self.assertNotIn(b"ai_generated_campaign.png", e.data)
 
+    def _prompt_used(self, **extra):
+        data = {"upload_ai_enabled": "1", "upload_ai_provider": "mock", "header": "", "description": ""}
+        data.update(extra)
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        match = re.search(rb"prompt: &#34;(.{0,400}?)&#34;", r.data)
+        self.assertIsNotNone(match, "the results page must report the prompt actually used")
+        return match.group(1).decode()
+
+    def test_the_default_background_prompt_asks_for_a_backdrop(self):
+        # It used to ask for "professional studio product photo of X" --
+        # the wrong brief for a layer sitting behind the template's own
+        # product, logo and CTA.
+        self._write_template_with_a_background_layer("p1-300x250.psd", (300, 250))
+        prompt = self._prompt_used(product_name="OffScrpt")
+        self.assertIn("backdrop", prompt)
+        self.assertNotIn("product photo", prompt)
+
+    def test_background_guidance_is_appended_and_can_be_turned_off(self):
+        # Models are worst at faces, hands and lettering, which a backdrop
+        # doesn't need -- steering away from them is what removes most of
+        # the visible distortion.
+        self._write_template_with_a_background_layer("p2-300x250.psd", (300, 250))
+        on = self._prompt_used(upload_ai_prompt="marathon runners", upload_ai_background_style="1")
+        self.assertTrue(on.startswith("marathon runners"), on)
+        self.assertIn("no faces", on)
+        self.assertIn("out of focus", on)
+
+        off = self._prompt_used(
+            upload_ai_prompt="marathon runners", upload_ai_background_style_seen="1"
+        )
+        self.assertEqual(off, "marathon runners")
+
     def test_a_new_prompt_on_edit_regenerates_and_restyles(self):
         # Reopening a batch, changing the prompt and re-running has to
         # produce a different backdrop. It didn't: the generated file was
