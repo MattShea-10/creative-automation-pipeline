@@ -3720,6 +3720,9 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         prompt = self._prompt_used(product_name="OffScrpt")
         self.assertIn("backdrop", prompt)
         self.assertNotIn("product photo", prompt)
+        # The product name goes in: a blank Image prompt auto-builds from
+        # it, which is what the field's placeholder promises.
+        self.assertIn("OffScrpt", prompt)
 
     def test_background_guidance_is_appended_and_can_be_turned_off(self):
         # Models are worst at faces, hands and lettering, which a backdrop
@@ -3741,9 +3744,18 @@ class ContentPsdQuickModeTest(unittest.TestCase):
             upload_ai_prompt="marathon runners", upload_ai_background_style_seen="1"
         )
         # Unticking drops the styling guidance -- but not the no-text
-        # clause, which is asked for on every generation regardless. The
-        # styling is a matter of taste; a backdrop wanting no lettering
-        # underneath the header, message and CTA is not.
+        # exclusion, which is asked for on every generation regardless.
+        # The styling is a matter of taste; a backdrop wanting no
+        # lettering underneath the header, message and CTA is not.
+        #
+        # Where it appears depends on the provider. These runs use the
+        # offline placeholder, which has no negative-prompt field, so the
+        # exclusion is folded into the prompt -- the weaker fallback.
+        # Providers that do have the field get it there instead, and are
+        # covered in tests/test_text_check.py: putting "no text" in the
+        # positive prompt feeds the word "text" to the very thing
+        # steering the image, and Ideogram's docs say the positive prompt
+        # wins over the negative one.
         self.assertNotIn("sharp focus", off)
         self.assertNotIn("no faces", off)
         self.assertTrue(off.startswith("marathon runners"), off)

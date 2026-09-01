@@ -302,7 +302,14 @@ MAX_GENERATED_EDGE = 2048
 # below is. Prevention only, though: models ignore this often enough that
 # it is verified afterwards rather than trusted (see NO_TEXT_ESCALATION
 # and the OCR check in src/text_check.py).
-NO_TEXT_CLAUSE = "no text, no words, no lettering, no numbers, no watermarks, no signage"
+NO_TEXT_CLAUSE = (
+    "no text, no words, no lettering, no numbers, no watermarks, no signage, "
+    # A brand name in the prompt invites a wordmark, and a campaign
+    # backdrop always has one in it somewhere -- so the exclusion has to
+    # name that case specifically rather than trusting "no text" to cover
+    # it.
+    "no brand name, no wordmark, no logo, no packaging text, no labels"
+)
 
 # Used on a retry, once a generation has actually come back with text in
 # it. Blunter and more repetitive on purpose: the polite phrasing above
@@ -356,6 +363,18 @@ def _generate_text_free(provider, prompt: str, width: int, height: int):
     result = TextCheckResult(available=False)
     image = None
     used = prompt
+    # Where the "no lettering" instruction goes depends on the provider.
+    # A real negative-prompt field is the right channel and the only
+    # strong one: diffusion models handle negation in the positive prompt
+    # badly, and "no text, no words" there feeds the tokens "text" and
+    # "words" straight into what is steering the image. Ideogram's own
+    # documentation says the positive prompt takes precedence over the
+    # negative one, which makes stuffing it in the positive prompt not
+    # merely weak but counterproductive.
+    #
+    # Providers without such a field (Pollinations' GET endpoint) fold it
+    # into the prompt themselves -- weaker, but it's that or nothing.
+    negative = NO_TEXT_CLAUSE
     # The offline placeholder draws the prompt across its own gradient on
     # purpose -- that is what makes it recognisable as a placeholder. It
     # would fail the check every single time, burn the whole retry budget
@@ -365,15 +384,28 @@ def _generate_text_free(provider, prompt: str, width: int, height: int):
     while attempts <= (AI_TEXT_RETRY_LIMIT if verify else 0):
         # First attempt asks politely; every retry escalates, since the
         # polite phrasing has by then demonstrably failed for this prompt.
-        used = prompt if attempts == 0 else f"{prompt}, {NO_TEXT_ESCALATION}"
-        image = provider.generate(used, width=width, height=height)
+        # Escalation goes into the negative prompt too -- the same
+        # reasoning applies to the retry as to the first attempt.
+        used = prompt
+        negative_used = (
+            negative if attempts == 0 else f"{negative}, {NO_TEXT_ESCALATION}"
+        )
+        image = provider.generate(
+            used, width=width, height=height, negative_prompt=negative_used
+        )
         attempts += 1
         if not verify:
             break
         result = find_text(image)
         if not result.available or not result.found_text:
             break
-    return image, used, attempts, result
+    if getattr(provider, "supports_negative_prompt", False):
+        shown = f"{used}  [excluded: {negative_used}]"
+    else:
+        # Folded into the prompt by the provider -- report it that way,
+        # since that is what was actually sent.
+        shown = f"{used}, {negative_used}"
+    return image, shown, attempts, result
 
 
 def _clean_text_out(image, result, label: str, attempts: int):
@@ -1308,10 +1340,6 @@ def generate():
         )
         if upload_ai_background_style:
             upload_ai_prompt_text = f"{upload_ai_prompt_text}, {BACKGROUND_PROMPT_GUIDANCE}"
-        # Always, checkbox or not -- see NO_TEXT_CLAUSE. The styling
-        # guidance above is a matter of taste and gets a checkbox; a
-        # backdrop wanting no lettering is not.
-        upload_ai_prompt_text = f"{upload_ai_prompt_text}, {NO_TEXT_CLAUSE}"
         try:
             upload_ai_width, upload_ai_height = _generation_size(
                 _default_template_sizes(), CONTENT_PSD_SIZE
@@ -1687,10 +1715,6 @@ def generate():
             f"professional studio product photo of {product_name or headline or 'the product'}, "
             "clean background"
         )
-        # Same reasoning as the campaign artwork: the header, message and
-        # CTA are composited on top of this, so anything the model writes
-        # underneath is a defect. Asked for every time, then verified.
-        prompt = f"{prompt}, {NO_TEXT_CLAUSE}"
         try:
             hero_width, hero_height = _generation_size(sizes, (1024, 1024))
             generated_image, prompt, hero_attempts, hero_text = _generate_text_free(

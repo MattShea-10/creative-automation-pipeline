@@ -19,9 +19,29 @@ class ImageProviderError(Exception):
 class ImageProvider(ABC):
     name: str = "base"
 
+    # Whether the vendor has a real "exclude this" field. It matters more
+    # than it looks: diffusion models handle negation in the positive
+    # prompt badly, and "no text, no words" there puts the tokens "text"
+    # and "words" into the very prompt that is steering the image --
+    # which can produce more lettering, not less. Ideogram's own docs say
+    # the positive prompt takes precedence over the negative one, so the
+    # exclusion belongs in the negative field wherever there is one.
+    #
+    # Providers that leave this False still accept the argument and fold
+    # it into the prompt as best they can, so callers never branch.
+    supports_negative_prompt: bool = False
+
     @abstractmethod
-    def generate(self, prompt: str, width: int = 1024, height: int = 1024) -> Image.Image:
+    def generate(
+        self,
+        prompt: str,
+        width: int = 1024,
+        height: int = 1024,
+        negative_prompt: str = None,
+    ) -> Image.Image:
         """Generate a single hero image for the given prompt.
+
+        `negative_prompt` describes what to keep OUT of the image.
 
         Implementations should raise ImageProviderError on failure so the
         pipeline can decide whether to fall back to another provider.

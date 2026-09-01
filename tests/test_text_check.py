@@ -73,16 +73,19 @@ class FindTextTest(unittest.TestCase):
 
 
 class _ScriptedProvider:
-    """Returns a canned sequence of images, recording the prompts used."""
+    """Returns a canned sequence of images, recording what it was sent."""
 
     name = "scripted"
+    supports_negative_prompt = True
 
     def __init__(self, images):
         self.images = list(images)
         self.prompts = []
+        self.negatives = []
 
-    def generate(self, prompt, width=1024, height=1024):
+    def generate(self, prompt, width=1024, height=1024, negative_prompt=None):
         self.prompts.append(prompt)
+        self.negatives.append(negative_prompt)
         return self.images.pop(0) if self.images else self.images_last
 
     @property
@@ -99,8 +102,17 @@ class RetryLoopTest(unittest.TestCase):
         )
         self.assertEqual(attempts, 1)
         self.assertFalse(result.found_text)
-        self.assertEqual(prompt, "marathon runners")
+        # The subject reaches the provider untouched. The exclusion goes
+        # in the negative field, NOT appended to the prompt -- a
+        # diffusion model handles negation there badly, and Ideogram's
+        # docs say the positive prompt wins over the negative one, so
+        # "no text" in the prompt is worse than useless.
         self.assertEqual(provider.prompts, ["marathon runners"])
+        self.assertIn("no text", provider.negatives[0])
+        # What's reported back says what was excluded, since it is no
+        # longer visible in the prompt itself.
+        self.assertIn("marathon runners", prompt)
+        self.assertIn("excluded", prompt)
 
     def test_text_in_the_first_result_triggers_a_harder_retry(self):
         provider = _ScriptedProvider([_image_with_text(), _image_without_text()])
@@ -111,8 +123,9 @@ class RetryLoopTest(unittest.TestCase):
         self.assertFalse(result.found_text)
         # The retry escalates rather than re-sending the phrasing that
         # has already demonstrably failed for this prompt.
-        self.assertEqual(provider.prompts[0], "marathon runners")
-        self.assertIn(webapp.NO_TEXT_ESCALATION, provider.prompts[1])
+        self.assertEqual(provider.prompts, ["marathon runners", "marathon runners"])
+        self.assertNotIn(webapp.NO_TEXT_ESCALATION, provider.negatives[0])
+        self.assertIn(webapp.NO_TEXT_ESCALATION, provider.negatives[1])
 
     def test_it_gives_up_and_reports_rather_than_looping(self):
         # Every attempt dirty. The budget is finite -- each retry is a

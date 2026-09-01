@@ -39,7 +39,20 @@ class PollinationsProvider(ImageProvider):
         # pin the seed; left alone, every request gets a fresh one.
         self.seed = seed
 
-    def generate(self, prompt: str, width: int = 1024, height: int = 1024) -> Image.Image:
+    def generate(
+        self,
+        prompt: str,
+        width: int = 1024,
+        height: int = 1024,
+        negative_prompt: str = None,
+    ) -> Image.Image:
+        # The endpoint is a plain GET with no exclusion field, so the
+        # only place an exclusion can go is the prompt itself. Weaker
+        # than a real negative prompt -- see ImageProvider's note on why
+        # negation in a positive prompt can backfire -- but it is this or
+        # nothing here.
+        if negative_prompt:
+            prompt = f"{prompt}, {negative_prompt}"
         encoded = urllib.parse.quote(prompt)
         url = BASE_URL.format(prompt=encoded)
         params = {

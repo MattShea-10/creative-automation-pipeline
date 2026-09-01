@@ -55,6 +55,7 @@ def _closest_aspect(width: int, height: int) -> str:
 
 class IdeogramProvider(ImageProvider):
     name = "ideogram"
+    supports_negative_prompt = True
 
     def __init__(self, api_token: str = None, model: str = None, timeout: int = 120):
         self.api_token = api_token or os.environ.get("IDEOGRAM_API_KEY")
@@ -88,7 +89,13 @@ class IdeogramProvider(ImageProvider):
                 "an ideogram.ai subscription is billed separately and doesn't cover the API."
             )
 
-    def generate(self, prompt: str, width: int = 1024, height: int = 1024) -> Image.Image:
+    def generate(
+        self,
+        prompt: str,
+        width: int = 1024,
+        height: int = 1024,
+        negative_prompt: str = None,
+    ) -> Image.Image:
         url = f"{API_BASE}/v1/{self.model}/generate"
         headers = {"Api-Key": self.api_token}
         fields = {
@@ -97,6 +104,8 @@ class IdeogramProvider(ImageProvider):
             "rendering_speed": "QUALITY",
             "num_images": 1,
         }
+        if negative_prompt:
+            fields["negative_prompt"] = negative_prompt
 
         try:
             resp = requests.post(url, headers=headers, json=fields, timeout=self.timeout)

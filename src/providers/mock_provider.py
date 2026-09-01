@@ -27,7 +27,16 @@ def _seed_color(text: str, offset: int = 0) -> tuple:
 class MockImageProvider(ImageProvider):
     name = "mock"
 
-    def generate(self, prompt: str, width: int = 1024, height: int = 1024) -> Image.Image:
+    def generate(
+        self,
+        prompt: str,
+        width: int = 1024,
+        height: int = 1024,
+        negative_prompt: str = None,
+    ) -> Image.Image:
+        # Accepted and ignored: this draws a labelled placeholder, so
+        # there is nothing to steer. Present only so callers never have
+        # to ask which provider they're holding.
         top = _seed_color(prompt, 0)
         bottom = _seed_color(prompt, 1)
 
