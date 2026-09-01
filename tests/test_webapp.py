@@ -2234,6 +2234,65 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
 
 
+class PaidProviderTest(unittest.TestCase):
+    """The two key-based providers. Nothing here touches the network --
+    what matters is the size negotiation and that a missing key fails
+    with something a person can act on."""
+
+    def test_openai_snaps_a_request_to_a_size_the_model_renders(self):
+        # The API rejects any size outside its list, so a 1920x1080
+        # request has to become the landscape option -- not the square
+        # one, which is closer in area but wrong in shape.
+        from src.providers.openai_provider import MODEL_SIZES, _closest_supported
+
+        sizes = MODEL_SIZES["dall-e-3"]
+        self.assertEqual(_closest_supported(1920, 1080, sizes), (1792, 1024))
+        self.assertEqual(_closest_supported(1080, 1920, sizes), (1024, 1792))
+        self.assertEqual(_closest_supported(1200, 1200, sizes), (1024, 1024))
+
+    def test_ideogram_snaps_a_request_to_an_aspect_it_renders(self):
+        # Ideogram takes a named ratio rather than pixels.
+        from src.providers.ideogram_provider import _closest_aspect
+
+        self.assertEqual(_closest_aspect(1920, 1080), "ASPECT_16_9")
+        self.assertEqual(_closest_aspect(1080, 1920), "ASPECT_9_16")
+        self.assertEqual(_closest_aspect(1200, 1200), "ASPECT_1_1")
+        self.assertEqual(_closest_aspect(720, 480), "ASPECT_3_2")
+
+    def test_a_missing_key_says_what_to_do_about_it(self):
+        from src.providers.base import ImageProviderError
+        from src.providers.ideogram_provider import IdeogramProvider
+        from src.providers.openai_provider import OpenAIProvider
+
+        saved = {k: os.environ.pop(k, None) for k in ("OPENAI_API_KEY", "IDEOGRAM_API_KEY")}
+        try:
+            with self.assertRaises(ImageProviderError) as caught:
+                OpenAIProvider()
+            message = str(caught.exception)
+            self.assertIn("OPENAI_API_KEY", message)
+            # The trap worth naming: a ChatGPT plan is not API access.
+            self.assertIn("ChatGPT", message)
+
+            with self.assertRaises(ImageProviderError) as caught:
+                IdeogramProvider()
+            self.assertIn("IDEOGRAM_API_KEY", str(caught.exception))
+        finally:
+            for key, value in saved.items():
+                if value is not None:
+                    os.environ[key] = value
+
+    def test_both_are_selectable_in_the_form_and_accepted_by_the_server(self):
+        import webapp as _webapp
+
+        self.assertIn("openai", _webapp.PROVIDER_NAMES)
+        self.assertIn("ideogram", _webapp.PROVIDER_NAMES)
+        _webapp.app.config["TESTING"] = True
+        page = _webapp.app.test_client().get("/").data.decode()
+        # Both AI sections offer both providers.
+        self.assertEqual(page.count('value="openai"'), 2)
+        self.assertEqual(page.count('value="ideogram"'), 2)
+
+
 class PollinationsSeedTest(unittest.TestCase):
     """Asking again is how you ask for a different take."""
 

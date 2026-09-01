@@ -11,8 +11,10 @@ from .base import ImageProvider, ImageProviderError
 from .mock_provider import MockImageProvider
 from .pollinations_provider import PollinationsProvider
 from .huggingface_provider import HuggingFaceProvider
+from .ideogram_provider import IdeogramProvider
+from .openai_provider import OpenAIProvider
 
-PROVIDER_NAMES = ["mock", "pollinations", "huggingface"]
+PROVIDER_NAMES = ["mock", "pollinations", "huggingface", "openai", "ideogram"]
 
 
 def get_provider(name: str) -> ImageProvider:
@@ -21,6 +23,10 @@ def get_provider(name: str) -> ImageProvider:
         return MockImageProvider()
     if name == "pollinations":
         return PollinationsProvider()
+    if name == "openai":
+        return OpenAIProvider()
+    if name == "ideogram":
+        return IdeogramProvider()
     if name == "huggingface":
         return HuggingFaceProvider()
     raise ValueError(f"Unknown IMAGE_PROVIDER '{name}'. Choose from: {PROVIDER_NAMES}")
@@ -32,6 +38,8 @@ __all__ = [
     "MockImageProvider",
     "PollinationsProvider",
     "HuggingFaceProvider",
+    "IdeogramProvider",
+    "OpenAIProvider",
     "get_provider",
     "PROVIDER_NAMES",
 ]
