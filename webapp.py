@@ -1143,6 +1143,9 @@ def generate():
             # Same resilience as the hero generator: a flaky free API
             # degrades to the offline placeholder rather than failing the
             # whole run, and says so instead of quietly looking worse.
+            app.logger.warning(
+                "AI provider %r failed for campaign artwork: %s", upload_ai_provider, exc
+            )
             upload_ai_image = MockImageProvider().generate(upload_ai_prompt_text)
             background_notes_pending = (
                 f"Campaign artwork: the '{upload_ai_provider}' AI provider failed ({exc}) -- used the "
@@ -1454,6 +1457,9 @@ def generate():
             # offline placeholder generator and says so plainly, so it
             # reads as "this specific provider had a bad moment," not as
             # a silent quality regression.
+            app.logger.warning(
+                "AI provider %r failed for the hero image: %s", ai_hero_provider, exc
+            )
             generated_image = MockImageProvider().generate(prompt)
             background_warnings.append(
                 f"Hero image: the '{ai_hero_provider}' AI provider failed ({exc}) -- used the offline "
