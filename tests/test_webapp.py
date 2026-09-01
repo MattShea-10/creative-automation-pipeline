@@ -3175,8 +3175,13 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(page.count('class="size size-zoom" data-role="zoom"'), cards)
         self.assertIn('<button type="button" class="thumb"', page)
         self.assertIn('<button type="button" class="size size-zoom"', page)
-        # The overlay exists but starts closed.
+        # The overlay exists but starts closed -- and stays closed. The
+        # `hidden` attribute only sets display:none through the UA
+        # stylesheet, which the overlay's own `display: flex` beats, so
+        # without an explicit [hidden] rule it renders open on load and
+        # covers the results.
         self.assertIn('data-role="lightbox" hidden', page)
+        self.assertIn('.lightbox[hidden] { display: none; }', page)
 
     def test_content_psd_wrong_extension_flashes(self):
         data = {
