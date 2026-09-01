@@ -751,26 +751,32 @@
         });
       });
 
-      // "Upload Creative" and "Manual Creative" are mutually exclusive.
-      // A PSD template is exported exactly as designed -- render_creative()
-      // never draws a header/description/logo/badge/CTA overlay on top of
-      // one, and with default_templates/ driving the batch the output-size
-      // controls don't apply either -- so the moment any PSD is picked
-      // (the quick-campaign content PSD or any size-specific template
-      // row), the whole Manual Creative panel is disabled and collapsed
-      // rather than left there collecting settings that would be silently
-      // ignored. Disabled controls aren't submitted at all, so the server
-      // sees the same "nothing typed" state the panel is showing.
+      // The content PSD and Manual Creative are mutually exclusive. That
+      // upload makes the batch entirely template-covered -- every size
+      // comes from default_templates/, each exported exactly as designed,
+      // with no header/description/logo/badge/CTA overlay drawn on top and
+      // the output-size controls ignored -- so the panel would only be
+      // collecting settings that get thrown away. Disabled controls aren't
+      // submitted at all, so the server sees the same "nothing typed"
+      // state the panel is showing.
+      //
+      // A size-specific PSD template row is NOT included here, though it
+      // used to be. Such a row covers one size and leaves the rest to the
+      // hero image -- and the hero field, the AI hero generator and the
+      // output sizes all live in this panel, so disabling it on a row
+      // upload locked away the only controls that could satisfy the very
+      // sizes the row doesn't cover. The server then rejected the run
+      // asking for a hero image the form wouldn't let you supply.
       var manualBox = root.querySelector(".manual-creative-box");
-      var psdInputs = root.querySelectorAll('input[type="file"][accept=".psd"]');
-      var priorPsdHints = root.querySelectorAll('[data-role^="psd-currently-"]');
+      var psdInputs = root.querySelectorAll('[name="content_psd"]');
+      var priorPsdHints = [];
       if (manualBox && psdInputs.length) {
         var manualNote = document.createElement("div");
         manualNote.className = "hint manual-disabled-note";
         manualNote.textContent =
-          "Disabled -- a PSD is uploaded above. A PSD template is exported exactly as designed, so " +
-          "header, description, CTA, logo, badge, hero image and output-size settings don't apply to it. " +
-          "Clear the PSD upload to use these again.";
+          "Disabled -- a content PSD is uploaded above, so every size in this campaign comes from a " +
+          "template and is exported exactly as designed. Header, description, CTA, logo, badge, hero " +
+          "image and output-size settings don't apply to it. Clear the content PSD to use these again.";
         manualNote.hidden = true;
         var manualSummary = manualBox.querySelector("summary");
         if (manualSummary) manualSummary.insertAdjacentElement("afterend", manualNote);
@@ -785,9 +791,6 @@
             // through these markers instead (same trick as the
             // content-PSD layer panel above).
             if (input.dataset.hasPrior === "true") hasPsd = true;
-          });
-          priorPsdHints.forEach(function (hint) {
-            if (!hint.hidden) hasPsd = true;
           });
           manualBox.querySelectorAll("input, select, textarea, button").forEach(function (el) {
             el.disabled = hasPsd;
