@@ -3335,7 +3335,13 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         on = self._prompt_used(upload_ai_prompt="marathon runners", upload_ai_background_style="1")
         self.assertTrue(on.startswith("marathon runners"), on)
         self.assertIn("no faces", on)
-        self.assertIn("out of focus", on)
+        self.assertIn("sharp focus", on)
+        # It must never ask for softness. An earlier version did, and a
+        # prompt reading "high resolution image of runners" went out with
+        # "softly out of focus" stapled to it -- the model obliged, and
+        # the result was blamed on resampling.
+        self.assertNotIn("out of focus", on)
+        self.assertNotIn("shallow depth of field", on)
 
         off = self._prompt_used(
             upload_ai_prompt="marathon runners", upload_ai_background_style_seen="1"

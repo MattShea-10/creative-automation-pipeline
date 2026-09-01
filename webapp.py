@@ -267,13 +267,19 @@ MAX_GENERATED_EDGE = 2048
 # doing its worst on subjects that were never wanted, behind a template
 # that already has its own product, logo and text.
 #
-# Steering the same idea toward an out-of-focus establishing shot keeps
-# the subject matter and drops the failure modes. It also composites
-# better: a busy, sharp photo fights the overlaid text, a soft one
-# doesn't.
+# Steering away from those keeps the subject matter and drops the failure
+# modes.
+#
+# It deliberately does NOT ask for defocus. An earlier version of this
+# said "shallow depth of field, softly out of focus" -- reasoning that a
+# soft backdrop composites better behind text, which is true. But it also
+# meant a prompt reading "high resolution image of runners" was sent with
+# "softly out of focus" stapled to it, and the blur that came back was
+# the model doing exactly as asked. Legibility behind text is what the
+# band and glow controls are for; the backdrop itself should be sharp.
 BACKGROUND_PROMPT_GUIDANCE = (
-    "wide establishing background photograph, shallow depth of field, softly out of focus, "
-    "no people in the foreground, no faces, no text, no lettering, no logos, "
+    "sharp focus, crisp fine detail, high resolution, professional photography, "
+    "no faces, no text, no lettering, no logos, "
     "even lighting, plenty of empty space for overlaid text"
 )
 
