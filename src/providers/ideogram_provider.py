@@ -60,6 +60,7 @@ class IdeogramProvider(ImageProvider):
         # produced a "/v1//generate" URL and a 404 on the first call.
         self.model = model or os.environ.get("IDEOGRAM_MODEL") or DEFAULT_MODEL
         self.timeout = timeout
+        self._last_json_error = None
         if not self.api_token:
             raise ImageProviderError(
                 "IDEOGRAM_API_KEY is not set. Create one under API Keys at "
@@ -79,13 +80,16 @@ class IdeogramProvider(ImageProvider):
 
         try:
             resp = requests.post(url, headers=headers, json=fields, timeout=self.timeout)
-            # This endpoint also accepts multipart (it takes reference
-            # image files), and has been seen to reject a JSON body. Retry
-            # the same fields as form data rather than failing on a
-            # content-type technicality.
+            # This endpoint takes reference image files, so it speaks
+            # multipart/form-data, and has been seen to reject a JSON
+            # body outright. Retry the same fields as real multipart --
+            # the (None, value) tuple is what makes requests send
+            # multipart rather than urlencoded, which is a different
+            # content type again and gets rejected just the same.
             if resp.status_code in (400, 415, 422):
-                form = {k: str(v) for k, v in fields.items()}
-                resp = requests.post(url, headers=headers, data=form, timeout=self.timeout)
+                self._last_json_error = resp.text[:300]
+                multipart = {k: (None, str(v)) for k, v in fields.items()}
+                resp = requests.post(url, headers=headers, files=multipart, timeout=self.timeout)
         except Exception as exc:  # noqa: BLE001
             raise ImageProviderError(f"Ideogram request failed: {exc}") from exc
 
@@ -106,8 +110,17 @@ class IdeogramProvider(ImageProvider):
                 "path segment such as 'ideogram-v3' or 'ideogram-v4'."
             )
         if resp.status_code != 200:
+            detail = resp.text[:300]
+            first = getattr(self, "_last_json_error", None)
+            if first and first != detail:
+                # Both shapes were refused -- report both, since which one
+                # failed and how is the whole diagnosis.
+                raise ImageProviderError(
+                    f"Ideogram returned HTTP {resp.status_code} for {url}. "
+                    f"As JSON: {first} | As multipart: {detail}"
+                )
             raise ImageProviderError(
-                f"Ideogram returned HTTP {resp.status_code}: {resp.text[:300]}"
+                f"Ideogram returned HTTP {resp.status_code} for {url}: {detail}"
             )
 
         try:
