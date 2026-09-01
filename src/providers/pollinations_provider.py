@@ -10,6 +10,7 @@ quality/consistency is lower than a paid model like gpt-image-1 or Firefly.)
 from __future__ import annotations
 
 import io
+import os
 import random
 import urllib.parse
 
@@ -24,8 +25,16 @@ BASE_URL = "https://image.pollinations.ai/prompt/{prompt}"
 class PollinationsProvider(ImageProvider):
     name = "pollinations"
 
-    def __init__(self, timeout: int = 40, seed: int = None):
+    def __init__(self, timeout: int = 40, seed: int = None, model: str = None):
         self.timeout = timeout
+        # Which model to ask for. Left unset the endpoint picks its own,
+        # which in practice returns 768x768 however large a size is
+        # requested -- so anything bigger in the batch is upscaled from
+        # that, and looks it. Some models honour larger dimensions, so
+        # this is exposed as a knob rather than hard-coded: set
+        # POLLINATIONS_MODEL in .env (e.g. "flux") and compare the size
+        # reported on the results page.
+        self.model = model if model is not None else (os.environ.get("POLLINATIONS_MODEL") or None)
         # A caller that wants the same prompt to come back identical can
         # pin the seed; left alone, every request gets a fresh one.
         self.seed = seed
@@ -45,6 +54,8 @@ class PollinationsProvider(ImageProvider):
             # provider if you want the old behaviour.
             "seed": self.seed if self.seed is not None else random.randrange(10**6),
         }
+        if self.model:
+            params["model"] = self.model
         try:
             resp = requests.get(url, params=params, timeout=self.timeout)
             resp.raise_for_status()

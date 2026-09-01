@@ -973,7 +973,12 @@ def add_logo_watermark(
     img = image.convert("RGBA")
     w, h = img.size
     logo_w, logo_h, margin = logo_render_size((w, h), logo, scale_frac=scale, margin_frac=margin_frac)
-    logo_resized = logo.convert("RGBA").resize((max(logo_w, 1), max(logo_h, 1)))
+    # LANCZOS explicitly, like every other resize here. The default
+    # filter is softer, and a brand mark scaled down without it is the
+    # one place that shows.
+    logo_resized = logo.convert("RGBA").resize(
+        (max(logo_w, 1), max(logo_h, 1)), Image.LANCZOS
+    )
 
     if position == "top-left":
         x, y = margin, margin
