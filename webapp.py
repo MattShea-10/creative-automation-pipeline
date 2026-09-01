@@ -662,6 +662,28 @@ def edit(job_id):
     )
 
 
+@app.route("/generate", methods=["GET"])
+def generate_reload():
+    """A GET on /generate means the results page was reloaded.
+
+    The results are rendered straight from the POST, so the address bar
+    keeps saying /generate -- and reloading that (or reaching it from
+    history, where browsers drop the body) arrives as a GET, which a
+    POST-only route answers with a bare "405 Method Not Allowed" error
+    page. Sending them back to the form with an explanation beats that.
+
+    Nothing is lost by landing here: the batch is already on disk. Its
+    zip is in downloads/, and /edit/<job_id> reopens it pre-filled.
+    """
+    flash(
+        "That results page can't be reloaded directly -- its address is the "
+        "generate step itself. Your creatives are safe: the zip is in the "
+        "downloads/ folder, and \"Edit\" on the results page reopens the batch. "
+        "Fill the form in again to make a new one."
+    )
+    return redirect(url_for("index"))
+
+
 @app.route("/generate", methods=["POST"])
 def generate():
     # Editing a prior job (see /edit/<job_id>) carries a hidden

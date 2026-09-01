@@ -3183,6 +3183,18 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertIn('data-role="lightbox" hidden', page)
         self.assertIn('.lightbox[hidden] { display: none; }', page)
 
+    def test_reloading_the_results_page_lands_on_the_form_not_a_405(self):
+        # Results render straight from the POST, so the address bar keeps
+        # saying /generate. Reloading that arrives as a GET, and a
+        # POST-only route answers with a bare "405 Method Not Allowed".
+        r = self.client.get("/generate")
+        self.assertEqual(r.status_code, 302)
+        self.assertTrue(r.headers["Location"].endswith("/"))
+
+        page = self.client.get("/generate", follow_redirects=True)
+        self.assertEqual(page.status_code, 200)
+        self.assertIn("reloaded directly", page.data.decode())
+
     def test_content_psd_wrong_extension_flashes(self):
         data = {
             "content_psd": (self._sample_image_bytes(), "content.png"),
