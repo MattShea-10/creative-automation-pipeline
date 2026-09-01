@@ -2310,6 +2310,57 @@ class LayerTextGlowTest(unittest.TestCase):
             large, small - 20, "a wider glow must not be dimmer than a tight one"
         )
 
+    def test_alignment_moves_the_text_within_its_box(self):
+        from src.image_ops import apply_layer_text_override
+
+        base = Image.new("RGB", (400, 200), (240, 120, 60))
+        box = (20, 20, 380, 180)
+        left = apply_layer_text_override(base.copy(), box, "Edge", exact_font_size=40, align="left")
+        right = apply_layer_text_override(base.copy(), box, "Edge", exact_font_size=40, align="right")
+        centre = apply_layer_text_override(base.copy(), box, "Edge", exact_font_size=40, align="center")
+        self.assertNotEqual(list(left.getdata()), list(right.getdata()))
+        self.assertNotEqual(list(left.getdata()), list(centre.getdata()))
+
+    def test_the_band_sits_behind_the_text_and_respects_its_opacity(self):
+        from src.image_ops import apply_layer_text_override
+
+        base = Image.new("RGB", (400, 200), (240, 120, 60))
+        box = (20, 20, 380, 180)
+        plain = apply_layer_text_override(base.copy(), box, "Band", exact_font_size=40)
+        solid = apply_layer_text_override(
+            base.copy(), box, "Band", exact_font_size=40,
+            show_background=True, background_color=(0, 0, 0), background_opacity=100,
+        )
+        faint = apply_layer_text_override(
+            base.copy(), box, "Band", exact_font_size=40,
+            show_background=True, background_color=(0, 0, 0), background_opacity=25,
+        )
+        darkness = lambda im: sum(px[0] for px in im.convert("RGB").getdata())
+        self.assertLess(darkness(solid), darkness(faint))
+        self.assertLess(darkness(faint), darkness(plain))
+        # Zero opacity is the same as not asking for a band.
+        none = apply_layer_text_override(
+            base.copy(), box, "Band", exact_font_size=40,
+            show_background=True, background_opacity=0,
+        )
+        self.assertEqual(list(none.getdata()), list(plain.getdata()))
+
+    def test_the_band_does_not_fill_the_whole_layer_box(self):
+        # Sized to the lines, not the box -- a band filling a tall box
+        # would swamp a template with room around its text.
+        from src.image_ops import apply_layer_text_override
+
+        base = Image.new("RGB", (400, 400), (240, 120, 60))
+        box = (20, 20, 380, 380)
+        banded = apply_layer_text_override(
+            base.copy(), box, "Band", exact_font_size=30,
+            show_background=True, background_color=(0, 0, 0), background_opacity=100,
+        ).convert("RGB")
+        black = sum(1 for px in banded.getdata() if px == (0, 0, 0))
+        box_area = (380 - 20) * (380 - 20)
+        self.assertGreater(black, 0)
+        self.assertLess(black, box_area * 0.8)
+
     def test_the_words_are_unchanged_by_a_glow(self):
         # The halo goes behind the letterforms -- it must not move or
         # resize the text itself.

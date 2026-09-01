@@ -189,7 +189,9 @@ EDIT_TEXT_FIELD_NAMES = (
     "ai_hero_prompt", "ai_hero_provider",
     "upload_ai_prompt", "upload_ai_provider",
     "layer_header_glow_color", "layer_header_glow_size", "layer_header_glow_opacity",
+    "layer_header_align", "layer_header_background_color", "layer_header_background_opacity",
     "layer_description_glow_color", "layer_description_glow_size", "layer_description_glow_opacity",
+    "layer_description_align", "layer_description_background_color", "layer_description_background_opacity",
     "header", "description", "custom_sizes",
     "fit_mode",
     "header_text_color", "header_align", "header_font_size",
@@ -217,6 +219,8 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "upload_ai_enabled",
     "layer_header_glow",
     "layer_description_glow",
+    "layer_header_background",
+    "layer_description_background",
 )
 
 # Euclidean RGB distance under which a pixel counts as "matching" a brand
@@ -1089,6 +1093,14 @@ def generate():
     )
     layer_header_glow_size = _parse_glow_size(request.form.get("layer_header_glow_size"))
     layer_header_glow_opacity = _parse_glow_opacity(request.form.get("layer_header_glow_opacity"))
+    layer_header_align = _parse_align(request.form.get("layer_header_align"), default="left")
+    layer_header_background = bool(request.form.get("layer_header_background"))
+    layer_header_background_color = _parse_hex_color(
+        request.form.get("layer_header_background_color"), default=(0, 0, 0)
+    )
+    layer_header_background_opacity = _parse_glow_opacity(
+        request.form.get("layer_header_background_opacity")
+    )
 
     layer_description_text = (request.form.get("layer_description_text") or "").strip() or None
     # By default the description override matches whatever font family,
@@ -1114,6 +1126,14 @@ def generate():
     layer_description_glow_size = _parse_glow_size(request.form.get("layer_description_glow_size"))
     layer_description_glow_opacity = _parse_glow_opacity(
         request.form.get("layer_description_glow_opacity")
+    )
+    layer_description_align = _parse_align(request.form.get("layer_description_align"), default="left")
+    layer_description_background = bool(request.form.get("layer_description_background"))
+    layer_description_background_color = _parse_hex_color(
+        request.form.get("layer_description_background_color"), default=(0, 0, 0)
+    )
+    layer_description_background_opacity = _parse_glow_opacity(
+        request.form.get("layer_description_background_opacity")
     )
 
     layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
@@ -1690,6 +1710,10 @@ def generate():
                     glow_color=(255, 255, 255),
                     glow_size=GLOW_SIZE_DEFAULT,
                     glow_opacity=100,
+                    align="left",
+                    show_background=False,
+                    background_color=(0, 0, 0),
+                    background_opacity=60,
                 ):
                     # Shared by every text-layer override (description,
                     # header, ...) -- reads that named layer's own PSD
@@ -1792,6 +1816,10 @@ def generate():
                         glow_color=glow_color,
                         glow_size=glow_size,
                         glow_opacity=glow_opacity,
+                        align=align,
+                        show_background=show_background,
+                        background_color=background_color,
+                        background_opacity=background_opacity,
                         debug=text_debug,
                     )
                     # Same call again, but onto a transparent canvas with
@@ -1813,6 +1841,10 @@ def generate():
                         glow_color=glow_color,
                         glow_size=glow_size,
                         glow_opacity=glow_opacity,
+                        align=align,
+                        show_background=show_background,
+                        background_color=background_color,
+                        background_opacity=background_opacity,
                         keep_alpha=True,
                     )
                     applied_layers.append(layer_key)
@@ -1843,6 +1875,7 @@ def generate():
                 if (
                     layer_header_text
                     or layer_header_glow
+                    or layer_header_background
                     or layer_header_use_custom_color
                     or layer_header_font_family
                     or layer_header_font_size
@@ -1858,10 +1891,15 @@ def generate():
                         glow_color=layer_header_glow_color,
                         glow_size=layer_header_glow_size,
                         glow_opacity=layer_header_glow_opacity,
+                        align=layer_header_align,
+                        show_background=layer_header_background,
+                        background_color=layer_header_background_color,
+                        background_opacity=layer_header_background_opacity,
                     )
                 if (
                     layer_description_text
                     or layer_description_glow
+                    or layer_description_background
                     or layer_description_use_custom_color
                     or layer_description_font_family
                     or layer_description_font_size
@@ -1877,6 +1915,10 @@ def generate():
                         glow_color=layer_description_glow_color,
                         glow_size=layer_description_glow_size,
                         glow_opacity=layer_description_glow_opacity,
+                        align=layer_description_align,
+                        show_background=layer_description_background,
+                        background_color=layer_description_background_color,
+                        background_opacity=layer_description_background_opacity,
                     )
                 if applied_layers:
                     background_notes.append(

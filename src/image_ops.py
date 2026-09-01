@@ -2120,6 +2120,9 @@ def apply_layer_text_override(
     glow_color: Tuple[int, int, int] = (255, 255, 255),
     glow_size: int = 12,
     glow_opacity: int = 100,
+    show_background: bool = False,
+    background_color: Tuple[int, int, int] = (0, 0, 0),
+    background_opacity: int = 60,
 ) -> Image.Image:
     """Return a copy of `base_image` with `text` painted directly into
     `bbox` -- same idea as apply_layer_image_override(): whatever's
@@ -2169,6 +2172,14 @@ def apply_layer_text_override(
     behind the crisp text. `glow_opacity` (0-100) scales that halo's
     strength, for when a full-strength one is heavier than the design
     wants -- 0 leaves the text as if no glow had been asked for.
+
+    `show_background` draws a flat band behind the text block instead --
+    the same idea as the header/message banners render_creative() draws,
+    and the blunter answer to the same problem a glow solves. It spans
+    the layer box's width and only the lines' own height, so it reads as
+    a banner rather than filling the whole layer. `background_color` and
+    `background_opacity` (0-100) style it; a band is drawn under the glow,
+    so the two can be combined.
 
     `keep_alpha=True` returns RGBA instead of flattening to RGB -- see
     apply_layer_image_override()'s own `keep_alpha` for why (a real
@@ -2232,6 +2243,29 @@ def apply_layer_text_override(
         if align == "right":
             return x0 + padding + (max_text_width - line_w)
         return x0 + padding
+
+    if show_background and background_opacity > 0:
+        # Sized to the text block, not the layer box: a band that filled
+        # the whole box would swamp a template whose text sits in a tall
+        # box with room around it.
+        band_pad = max(int(padding * 0.5), 2)
+        band_top = max(first_text_y - band_pad, y0)
+        band_bottom = min(first_text_y + total_h + band_pad, y1)
+        band = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        ImageDraw.Draw(band).rectangle(
+            [x0, band_top, x1, band_bottom],
+            fill=(
+                background_color[0],
+                background_color[1],
+                background_color[2],
+                round(255 * max(0, min(100, background_opacity)) / 100.0),
+            ),
+        )
+        if keep_alpha:
+            canvas = Image.alpha_composite(canvas, band)
+        else:
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), band).convert("RGB")
+        draw = ImageDraw.Draw(canvas)
 
     if glow and glow_size > 0 and glow_opacity > 0:
         # Sized off the font rather than the box: a halo that scales with

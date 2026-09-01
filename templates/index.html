@@ -330,6 +330,33 @@
             loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
             same at every output size.
           </div>
+          <div class="field" style="margin-top: 0.5rem; margin-bottom: 0.3rem;">
+            <label>Header alignment</label>
+            <div class="radio-row">
+              <label><input type="radio" name="layer_header_align" value="left" {% if prefill.get('layer_header_align', 'left') == 'left' %}checked{% endif %}> Left</label>
+              <label><input type="radio" name="layer_header_align" value="center" {% if prefill.get('layer_header_align', 'left') == 'center' %}checked{% endif %}> Center</label>
+              <label><input type="radio" name="layer_header_align" value="right" {% if prefill.get('layer_header_align', 'left') == 'right' %}checked{% endif %}> Right</label>
+            </div>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_header_background">
+              <input type="checkbox" id="layer_header_background" name="layer_header_background" value="1" {% if prefill.get('layer_header_background') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Band behind header text</span>
+            </label>
+            <label for="layer_header_background_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band color</span>
+              <input type="color" id="layer_header_background_color" name="layer_header_background_color" value="{{ prefill.get('layer_header_background_color', '#000000') }}">
+            </label>
+            <label for="layer_header_background_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band opacity %</span>
+              <input type="number" class="font-size-input" id="layer_header_background_opacity" name="layer_header_background_opacity" min="0" max="100" placeholder="60" value="{{ prefill.get('layer_header_background_opacity', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            A flat band behind the header lines -- the blunter answer to the same problem the glow solves, and the
+            same idea as the banners the hero-image tool draws. It spans the layer box's width and only the
+            lines' own height, so it reads as a banner rather than filling the layer.
+          </div>
             <code>header</code> text layer was set to in Photoshop (when readable). Set the font/size above
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
@@ -396,6 +423,33 @@
             A soft halo behind the letterforms -- for description text sitting over a photo, where any flat colour
             loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
             same at every output size.
+          </div>
+          <div class="field" style="margin-top: 0.5rem; margin-bottom: 0.3rem;">
+            <label>Description alignment</label>
+            <div class="radio-row">
+              <label><input type="radio" name="layer_description_align" value="left" {% if prefill.get('layer_description_align', 'left') == 'left' %}checked{% endif %}> Left</label>
+              <label><input type="radio" name="layer_description_align" value="center" {% if prefill.get('layer_description_align', 'left') == 'center' %}checked{% endif %}> Center</label>
+              <label><input type="radio" name="layer_description_align" value="right" {% if prefill.get('layer_description_align', 'left') == 'right' %}checked{% endif %}> Right</label>
+            </div>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_description_background">
+              <input type="checkbox" id="layer_description_background" name="layer_description_background" value="1" {% if prefill.get('layer_description_background') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Band behind description text</span>
+            </label>
+            <label for="layer_description_background_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band color</span>
+              <input type="color" id="layer_description_background_color" name="layer_description_background_color" value="{{ prefill.get('layer_description_background_color', '#000000') }}">
+            </label>
+            <label for="layer_description_background_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band opacity %</span>
+              <input type="number" class="font-size-input" id="layer_description_background_opacity" name="layer_description_background_opacity" min="0" max="100" placeholder="60" value="{{ prefill.get('layer_description_background_opacity', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            A flat band behind the description lines -- the blunter answer to the same problem the glow solves, and the
+            same idea as the banners the hero-image tool draws. It spans the layer box's width and only the
+            lines' own height, so it reads as a banner rather than filling the layer.
           </div>
             <code>description</code> text layer was set to in Photoshop (when readable). Set the font/size above
             to override it, and check "Custom text color" to override the color too -- for every template size.
