@@ -1085,6 +1085,39 @@ def generate():
         # general hero image are still ignored in this mode either way.
         sizes = []
 
+    # The campaign hero image. This is the ordinary way in: rather than
+    # designing and uploading a whole flagship PSD, drop in one picture
+    # and it becomes the backdrop of the 728x480 template already saved
+    # in default_templates/, which then carries onto every other saved
+    # size. Same destination as the AI generator below -- the background
+    # layer of every template -- just supplied by hand instead.
+    upload_hero_file = request.files.get("upload_hero_image")
+    upload_hero_fresh = upload_hero_file is not None and bool(upload_hero_file.filename)
+    if upload_hero_fresh:
+        if not _allowed(upload_hero_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
+            flash(
+                f"Campaign hero image: '{upload_hero_file.filename}' isn't a supported file type. "
+                "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
+            )
+            return redirect(url_for("index"))
+        upload_hero_path = _save_upload(upload_hero_file, uploads_dir)
+    elif request.form.get("upload_hero_image_clear"):
+        upload_hero_path = None
+    else:
+        upload_hero_path = _carry_forward_upload(
+            "upload_hero_image", uploads_dir, prior_job_dir, prior_form_state
+        )
+    upload_hero_image = None
+    if upload_hero_path is not None:
+        try:
+            upload_hero_image = Image.open(upload_hero_path).convert("RGBA")
+        except Exception as exc:  # noqa: BLE001
+            flash(f"Couldn't read the campaign hero image: {exc}")
+            return redirect(url_for("index"))
+        # Like a content PSD upload, this drives a templated batch: the
+        # sizes come from default_templates/, not from the size pickers.
+        sizes = []
+
     # The Upload Creative generator makes the campaign's backdrop.
     # Generated at the content PSD's own size, since it plays that role:
     # source artwork the saved templates are built from, fed in as a
@@ -1200,7 +1233,7 @@ def generate():
     # how a second campaign card, cloned blank with its file inputs
     # reset, ended up previewing a set indistinguishable from the first
     # one's.
-    if content_psd_provided or upload_ai_image is not None:
+    if content_psd_provided or upload_ai_image is not None or upload_hero_image is not None:
         default_templates, default_template_paths = _default_size_templates()
     else:
         default_templates, default_template_paths = {}, {}
@@ -1399,6 +1432,15 @@ def generate():
     # rendering from their saved templates untouched. A layer the user
     # uploaded by hand above wins; this only fills the gaps.
     propagated_layer_names = set()
+    if upload_hero_image is not None and "background" not in layer_image_overrides:
+        # The hero image reaches the templates exactly as the generated
+        # backdrop does. It is set first, and the generator's branch
+        # below skips a background that's already overridden, so an
+        # uploaded hero outranks a generated one -- an explicit file
+        # beats one the tool invented. (The layer-update "Background
+        # image" field, handled above, outranks both: it is the most
+        # specific instruction of the three.)
+        layer_image_overrides["background"] = upload_hero_image
     if upload_ai_image is not None and "background" not in layer_image_overrides:
         # Deliberately NOT recorded in layer_upload_paths: that dict is
         # what gets carried forward on an Edit, and a generated image
@@ -2420,6 +2462,7 @@ def generate():
     raw_file_paths = {
         "hero_image": hero_path if hero_provided else None,
         "content_psd": content_psd_path if content_psd_provided else None,
+        "upload_hero_image": upload_hero_path,
         "logo": logo_path,
         "badge_image": badge_path,
     }

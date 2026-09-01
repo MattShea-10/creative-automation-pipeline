@@ -3431,6 +3431,49 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         )
         return dest
 
+    def test_an_uploaded_hero_image_drives_the_templated_batch(self):
+        # The ordinary way in: no PSD to design, no generator to wait on
+        # -- one picture, and the saved templates supply every layout.
+        self._write_template_with_a_background_layer("hero-300x250.psd", (300, 250))
+        data = {
+            "upload_hero_image": (self._sample_image_bytes(size=(800, 600)), "hero.png"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        # The saved template's size, not the uploaded image's -- the
+        # image is artwork, the template is the layout.
+        self.assertIn(b"300x250: updated layer(s) -- background", r.data)
+        self.assertNotIn(b"800x600", r.data)
+
+    def test_an_uploaded_hero_image_beats_a_generated_one(self):
+        # Both supplied is not an error -- an explicit file wins, so
+        # trying your own picture doesn't mean unticking the generator
+        # first. (A mock generation is deliberately used here: if it won,
+        # the placeholder's own gradient would land in the background.)
+        self._write_template_with_a_background_layer("hero-300x250.psd", (300, 250))
+        data = {
+            "upload_hero_image": (self._sample_image_bytes(color=(9, 200, 9)), "hero.png"),
+            "upload_ai_enabled": "1",
+            "upload_ai_provider": "mock",
+            "upload_ai_prompt": "a runner mid-stride",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+
+        job_id = re.search(r"/download/([0-9a-f]{32})", r.get_data(as_text=True)).group(1)
+        rendered = Image.open(
+            next((Path(self.tmp_dir) / job_id).glob("*300x250*.png"))
+        ).convert("RGB")
+        # The uploaded flat green, not the placeholder's gradient.
+        greens = sum(
+            1 for r_, g_, b_ in rendered.getdata() if g_ > 150 and r_ < 80 and b_ < 80
+        )
+        self.assertGreater(greens, rendered.width * rendered.height * 0.2)
+
     def test_upload_ai_fills_each_templates_background_layer(self):
         # The generated artwork reaches the templates as a background
         # override, which is what leaves each template's own logo,

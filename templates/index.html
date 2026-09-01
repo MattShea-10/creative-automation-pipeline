@@ -212,24 +212,30 @@
 
       <details class="upload-creative-box" open>
         <summary>Upload Creative</summary>
-        <label for="content_psd"><span class="psd-badge">PSD</span> 728x480 content PSD <span style="font-weight: 400; color: var(--muted);">(quick campaign -- optional)</span></label>
+        <label for="upload_hero_image">Campaign hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp)</span></label>
         <div class="hint">
-          Upload just this one <code>.psd</code> and it restyles the whole campaign: its
-          <code>background</code>, <code>product</code>, <code>logo</code> and <code>cta</code> layers are
-          composited into every saved <code>default_templates/</code> size, each fitted to that size's own
-          layout. An upload within a hair of a saved template's size takes that slot over rather than exporting
-          beside it. The "Output sizes"/"Custom sizes" choices and the general hero image are ignored -- the
-          batch is whatever's in <code>default_templates/</code>, plus this upload if it's a size of its own.
+          <strong>This campaign needs artwork from one of two places: a hero image you upload here, or an
+          AI-generated one below.</strong> Either way you supply a single picture, not a design -- the layout
+          comes from the 728x480 PSD already saved in <code>default_templates/</code>, which your image
+          becomes the backdrop of. From there it carries onto every other saved size, each one keeping its own
+          product, logo, CTA and text exactly where they were designed.
         </div>
-        <input type="file" id="content_psd" name="content_psd" accept=".psd" data-has-prior="{{ 'true' if prefill_files.get('content_psd') else 'false' }}">
-        {% if prefill_files.get('content_psd') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('content_psd') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+        <div class="hint" style="margin-top: 0.3rem;">
+          Cropped to fill each size's <code>background</code> layer, so a wide image is safe -- but the edges
+          get trimmed differently per size. Keep the subject away from them. Upload one here and it wins over
+          a generated image, so you don't have to untick the generator to try your own. The "Output
+          sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
+          batch is whatever's in <code>default_templates/</code>.
+        </div>
+        <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
+        {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
         <div class="ai-hero-callout" style="margin-top: 0.9rem;">
           <div class="checkbox-row" style="margin: 0;">
             <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
-            <span><span class="ai-badge">AI</span> Generate the background image with AI -- it replaces the backdrop on every
-            size saved in <code>default_templates/</code>, the 728x480 included. With no content PSD uploaded it stands in
-            for one entirely (uses a real GenAI provider -- can take up to ~40 seconds)</span>
+            <span><span class="ai-badge">AI</span> Generate the hero image with AI instead of uploading one --
+            it becomes the backdrop on every size saved in <code>default_templates/</code>, the 728x480
+            included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
           </div>
           <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
             <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
@@ -257,10 +263,9 @@
             </div>
             <div class="hint" style="margin-top: 0.4rem;">
               The generated image fills each template's <code>background</code> layer only, so the logo,
-              product, CTA and text those templates carry stay where they were designed -- including a content
-              PSD you uploaded above, which keeps every one of its own layers except the backdrop. Upload your
-              own under "Background image" below to override the generated one. If the provider fails, the
-              offline placeholder is used and a warning explains why.
+              product, CTA and text those templates carry stay where they were designed. A hero image uploaded
+              above takes precedence over this, and the "Background image" field further down overrides both.
+              If the provider fails, the offline placeholder is used and a warning explains why.
             </div>
           </div>
         </div>
@@ -1009,15 +1014,16 @@
       // sizes the row doesn't cover. The server then rejected the run
       // asking for a hero image the form wouldn't let you supply.
       var manualBox = root.querySelector(".manual-creative-box");
-      var psdInputs = root.querySelectorAll('[name="content_psd"]');
+      var psdInputs = root.querySelectorAll('[name="upload_hero_image"]');
       var priorPsdHints = [];
       if (manualBox && psdInputs.length) {
         var manualNote = document.createElement("div");
         manualNote.className = "hint manual-disabled-note";
         manualNote.textContent =
-          "Disabled -- a content PSD is uploaded above, so every size in this campaign comes from a " +
-          "template and is exported exactly as designed. Header, description, CTA, logo, badge, hero " +
-          "image and output-size settings don't apply to it. Clear the content PSD to use these again.";
+          "Disabled -- a campaign hero image is uploaded above, so every size in this campaign comes " +
+          "from a saved template and is exported as designed. Header, description, CTA, logo, badge, " +
+          "hero image and output-size settings don't apply to it -- use the layer updates in Upload " +
+          "Creative instead. Clear the hero image to use these again.";
         manualNote.hidden = true;
         var manualSummary = manualBox.querySelector("summary");
         if (manualSummary) manualSummary.insertAdjacentElement("afterend", manualNote);
@@ -1027,10 +1033,9 @@
           var hasPsd = false;
           psdInputs.forEach(function (input) {
             if (input.files && input.files.length > 0) hasPsd = true;
-            // A file input can't be pre-populated with a prior upload, so
-            // an edit of an earlier job reports its carried-forward PSD
-            // through these markers instead (same trick as the
-            // content-PSD layer panel above).
+            // A file input can't be pre-populated with a prior upload,
+            // so an edit of an earlier job reports its carried-forward
+            // hero image through these markers instead.
             if (input.dataset.hasPrior === "true") hasPsd = true;
           });
           manualBox.querySelectorAll("input, select, textarea, button").forEach(function (el) {
@@ -1175,15 +1180,15 @@
         var slotInput = clone.querySelector('[name="campaign_slot"]');
         if (slotInput) slotInput.value = String(campaignCount);
 
-        var contentPsdInput = clone.querySelector('[name="content_psd"]');
-        if (contentPsdInput) contentPsdInput.dataset.hasPrior = "false";
+        var heroInput = clone.querySelector('[name="upload_hero_image"]');
+        if (heroInput) heroInput.dataset.hasPrior = "false";
 
         // Collapsed sections always start collapsed on a fresh card, and
         // Campaign brief (it holds the required fields) always starts
         // open -- regardless of whatever state the card being cloned
         // from happened to be in when the button was clicked.
         // Manual Creative starts collapsed on a fresh card; Upload
-        // Creative doesn't, since it holds the content PSD field and the
+        // Creative doesn't, since it holds the hero image field and the
         // artwork generator -- the two things a new campaign starts from.
         clone.querySelectorAll("details.manual-creative-box").forEach(function (d) {
           d.removeAttribute("open");
