@@ -45,6 +45,12 @@
     .layer-image-cached-name { @apply text-slate-500 max-w-[10rem] truncate; }
     .layer-image-cached.is-cleared { @apply opacity-40 line-through; }
     .manual-disabled-note { @apply text-amber-300 mt-2 mb-1; }
+    /* A fieldset is the tidiest way to switch a whole group off: browsers
+       disable every control inside it and leave them all out of the
+       submission, with no per-input markup and no JS. */
+    .layer-text-group { @apply border-0 p-0 m-0 min-w-0; }
+    .layer-text-group[disabled] { @apply opacity-50; }
+    .layer-off-note { @apply text-amber-300 mt-3; }
     .campaign-brief-box { background: #1e293b; }
     .campaign-brief-box > summary { @apply uppercase tracking-wide; }
     .checkbox-row { @apply flex items-start gap-2 my-[0.6rem]; }
@@ -262,6 +268,13 @@
             can't edit a PSD's live text layer directly. These are PSD updates only -- they don't affect the
             general hero-image tool below.
           </div>
+          {% set header_editable = 'header' in editable_text_layers %}
+          {% if not header_editable %}
+            <div class="hint layer-off-note">The <code>header</code> layer is switched off in your saved
+            templates, so there are no visible words to restyle -- these fields are disabled. Turn the layer
+            on in Photoshop and re-save the template to use them.</div>
+          {% endif %}
+          <fieldset class="layer-text-group"{% if not header_editable %} disabled{% endif %}>
           <div class="field" style="margin-top: 0.6rem; margin-bottom: 0.6rem;">
             <label for="layer_header_text" style="font-weight: 400;">Header text</label>
             <input type="text" id="layer_header_text" name="layer_header_text" placeholder="e.g. Summer Sale" value="{{ prefill.get('layer_header_text', '') }}">
@@ -297,7 +310,15 @@
             <code>header</code> text layer was set to in Photoshop (when readable). Set the font/size above
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
+          </fieldset>
 
+          {% set description_editable = 'description' in editable_text_layers %}
+          {% if not description_editable %}
+            <div class="hint layer-off-note">The <code>description</code> layer is switched off in your saved
+            templates, so there are no visible words to restyle -- these fields are disabled. Turn the layer
+            on in Photoshop and re-save the template to use them.</div>
+          {% endif %}
+          <fieldset class="layer-text-group"{% if not description_editable %} disabled{% endif %}>
           <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_description_text" style="font-weight: 400;">Description text</label>
             <input type="text" id="layer_description_text" name="layer_description_text" placeholder="e.g. First 500 get free cans" value="{{ prefill.get('layer_description_text', '') }}">
@@ -333,6 +354,7 @@
             <code>description</code> text layer was set to in Photoshop (when readable). Set the font/size above
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
+          </fieldset>
           <div class="inline-controls" style="margin-top: 0.4rem;">
             <label for="layer_logo_image" style="font-weight: 400;">
               <span style="white-space: nowrap;">Logo image</span>

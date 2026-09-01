@@ -531,6 +531,24 @@ def _session_campaign_jobs(session_id):
     return [(slot, slots[slot]) for slot in sorted(slots, key=lambda k: (len(k), k))]
 
 
+def _editable_text_layers() -> set:
+    """Which of the named text layers are actually editable right now --
+    i.e. present AND switched on in at least one saved template.
+
+    A layer switched off in Photoshop can't be restyled: there are no
+    visible words to recolour or resize, and the renderer skips it. The
+    form greys its fields out rather than accepting settings that would
+    quietly do nothing. Judged across all saved templates together, since
+    one enabled somewhere is enough for the field to be worth offering.
+    """
+    editable = set()
+    _templates, template_paths = _default_size_templates()
+    for path in template_paths.values():
+        for name in get_psd_text_layers(path, visible_only=True):
+            editable.add(name)
+    return editable
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template(
@@ -540,6 +558,7 @@ def index():
         build_stamp=BUILD_STAMP,
         campaigns=[{"prefill": {}, "prefill_files": {}, "edit_job_id": None}],
         session_id=uuid.uuid4().hex,
+        editable_text_layers=_editable_text_layers(),
     )
 
 
@@ -581,6 +600,7 @@ def edit(job_id):
         build_stamp=BUILD_STAMP,
         campaigns=campaigns,
         session_id=session_id,
+        editable_text_layers=_editable_text_layers(),
     )
 
 

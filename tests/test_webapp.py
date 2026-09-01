@@ -576,7 +576,7 @@ class WebAppSmokeTest(unittest.TestCase):
         # field label, which flash message) can be checked without
         # depending on any particular fixture file's actual text content.
         orig = webapp.get_psd_text_layers
-        webapp.get_psd_text_layers = lambda path: {"description": "such shit, wow"}
+        webapp.get_psd_text_layers = lambda path, visible_only=False: {"description": "such shit, wow"}
         try:
             (webapp.DEFAULT_TEMPLATES_DIR / "profanity-970x90.psd").write_bytes(
                 self._sample_psd_bytes(size=(970, 90)).getvalue()
@@ -596,7 +596,7 @@ class WebAppSmokeTest(unittest.TestCase):
 
     def test_generate_with_profanity_in_a_psd_template_row_text_layer_is_blocked(self):
         orig = webapp.get_psd_text_layers
-        webapp.get_psd_text_layers = lambda path: {"description": "such shit, wow"}
+        webapp.get_psd_text_layers = lambda path, visible_only=False: {"description": "such shit, wow"}
         try:
             data = {
                 "hero_image": (self._sample_image_bytes(), "hero.png"),
@@ -616,7 +616,7 @@ class WebAppSmokeTest(unittest.TestCase):
 
     def test_generate_with_a_clean_psd_text_layer_is_not_blocked(self):
         orig = webapp.get_psd_text_layers
-        webapp.get_psd_text_layers = lambda path: {"description": "Totally clean copy."}
+        webapp.get_psd_text_layers = lambda path, visible_only=False: {"description": "Totally clean copy."}
         try:
             (webapp.DEFAULT_TEMPLATES_DIR / "clean-970x90.psd").write_bytes(
                 self._sample_psd_bytes(size=(970, 90)).getvalue()
@@ -2735,6 +2735,33 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # Nothing typed anywhere, so no text layer is rewritten -- but the
         # run completes rather than silently dropping the request.
         self.assertNotIn(b"-- description", r.data)
+
+    def test_a_switched_off_text_layer_is_greyed_out_on_the_form(self):
+        # A layer turned off in Photoshop has no visible words to
+        # restyle, so the form disables its fields instead of accepting
+        # settings that would quietly do nothing.
+        self._write_template_with_a_background_layer("off-300x250.psd", (300, 250))
+        page = self.client.get("/")
+        self.assertEqual(page.status_code, 200)
+        # These synthetic templates carry no type layers at all, so both
+        # groups come back disabled with their explanation.
+        self.assertIn(b"layer-text-group\" disabled", page.data.replace(b"'", b'"'))
+        self.assertIn(b"switched off in your saved", page.data)
+
+    def test_fields_stay_enabled_when_the_layer_is_switched_on(self):
+        import webapp as _webapp
+
+        original = _webapp.get_psd_text_layers
+        _webapp.get_psd_text_layers = lambda path, visible_only=False: {
+            "header": "on", "description": "on"
+        }
+        try:
+            self._write_template_with_a_background_layer("on-300x250.psd", (300, 250))
+            page = self.client.get("/")
+        finally:
+            _webapp.get_psd_text_layers = original
+        self.assertEqual(page.status_code, 200)
+        self.assertNotIn(b"switched off in your saved", page.data)
 
     def test_upload_ai_stands_in_for_a_missing_content_psd(self):
         # No flagship PSD designed yet, so the Upload Creative generator
