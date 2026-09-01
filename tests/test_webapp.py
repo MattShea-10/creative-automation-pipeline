@@ -3482,6 +3482,18 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # invisible, and a checkbox's own <span> label never greys.
         self.assertIn('[data-role="upload-ai-fresh"].is-inactive', page)
 
+        # Ticking the generator clears "keep" -- asking for a new image
+        # and keeping the old one are contradictory, and the reuse would
+        # win silently. Verified live in a browser; asserted here only as
+        # far as markup can: the handler exists and is wired to the
+        # generator checkbox, not to something else.
+        handler = page[page.index('name="upload_ai_enabled"]\''):]
+        handler = handler[:handler.index("}\n        }")]
+        self.assertIn("keepCheckbox.checked = false", handler)
+        # Only on the way on -- unticking the generator says nothing
+        # about what should happen next time it's ticked.
+        self.assertIn("if (!aiEnabled.checked) return;", handler)
+
     def test_template_edits_reach_a_running_server(self):
         # Jinja compiles a template once and caches it for the process's
         # lifetime, and the dev reloader only watches .py files -- so

@@ -1019,6 +1019,22 @@
         keepCheckbox.addEventListener("change", syncKeep);
         syncKeep();
 
+        // Ticking "Generate the hero image with AI" is a request for a
+        // new picture, which is the exact opposite of "keep the one I
+        // have" -- so it clears the keep box rather than leaving the two
+        // in contradiction with the reuse silently winning. Only on the
+        // way on: unticking the generator says nothing about what should
+        // happen the next time it's ticked.
+        var aiEnabled = root.querySelector('[name="upload_ai_enabled"]');
+        if (aiEnabled) {
+          aiEnabled.addEventListener("change", function () {
+            if (!aiEnabled.checked) return;
+            if (!keepCheckbox.checked) return;
+            keepCheckbox.checked = false;
+            syncKeep();
+          });
+        }
+
         // Disabled controls aren't submitted at all, so leaving them
         // that way would post an empty prompt and wipe the saved one --
         // and unticking the box on a later edit would come back to a
