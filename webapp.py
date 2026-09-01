@@ -388,10 +388,11 @@ BUILD_STAMP = (
     if _newest_mtime
     else "unknown"
 )
-# Printed on startup and shown in the page footer -- a running server
-# doesn't reload code on a file change, so if this doesn't match the time
-# of your latest edit/save, the process needs restarting.
-print(f"[webapp] code build stamp: {BUILD_STAMP} (restart after any edit to pick up changes)")
+# Printed on startup and shown in the page footer. With auto-reload on
+# (the default, see __main__ below) this tracks your latest save; if it
+# ever lags behind an edit you just made, the process is serving stale
+# code and everything you're looking at is from the old build.
+print(f"[webapp] code build stamp: {BUILD_STAMP} (auto-reload on unless FLASK_RELOAD=0)")
 
 SIZE_PRESET_CHOICES = [
     ("default", "Social defaults -- 1080x1080, 1080x1920, 1920x1080"),
@@ -2509,4 +2510,20 @@ def download_psd(job_id, filename):
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="127.0.0.1", port=port, debug=os.environ.get("FLASK_DEBUG") == "1")
+    # Auto-reload on by default. This is a local dev tool, and the cost of
+    # not reloading is invisible: an edited template or module keeps
+    # serving the old behaviour, every symptom points at the change that
+    # was just made, and the only clue is a build stamp in the footer that
+    # nobody thinks to check. Flask's reloader watches the source and
+    # restarts on save, so what's on disk is what's being served.
+    #
+    # FLASK_RELOAD=0 turns it off; FLASK_DEBUG=1 additionally enables the
+    # interactive debugger, which is a different (and far less safe)
+    # thing.
+    debug = os.environ.get("FLASK_DEBUG") == "1"
+    app.run(
+        host="127.0.0.1",
+        port=port,
+        debug=debug,
+        use_reloader=debug or os.environ.get("FLASK_RELOAD", "1") != "0",
+    )
