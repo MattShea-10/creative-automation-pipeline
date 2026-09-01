@@ -2769,10 +2769,11 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"300x250: updated layer(s) -- background", r.data)
 
-    def test_a_content_psd_wins_over_the_upload_generator(self):
-        # Upload a 728x480 and it supplies the artwork -- the generator is
-        # skipped entirely rather than spending ~40 seconds on an image
-        # nothing would use.
+    def test_the_generator_replaces_an_uploaded_content_psds_backdrop(self):
+        # Ticking the generator with a content PSD uploaded can only mean
+        # "keep this design, change the backdrop" -- so it runs, and the
+        # generated image outranks the PSD's own background layer. Every
+        # other layer the PSD carries is untouched.
         self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
         data = {
             "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
@@ -2783,12 +2784,16 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        self.assertNotIn(b"Campaign artwork generated with AI", r.data)
+        self.assertIn(b"Campaign artwork generated with AI (mock)", r.data)
 
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        self.assertFalse(
-            (webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png").exists()
+        self.assertTrue(
+            (webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png").is_file()
         )
+        # It went in as the background-layer override, which is what
+        # carries it across every template size.
+        e = self.client.get(f"/edit/{job_id}")
+        self.assertIn(b"ai_generated_campaign.png", e.data)
 
     def test_upload_ai_does_not_override_a_hand_uploaded_background(self):
         # A background image the user picked themselves still wins over

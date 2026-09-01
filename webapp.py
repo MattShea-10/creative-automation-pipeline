@@ -883,15 +883,21 @@ def generate():
         # general hero image are still ignored in this mode either way.
         sizes = []
 
-    # No content PSD, but the Upload Creative generator is on: make the
-    # campaign's artwork instead of requiring a flagship PSD to exist
-    # first. It's generated at the content PSD's own size so it plays the
-    # same role -- source artwork the saved templates are built from --
-    # and it's fed in as a background-layer override further down, which
-    # is what carries it onto every template size.
+    # The Upload Creative generator makes the campaign's backdrop.
+    # Generated at the content PSD's own size, since it plays that role:
+    # source artwork the saved templates are built from, fed in as a
+    # background-layer override further down, which is what carries it
+    # onto every template size.
+    #
+    # It runs whether or not a content PSD was uploaded. With no PSD it
+    # stands in for one entirely, so a campaign can be built before the
+    # flagship 728x480 exists. With a PSD it replaces just that file's
+    # background, which is the point of picking it -- every other layer
+    # the PSD carries, and everything the saved templates carry, stays
+    # exactly where it was designed.
     upload_ai_image = None
     upload_ai_path = None
-    if upload_ai_enabled and not content_psd_provided:
+    if upload_ai_enabled:
         upload_ai_prompt_text = upload_ai_prompt or (
             f"professional studio product photo of {product_name or 'the product'}, clean background"
         )
@@ -1097,8 +1103,14 @@ def generate():
     if upload_ai_image is not None and "background" not in layer_image_overrides:
         # The generated artwork reaches the templates the same way an
         # uploaded content PSD's own background layer does -- as a
-        # background override, fitted to each size's background box. A
-        # background image the user uploaded by hand still wins.
+        # background override, fitted to each size's background box.
+        #
+        # Set before the content PSD's own layers are propagated below,
+        # and that loop skips any layer already overridden, so the
+        # generated backdrop wins over the PSD's. Deliberate: ticking the
+        # generator with a PSD uploaded can only mean "keep this design,
+        # change the backdrop". A background image uploaded by hand
+        # outranks both -- an explicit file beats a generated one.
         layer_image_overrides["background"] = upload_ai_image.convert("RGBA")
         layer_upload_paths["layer_background_image"] = upload_ai_path
     if content_psd_provided:
