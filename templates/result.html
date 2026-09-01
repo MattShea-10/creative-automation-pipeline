@@ -35,7 +35,26 @@
     .card .thumb {
       background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 16px 16px;
       @apply flex items-center justify-center min-h-[140px] p-2;
+      /* A <button> so the zoom is reachable by keyboard, reset back to
+         looking like the plain tile it replaced. */
+      @apply w-full border-0 cursor-zoom-in;
     }
+    .card .thumb:focus-visible { @apply outline outline-2 outline-blue-400; }
+    .lightbox {
+      @apply fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 p-6;
+      background: rgba(2, 6, 23, 0.92);
+    }
+    .lightbox img {
+      /* The creative at its own pixel size, only scaled down when it
+         would otherwise overflow the window. */
+      @apply max-w-[95vw] max-h-[82vh] block;
+      background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 16px 16px;
+    }
+    .lightbox-caption { @apply text-slate-300 text-[0.9rem]; }
+    .lightbox-close {
+      @apply absolute top-4 right-5 text-slate-300 bg-transparent border-0 text-3xl leading-none cursor-pointer;
+    }
+    .lightbox-close:hover { @apply text-white; }
     .card img { @apply max-w-full max-h-[220px] block; }
     .card .meta { @apply px-[0.9rem] py-3; }
     .card .meta .size { @apply font-bold text-[0.9rem] text-slate-100; }
@@ -143,9 +162,9 @@
     <div class="grid">
       {% for c in creatives %}
         <div class="card">
-          <div class="thumb">
+          <button type="button" class="thumb" data-role="zoom" data-label="{{ c.label }}" title="Click to view {{ c.label }} at full size">
             <img src="{{ url_for('serve_output', job_id=job_id, filename=c.filename) }}" alt="{{ c.label }}">
-          </div>
+          </button>
           <div class="meta">
             <div class="size">{{ c.label }}</div>
             <div class="name">{{ c.ratio }}{% if c.name != c.ratio %} -- {{ c.name }}{% endif %}</div>
@@ -162,5 +181,67 @@
 
     <footer>Creative Automation Pipeline -- quick-generate UI{% if build_stamp %} &middot; code build: {{ build_stamp }}{% endif %}</footer>
   </div>
+
+  <div class="lightbox" data-role="lightbox" hidden>
+    <button type="button" class="lightbox-close" data-role="lightbox-close" aria-label="Close">&times;</button>
+    <img data-role="lightbox-image" src="" alt="">
+    <div class="lightbox-caption" data-role="lightbox-caption"></div>
+  </div>
+
+  <script>
+    // Click a preview to see the creative at its own pixel size. The
+    // grid scales everything down to a uniform tile, which is useful for
+    // scanning the set and useless for judging whether type is legible
+    // at 160x600.
+    (function () {
+      var box = document.querySelector('[data-role="lightbox"]');
+      var image = document.querySelector('[data-role="lightbox-image"]');
+      var caption = document.querySelector('[data-role="lightbox-caption"]');
+      var closeBtn = document.querySelector('[data-role="lightbox-close"]');
+      if (!box || !image || !caption) return;
+      var lastFocused = null;
+
+      function open(thumb) {
+        var img = thumb.querySelector("img");
+        if (!img) return;
+        lastFocused = thumb;
+        image.src = img.src;
+        image.alt = img.alt;
+        // Natural size once known, so a small ad unit shows 1:1 instead
+        // of being stretched to fill the window. The CSS caps it.
+        image.style.width = "";
+        var applyNatural = function () {
+          if (image.naturalWidth) {
+            image.style.width = image.naturalWidth + "px";
+            caption.textContent =
+              thumb.dataset.label + "  --  " + image.naturalWidth + " x " + image.naturalHeight + " px";
+          }
+        };
+        if (image.complete) applyNatural();
+        else image.addEventListener("load", applyNatural, { once: true });
+        caption.textContent = thumb.dataset.label || "";
+        box.hidden = false;
+        if (closeBtn) closeBtn.focus();
+      }
+
+      function close() {
+        box.hidden = true;
+        image.src = "";
+        if (lastFocused) lastFocused.focus();
+      }
+
+      document.querySelectorAll('[data-role="zoom"]').forEach(function (thumb) {
+        thumb.addEventListener("click", function () { open(thumb); });
+      });
+      if (closeBtn) closeBtn.addEventListener("click", close);
+      // Anywhere on the backdrop, but not on the image itself.
+      box.addEventListener("click", function (event) {
+        if (event.target === box) close();
+      });
+      document.addEventListener("keydown", function (event) {
+        if (event.key === "Escape" && !box.hidden) close();
+      });
+    })();
+  </script>
 </body>
 </html>

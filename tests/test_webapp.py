@@ -3154,6 +3154,27 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # generated one.
         self.assertIn(b"bg.png", e.data)
 
+    def test_every_preview_is_clickable_and_the_lightbox_ships_closed(self):
+        # Clicking a preview opens it at its own pixel size. The grid
+        # scales everything to a uniform tile, which is no use for
+        # judging whether type is legible at 160x600.
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        data = {
+            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        page = r.data.decode()
+
+        # One zoom control per creative, and they're real buttons so the
+        # keyboard reaches them.
+        self.assertEqual(page.count('class="thumb" data-role="zoom"'), page.count('class="card"'))
+        self.assertIn('<button type="button" class="thumb"', page)
+        # The overlay exists but starts closed.
+        self.assertIn('data-role="lightbox" hidden', page)
+
     def test_content_psd_wrong_extension_flashes(self):
         data = {
             "content_psd": (self._sample_image_bytes(), "content.png"),
