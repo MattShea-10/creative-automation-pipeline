@@ -238,6 +238,23 @@
             included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
           </div>
           <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
+            <div class="checkbox-row" style="margin-top: 0;">
+              <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
+              <span>Keep this image <span style="font-weight: 400; color: var(--muted);">(don't generate a new one)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Tick this and the next Generate reuses the image from your last run instead of calling the
+              provider. Two generations from an identical prompt are never the same picture, so without it,
+              nudging a font size or a glow colour means losing the backdrop you were nudging it against --
+              and paying for the replacement. Untick it whenever you want a fresh one. It has no effect on a
+              first run: there's nothing to keep yet.
+            </div>
+            <div class="hint layer-off-note" data-role="upload-ai-kept-note" hidden style="margin-top: 0.4rem;">
+              The prompt, provider and backdrop tuning below are disabled because nothing new is being
+              generated -- the last run's image is reused as-is. Untick "Keep this image" to change them.
+            </div>
+
+            <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
             <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
             <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
             <div class="inline-controls" style="margin-top: 0.5rem;">
@@ -250,17 +267,6 @@
               </label>
             </div>
             <div class="checkbox-row" style="margin-top: 0.5rem;">
-              <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
-              <span>Keep this image <span style="font-weight: 400; color: var(--muted);">(don't generate a new one)</span></span>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Tick this and the next Generate reuses the image from your last run instead of calling the
-              provider. Two generations from an identical prompt are never the same picture, so without it,
-              nudging a font size or a glow colour means losing the backdrop you were nudging it against --
-              and paying for the replacement. Untick it whenever you want a fresh one. It has no effect on a
-              first run: there's nothing to keep yet.
-            </div>
-            <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="hidden" name="upload_ai_background_style_seen" value="1">
               <input type="checkbox" id="upload_ai_background_style" name="upload_ai_background_style" value="1" {% if prefill.get('upload_ai_background_style', True) %}checked{% endif %}>
               <span>Optimize the prompt for backdrops <span style="font-weight: 400; color: var(--muted);">(recommended)</span></span>
@@ -271,6 +277,7 @@
               steering away from them removes most of what reads as distortion. It asks for sharpness, not
               softness: use the band and glow controls to keep text legible over a crisp backdrop. The full
               prompt used is shown on the results page.
+            </div>
             </div>
             <div class="hint" style="margin-top: 0.4rem;">
               The generated image fills each template's <code>background</code> layer only, so the logo,
@@ -968,6 +975,47 @@
         };
         aiHeroCheckbox.addEventListener("change", syncHero);
         syncHero();
+      }
+
+      // "Keep this image" reuses the previous run's artwork, so every
+      // control that only shapes a *fresh* generation -- prompt,
+      // provider, backdrop-prompt tuning -- is greyed out while it's
+      // ticked, rather than sitting there accepting edits that would be
+      // silently ignored.
+      var keepCheckbox = root.querySelector('[name="upload_ai_keep"]');
+      var freshFields = root.querySelector('[data-role="upload-ai-fresh"]');
+      var keptNote = root.querySelector('[data-role="upload-ai-kept-note"]');
+      if (keepCheckbox && freshFields) {
+        var syncKeep = function () {
+          var kept = keepCheckbox.checked;
+          freshFields.classList.toggle("is-inactive", kept);
+          // Not [type=hidden]: upload_ai_background_style_seen is how
+          // the server tells "unticked" from "this form predates the
+          // field", and a disabled input submits neither way.
+          freshFields
+            .querySelectorAll('input:not([type="hidden"]), select, textarea')
+            .forEach(function (el) {
+              el.disabled = kept;
+            });
+          if (keptNote) keptNote.hidden = !kept;
+        };
+        keepCheckbox.addEventListener("change", syncKeep);
+        syncKeep();
+
+        // Disabled controls aren't submitted at all, so leaving them
+        // that way would post an empty prompt and wipe the saved one --
+        // and unticking the box on a later edit would come back to a
+        // blank field. Re-enable them the moment the form is submitted:
+        // the values ride along, and the server ignores them anyway
+        // while upload_ai_keep is set.
+        var keepForm = keepCheckbox.form;
+        if (keepForm) {
+          keepForm.addEventListener("submit", function () {
+            freshFields.querySelectorAll("input, select, textarea").forEach(function (el) {
+              el.disabled = false;
+            });
+          });
+        }
       }
 
       // The layer-overrides panel used to be revealed only once a

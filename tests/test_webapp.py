@@ -3431,6 +3431,35 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         )
         return dest
 
+    def test_keep_greys_out_exactly_the_fresh_generation_controls(self):
+        # The greying is done by wrapping the controls that only shape a
+        # *new* generation and disabling that group. Which controls are
+        # inside the wrapper is the whole behaviour, and it's a plain
+        # markup mistake to get wrong -- so it's asserted here rather
+        # than left to a glance at the page.
+        webapp.app.config["TESTING"] = True
+        page = webapp.app.test_client().get("/").data.decode()
+
+        start = page.index('data-role="upload-ai-fresh"')
+        cursor, depth = page.index(">", start) + 1, 1
+        while depth:
+            match = re.compile(r"<(/?)div\b").search(page, cursor)
+            depth += -1 if match.group(1) else 1
+            cursor = match.end()
+        wrapper = page[start:cursor]
+
+        for name in ("upload_ai_prompt", "upload_ai_provider", "upload_ai_background_style"):
+            self.assertIn('name="%s"' % name, wrapper)
+        # The checkbox itself must stay outside, or ticking it would
+        # disable the only control that can untick it.
+        self.assertNotIn('name="upload_ai_keep"', wrapper)
+
+        # The marker field has to keep submitting even while the group is
+        # greyed: it's how the server tells "unticked" from "this form
+        # predates the field", and a disabled input submits neither way.
+        self.assertIn('name="upload_ai_background_style_seen"', wrapper)
+        self.assertIn('input:not([type="hidden"]), select, textarea', page)
+
     def test_keep_this_image_reuses_the_previous_runs_artwork(self):
         # The point of the checkbox: adjust anything else about the
         # campaign and the backdrop you were adjusting it against stays
