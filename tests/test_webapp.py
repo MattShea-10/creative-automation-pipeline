@@ -3816,11 +3816,18 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # product, logo and CTA.
         self._write_template_with_a_background_layer("p1-300x250.psd", (300, 250))
         prompt = self._prompt_used(product_name="OffScrpt")
-        self.assertIn("backdrop", prompt)
         self.assertNotIn("product photo", prompt)
         # The product name goes in: a blank Image prompt auto-builds from
         # it, which is what the field's placeholder promises.
         self.assertIn("OffScrpt", prompt)
+        # But it must not ask for BRANDING. "abstract branded backdrop
+        # suggesting <product name>" is a logo brief, and it produced
+        # exactly that: an invented mark with a wordmark under it, sitting
+        # behind the real logo. Nothing downstream can undo it -- the
+        # prompt outranks the negative prompt, and the OCR check can't
+        # read a blurred, half-occluded mark to flag it.
+        self.assertNotIn("branded backdrop", prompt)
+        self.assertIn("unbranded", prompt)
 
     def test_background_guidance_is_appended_and_can_be_turned_off(self):
         # Models are worst at faces, hands and lettering, which a backdrop

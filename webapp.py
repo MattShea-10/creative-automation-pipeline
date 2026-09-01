@@ -1367,9 +1367,23 @@ def generate():
         # brief entirely for a layer that sits *behind* the template's
         # own product, logo and CTA -- two competing subjects in one
         # frame.
+        #
+        # Not "abstract BRANDED backdrop suggesting <product name>",
+        # which this was for a long time. That is a request for a brand
+        # mark, with a brand name handed over to render -- and models
+        # oblige, with an invented logo and a wordmark under it. Every
+        # other defence in this file is downstream cleanup for a problem
+        # asked for right here, and none of them can win: Ideogram's own
+        # documentation says the prompt takes precedence over the
+        # negative prompt, and the OCR check can't read a blurred,
+        # half-occluded mark well enough to flag it.
+        #
+        # The product name stays: it steers mood and subject matter,
+        # which is the useful part. "unbranded" is what stops it being
+        # read as a logo brief.
         upload_ai_prompt_text = upload_ai_prompt or (
-            f"abstract branded backdrop suggesting {product_name or 'the product'}, "
-            "subtle gradient, soft lighting"
+            f"abstract background texture evoking {product_name or 'the product'}, "
+            "unbranded, subtle gradient, soft lighting"
         )
         if upload_ai_background_style:
             upload_ai_prompt_text = f"{upload_ai_prompt_text}, {BACKGROUND_PROMPT_GUIDANCE}"
