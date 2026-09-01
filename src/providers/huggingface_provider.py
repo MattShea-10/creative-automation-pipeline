@@ -25,7 +25,7 @@ class HuggingFaceProvider(ImageProvider):
 
     def __init__(self, api_token: str | None = None, model: str | None = None, timeout: int = 60):
         self.api_token = api_token or os.environ.get("HUGGINGFACE_API_TOKEN")
-        self.model = model or os.environ.get("HUGGINGFACE_MODEL", DEFAULT_MODEL)
+        self.model = model or os.environ.get("HUGGINGFACE_MODEL") or DEFAULT_MODEL
         self.timeout = timeout
         if not self.api_token:
             raise ImageProviderError(

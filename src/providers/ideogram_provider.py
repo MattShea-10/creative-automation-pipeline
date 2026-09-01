@@ -53,7 +53,12 @@ class IdeogramProvider(ImageProvider):
         self.api_token = api_token or os.environ.get("IDEOGRAM_API_KEY")
         # "ideogram-v3" or "ideogram-v4" -- the model is part of the path
         # on this API rather than a body field.
-        self.model = model or os.environ.get("IDEOGRAM_MODEL", DEFAULT_MODEL)
+        #
+        # `or DEFAULT`, not a get() default: a .env written from the
+        # example ships IDEOGRAM_MODEL= with nothing after it, and an
+        # empty string is present as far as os.environ is concerned. That
+        # produced a "/v1//generate" URL and a 404 on the first call.
+        self.model = model or os.environ.get("IDEOGRAM_MODEL") or DEFAULT_MODEL
         self.timeout = timeout
         if not self.api_token:
             raise ImageProviderError(

@@ -2260,6 +2260,36 @@ class PaidProviderTest(unittest.TestCase):
         self.assertEqual(_closest_aspect(1200, 1200), "1x1")
         self.assertEqual(_closest_aspect(720, 480), "3x2")
 
+    def test_an_empty_model_setting_falls_back_to_the_default(self):
+        # A .env written from the example ships "IDEOGRAM_MODEL=" with
+        # nothing after it, and an empty string is *present* as far as
+        # os.environ is concerned -- so a get() default never fires. That
+        # built a "/v1//generate" URL and 404'd on the first real call.
+        from src.providers.ideogram_provider import DEFAULT_MODEL, IdeogramProvider
+        from src.providers.openai_provider import OpenAIProvider
+
+        saved = {
+            k: os.environ.get(k)
+            for k in ("IDEOGRAM_API_KEY", "IDEOGRAM_MODEL", "OPENAI_API_KEY", "OPENAI_IMAGE_MODEL")
+        }
+        os.environ.update(
+            {
+                "IDEOGRAM_API_KEY": "k",
+                "IDEOGRAM_MODEL": "",
+                "OPENAI_API_KEY": "k",
+                "OPENAI_IMAGE_MODEL": "",
+            }
+        )
+        try:
+            self.assertEqual(IdeogramProvider().model, DEFAULT_MODEL)
+            self.assertTrue(OpenAIProvider().model)
+        finally:
+            for key, value in saved.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+
     def test_a_missing_key_says_what_to_do_about_it(self):
         from src.providers.base import ImageProviderError
         from src.providers.ideogram_provider import IdeogramProvider

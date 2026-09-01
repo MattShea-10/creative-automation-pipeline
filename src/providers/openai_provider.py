@@ -58,7 +58,7 @@ class OpenAIProvider(ImageProvider):
 
     def __init__(self, api_token: str = None, model: str = None, timeout: int = 120):
         self.api_token = api_token or os.environ.get("OPENAI_API_KEY")
-        self.model = model or os.environ.get("OPENAI_IMAGE_MODEL", DEFAULT_MODEL)
+        self.model = model or os.environ.get("OPENAI_IMAGE_MODEL") or DEFAULT_MODEL
         self.timeout = timeout
         if not self.api_token:
             raise ImageProviderError(
