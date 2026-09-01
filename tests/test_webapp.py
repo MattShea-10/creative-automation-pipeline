@@ -3271,6 +3271,69 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(page.status_code, 200)
         self.assertNotIn(b"switched off in your saved", page.data)
 
+    def test_ideogram_flows_through_the_same_prompt_field(self):
+        # Typing a prompt and getting it composited into the creatives is
+        # one flow; the provider dropdown only decides who renders it.
+        # The network is stubbed here -- what's being checked is that a
+        # paid provider's bytes land in the background layer exactly like
+        # the built-in one's do.
+        import src.providers.ideogram_provider as ideogram
+
+        rendered = Image.new("RGB", (1536, 864), (12, 200, 64))
+        buffer = io.BytesIO()
+        rendered.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            content = image_bytes
+
+            def json(self):
+                return {"data": [{"url": "https://example.invalid/generated.png"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None):
+            seen["prompt"] = json["image_request"]["prompt"]
+            seen["aspect"] = json["image_request"]["aspect_ratio"]
+            seen["key"] = (headers or {}).get("Api-Key")
+            return _Resp()
+
+        original_post, original_get = ideogram.requests.post, ideogram.requests.get
+        ideogram.requests.post = fake_post
+        ideogram.requests.get = lambda url, timeout=None: _Resp()
+        os.environ["IDEOGRAM_API_KEY"] = "test-key"
+        try:
+            self._write_template_with_a_background_layer("ideo-300x250.psd", (300, 250))
+            r = self.client.post(
+                "/generate",
+                data={
+                    "upload_ai_enabled": "1",
+                    "upload_ai_provider": "ideogram",
+                    "upload_ai_prompt": "a stadium at dusk",
+                    "header": "",
+                    "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        finally:
+            ideogram.requests.post, ideogram.requests.get = original_post, original_get
+            os.environ.pop("IDEOGRAM_API_KEY", None)
+
+        self.assertEqual(r.status_code, 200)
+        # The typed prompt reached the provider, with the app's backdrop
+        # guidance appended, and the key went in the header.
+        self.assertTrue(seen["prompt"].startswith("a stadium at dusk"), seen["prompt"])
+        self.assertEqual(seen["key"], "test-key")
+        self.assertEqual(seen["aspect"], "ASPECT_3_2")  # 300x250 is closest to 3:2
+
+        # And its pixels are in the creative, via the background layer.
+        self.assertIn(b"300x250: updated layer(s) -- background", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        art = webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png"
+        self.assertTrue(art.is_file(), "the fetched image is saved like any other")
+        with Image.open(art) as saved:
+            self.assertEqual(saved.convert("RGB").getpixel((5, 5)), (12, 200, 64))
+
     def test_upload_ai_stands_in_for_a_missing_content_psd(self):
         # No flagship PSD designed yet, so the Upload Creative generator
         # makes the campaign artwork instead. That still counts as a
