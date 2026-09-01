@@ -5,9 +5,12 @@ than photography -- it holds typography, posters and brand-style layouts
 together where a general model smears them. For a campaign backdrop that
 is often the difference between usable and not.
 
-Needs a paid API key from https://ideogram.ai/platform. Keys can be
+Needs a paid API key from https://developer.ideogram.ai. Keys can be
 created before billing is set up, but stay inactive until a payment
-method and credits are added.
+method and a prepaid balance are added there. API billing is separate
+from an ideogram.ai subscription -- plan credits are spent by the web
+app and buy nothing here, so an account showing plenty of them still
+returns 402 until the API balance is funded.
 """
 
 from __future__ import annotations
@@ -80,8 +83,9 @@ class IdeogramProvider(ImageProvider):
         if not self.api_token:
             raise ImageProviderError(
                 "IDEOGRAM_API_KEY is not set. Create one under API Keys at "
-                "https://ideogram.ai/platform and put it in .env. Note that a key stays "
-                "inactive until billing and credits are added there."
+                "https://developer.ideogram.ai and put it in .env. Note that a key stays "
+                "inactive until a payment method and a prepaid balance are added there -- "
+                "an ideogram.ai subscription is billed separately and doesn't cover the API."
             )
 
     def generate(self, prompt: str, width: int = 1024, height: int = 1024) -> Image.Image:
@@ -111,14 +115,19 @@ class IdeogramProvider(ImageProvider):
 
         if resp.status_code == 401:
             raise ImageProviderError(
-                "Ideogram rejected the key (401). Check IDEOGRAM_API_KEY, and that billing "
-                "and credits are set up at https://ideogram.ai/platform -- a key without "
-                "them stays inactive."
+                "Ideogram rejected the key (401). Check IDEOGRAM_API_KEY, and that a payment "
+                "method and prepaid balance are set up at https://developer.ideogram.ai -- a "
+                "key stays inactive until both exist, and an ideogram.ai subscription does not "
+                "count towards it."
             )
         if resp.status_code == 402:
             raise ImageProviderError(
-                "Ideogram says the account is out of credits (402). Top up at "
-                "https://ideogram.ai/platform under Billing."
+                "Ideogram says the API account has no credit (402). Note that this is a "
+                "separate balance from an ideogram.ai subscription -- plan credits are for "
+                "the web app and buy nothing on the API, so a healthy credit count there "
+                "still gives a 402 here. Add a payment method and a prepaid balance under "
+                "Billing at https://developer.ideogram.ai (from $1, $20 is the smallest "
+                "preset)."
             )
         if resp.status_code == 404:
             raise ImageProviderError(
