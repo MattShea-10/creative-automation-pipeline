@@ -3431,6 +3431,93 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         )
         return dest
 
+    def test_keep_this_image_reuses_the_previous_runs_artwork(self):
+        # The point of the checkbox: adjust anything else about the
+        # campaign and the backdrop you were adjusting it against stays
+        # put. The prompt is deliberately changed on the second run --
+        # MockImageProvider seeds from the prompt, so a regeneration
+        # would be plainly different bytes.
+        self._write_template_with_a_background_layer("keep-300x250.psd", (300, 250))
+        first = self.client.post(
+            "/generate",
+            data={
+                "upload_ai_enabled": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": "a runner mid-stride",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(first.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", first.data).group(1).decode()
+        first_bytes = (
+            webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png"
+        ).read_bytes()
+
+        second = self.client.post(
+            "/generate",
+            data={
+                "edit_job_id": job_id,
+                "upload_ai_enabled": "1",
+                "upload_ai_keep": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": "something else entirely",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertIn(b"reused the image from the previous run", second.data)
+        second_job_id = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
+        second_bytes = (
+            webapp.JOBS_DIR / second_job_id / "uploads" / "ai_generated_campaign.png"
+        ).read_bytes()
+        self.assertEqual(first_bytes, second_bytes)
+
+    def test_unticking_keep_generates_a_fresh_image_again(self):
+        # The other half of the contract -- the checkbox has to be a
+        # fence, not a one-way door. Without this, "keep" silently
+        # becoming permanent is the exact bug the generated image was
+        # kept out of the carry-forward dict to avoid.
+        self._write_template_with_a_background_layer("keep-300x250.psd", (300, 250))
+        first = self.client.post(
+            "/generate",
+            data={
+                "upload_ai_enabled": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": "a runner mid-stride",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        job_id = re.search(rb"/download/([0-9a-f]+)", first.data).group(1).decode()
+        first_bytes = (
+            webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png"
+        ).read_bytes()
+
+        second = self.client.post(
+            "/generate",
+            data={
+                "edit_job_id": job_id,
+                "upload_ai_enabled": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": "something else entirely",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertIn(b"Campaign artwork generated with AI (mock)", second.data)
+        second_job_id = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
+        second_bytes = (
+            webapp.JOBS_DIR / second_job_id / "uploads" / "ai_generated_campaign.png"
+        ).read_bytes()
+        self.assertNotEqual(first_bytes, second_bytes)
+
     def test_an_uploaded_hero_image_drives_the_templated_batch(self):
         # The ordinary way in: no PSD to design, no generator to wait on
         # -- one picture, and the saved templates supply every layout.

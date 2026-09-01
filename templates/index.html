@@ -250,6 +250,17 @@
               </label>
             </div>
             <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
+              <span>Keep this image <span style="font-weight: 400; color: var(--muted);">(don't generate a new one)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Tick this and the next Generate reuses the image from your last run instead of calling the
+              provider. Two generations from an identical prompt are never the same picture, so without it,
+              nudging a font size or a glow colour means losing the backdrop you were nudging it against --
+              and paying for the replacement. Untick it whenever you want a fresh one. It has no effect on a
+              first run: there's nothing to keep yet.
+            </div>
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="hidden" name="upload_ai_background_style_seen" value="1">
               <input type="checkbox" id="upload_ai_background_style" name="upload_ai_background_style" value="1" {% if prefill.get('upload_ai_background_style', True) %}checked{% endif %}>
               <span>Optimize the prompt for backdrops <span style="font-weight: 400; color: var(--muted);">(recommended)</span></span>

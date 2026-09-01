@@ -241,6 +241,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "brand_color_1_enabled", "brand_color_2_enabled", "brand_color_3_enabled",
     "ai_hero_enabled",
     "upload_ai_enabled",
+    "upload_ai_keep",
     "layer_header_glow",
     "layer_description_glow",
     "layer_header_background",
@@ -818,6 +819,13 @@ def generate():
     # this one supplies the campaign's artwork to the saved templates
     # rather than a hero image for a plain render.
     upload_ai_enabled = bool(request.form.get("upload_ai_enabled"))
+    # "Keep this image": re-run the batch against the artwork the last run
+    # generated instead of asking the provider for a fresh one. Every
+    # generation is a different picture even from an identical prompt, so
+    # without this, adjusting a font size or a glow colour means losing
+    # the backdrop you were adjusting it against -- and paying for the
+    # replacement.
+    upload_ai_keep = bool(request.form.get("upload_ai_keep"))
     upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
     # ALL_PROVIDER_NAMES, not PROVIDER_NAMES: the offline placeholder is
@@ -1136,7 +1144,34 @@ def generate():
     # so they wait here and are flushed onto those lists below.
     background_notes_pending = None
     background_warning_pending = None
-    if upload_ai_enabled:
+    kept_ai_path = None
+    if upload_ai_enabled and upload_ai_keep:
+        # Carried forward from the previous run's job folder under its own
+        # key, so it can only ever come back when it was explicitly asked
+        # for. (A generated image carried forward *silently* is poison: it
+        # outranks the fresh generation and overwrites its file, so a new
+        # prompt returns a byte-identical result and the generator looks
+        # broken. That is exactly the bug this key exists to keep fenced
+        # off -- the checkbox is the fence.)
+        kept_ai_path = _carry_forward_upload(
+            "upload_ai_generated", uploads_dir, prior_job_dir, prior_form_state
+        )
+    if kept_ai_path is not None:
+        try:
+            upload_ai_image = Image.open(kept_ai_path).convert("RGB")
+        except Exception as exc:  # noqa: BLE001
+            # Nothing worth failing a run over -- fall through and
+            # generate a new one, saying why.
+            app.logger.warning("Couldn't reuse the kept AI image: %s", exc)
+            upload_ai_image = None
+        else:
+            upload_ai_path = uploads_dir / AI_GENERATED_CAMPAIGN_FILENAME
+            upload_ai_image.save(upload_ai_path)
+            background_notes_pending = (
+                "Campaign artwork: reused the image from the previous run -- \"Keep this image\" "
+                "is ticked, so no new one was generated. Untick it to generate a fresh one."
+            )
+    if upload_ai_enabled and upload_ai_image is None:
         # A backdrop, not a product shot. This used to ask for
         # "professional studio product photo of X", which is the wrong
         # brief entirely for a layer that sits *behind* the template's
@@ -1195,7 +1230,10 @@ def generate():
             )
         upload_ai_path = uploads_dir / AI_GENERATED_CAMPAIGN_FILENAME
         upload_ai_image.save(upload_ai_path)
-    else:
+    elif upload_ai_image is None:
+        # Generator off entirely. Not "the reuse branch already filled
+        # it in" -- that path has its own note to report and must not be
+        # cleared here.
         background_notes_pending = None
 
     # Profanity check, PSD text layers -- same hard gate as the typed
@@ -2463,6 +2501,9 @@ def generate():
         "hero_image": hero_path if hero_provided else None,
         "content_psd": content_psd_path if content_psd_provided else None,
         "upload_hero_image": upload_hero_path,
+        # Under a key of its own, never a user-upload key -- see the
+        # "Keep this image" branch in the generator block above.
+        "upload_ai_generated": upload_ai_path,
         "logo": logo_path,
         "badge_image": badge_path,
     }
