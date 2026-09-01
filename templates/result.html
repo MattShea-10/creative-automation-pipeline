@@ -41,15 +41,24 @@
     }
     .card .thumb:focus-visible { @apply outline outline-2 outline-blue-400; }
     .lightbox {
-      @apply fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 p-6;
+      /* Scrolls rather than shrinks: the point of this view is to see the
+         creative at 100%, so a 1920x1080 on a smaller screen is panned,
+         not scaled down into the same lie the grid already tells. */
+      @apply fixed inset-0 z-50 overflow-auto p-6;
       background: rgba(2, 6, 23, 0.92);
     }
+    .lightbox-stage { @apply min-h-full flex flex-col items-center justify-center gap-3; }
     .lightbox img {
-      /* The creative at its own pixel size, only scaled down when it
-         would otherwise overflow the window. */
-      @apply max-w-[95vw] max-h-[82vh] block;
+      /* One image pixel per screen pixel. No max-width. */
+      @apply block flex-none;
       background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 16px 16px;
+      image-rendering: auto;
     }
+    .size-zoom {
+      @apply bg-transparent border-0 p-0 cursor-zoom-in text-left;
+      font: inherit;
+    }
+    .size-zoom:hover { @apply underline; }
     .lightbox-caption { @apply text-slate-300 text-[0.9rem]; }
     .lightbox-close {
       @apply absolute top-4 right-5 text-slate-300 bg-transparent border-0 text-3xl leading-none cursor-pointer;
@@ -166,7 +175,7 @@
             <img src="{{ url_for('serve_output', job_id=job_id, filename=c.filename) }}" alt="{{ c.label }}">
           </button>
           <div class="meta">
-            <div class="size">{{ c.label }}</div>
+            <button type="button" class="size size-zoom" data-role="zoom" data-label="{{ c.label }}" title="View {{ c.label }} at 100%">{{ c.label }}</button>
             <div class="name">{{ c.ratio }}{% if c.name != c.ratio %} -- {{ c.name }}{% endif %}</div>
             {% if c.psd_filename %}
               <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}">Download PSD</a>
@@ -184,8 +193,10 @@
 
   <div class="lightbox" data-role="lightbox" hidden>
     <button type="button" class="lightbox-close" data-role="lightbox-close" aria-label="Close">&times;</button>
-    <img data-role="lightbox-image" src="" alt="">
-    <div class="lightbox-caption" data-role="lightbox-caption"></div>
+    <div class="lightbox-stage">
+      <img data-role="lightbox-image" src="" alt="">
+      <div class="lightbox-caption" data-role="lightbox-caption"></div>
+    </div>
   </div>
 
   <script>
@@ -201,26 +212,31 @@
       if (!box || !image || !caption) return;
       var lastFocused = null;
 
-      function open(thumb) {
-        var img = thumb.querySelector("img");
+      function open(trigger) {
+        // The trigger is either the preview or its size label, so the
+        // image is looked up from the card they share rather than from
+        // inside the trigger itself.
+        var card = trigger.closest(".card");
+        var img = card ? card.querySelector("img") : trigger.querySelector("img");
         if (!img) return;
-        lastFocused = thumb;
+        lastFocused = trigger;
         image.src = img.src;
         image.alt = img.alt;
-        // Natural size once known, so a small ad unit shows 1:1 instead
-        // of being stretched to fill the window. The CSS caps it.
-        image.style.width = "";
-        var applyNatural = function () {
-          if (image.naturalWidth) {
-            image.style.width = image.naturalWidth + "px";
-            caption.textContent =
-              thumb.dataset.label + "  --  " + image.naturalWidth + " x " + image.naturalHeight + " px";
+        var describe = function () {
+          if (!image.naturalWidth) return;
+          var label = trigger.dataset.label || "";
+          var text = label + "  --  " + image.naturalWidth + " x " + image.naturalHeight + " px at 100%";
+          if (image.naturalWidth > box.clientWidth || image.naturalHeight > box.clientHeight) {
+            text += "  --  scroll to pan";
           }
+          caption.textContent = text;
         };
-        if (image.complete) applyNatural();
-        else image.addEventListener("load", applyNatural, { once: true });
-        caption.textContent = thumb.dataset.label || "";
+        caption.textContent = trigger.dataset.label || "";
+        if (image.complete) describe();
+        else image.addEventListener("load", describe, { once: true });
         box.hidden = false;
+        box.scrollTop = 0;
+        box.scrollLeft = 0;
         if (closeBtn) closeBtn.focus();
       }
 
@@ -230,8 +246,8 @@
         if (lastFocused) lastFocused.focus();
       }
 
-      document.querySelectorAll('[data-role="zoom"]').forEach(function (thumb) {
-        thumb.addEventListener("click", function () { open(thumb); });
+      document.querySelectorAll('[data-role="zoom"]').forEach(function (trigger) {
+        trigger.addEventListener("click", function () { open(trigger); });
       });
       if (closeBtn) closeBtn.addEventListener("click", close);
       // Anywhere on the backdrop, but not on the image itself.

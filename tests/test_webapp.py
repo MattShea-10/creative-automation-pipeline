@@ -3168,10 +3168,13 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         page = r.data.decode()
 
-        # One zoom control per creative, and they're real buttons so the
-        # keyboard reaches them.
-        self.assertEqual(page.count('class="thumb" data-role="zoom"'), page.count('class="card"'))
+        # Two zoom controls per creative -- the preview and its size
+        # label -- and both are real buttons so the keyboard reaches them.
+        cards = page.count('class="card"')
+        self.assertEqual(page.count('class="thumb" data-role="zoom"'), cards)
+        self.assertEqual(page.count('class="size size-zoom" data-role="zoom"'), cards)
         self.assertIn('<button type="button" class="thumb"', page)
+        self.assertIn('<button type="button" class="size size-zoom"', page)
         # The overlay exists but starts closed.
         self.assertIn('data-role="lightbox" hidden', page)
 
