@@ -10,6 +10,7 @@ quality/consistency is lower than a paid model like gpt-image-1 or Firefly.)
 from __future__ import annotations
 
 import io
+import random
 import urllib.parse
 
 import requests
@@ -23,8 +24,11 @@ BASE_URL = "https://image.pollinations.ai/prompt/{prompt}"
 class PollinationsProvider(ImageProvider):
     name = "pollinations"
 
-    def __init__(self, timeout: int = 40):
+    def __init__(self, timeout: int = 40, seed: int = None):
         self.timeout = timeout
+        # A caller that wants the same prompt to come back identical can
+        # pin the seed; left alone, every request gets a fresh one.
+        self.seed = seed
 
     def generate(self, prompt: str, width: int = 1024, height: int = 1024) -> Image.Image:
         encoded = urllib.parse.quote(prompt)
@@ -33,9 +37,13 @@ class PollinationsProvider(ImageProvider):
             "width": width,
             "height": height,
             "nologo": "true",
-            # A fixed seed keeps a given prompt reproducible across runs,
-            # which is convenient for testing/demoing.
-            "seed": abs(hash(prompt)) % (10**6),
+            # A NEW seed per request. This used to be derived from the
+            # prompt, so re-running the same prompt returned a
+            # byte-identical image -- which reads as the generator being
+            # stuck rather than as reproducibility, since asking again is
+            # how you ask for a different take. Pin `seed` on the
+            # provider if you want the old behaviour.
+            "seed": self.seed if self.seed is not None else random.randrange(10**6),
         }
         try:
             resp = requests.get(url, params=params, timeout=self.timeout)

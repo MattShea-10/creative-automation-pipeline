@@ -2234,6 +2234,79 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
 
 
+class PollinationsSeedTest(unittest.TestCase):
+    """Asking again is how you ask for a different take."""
+
+    def _params(self, provider, prompt="a runner"):
+        captured = {}
+
+        class _Resp:
+            content = b""
+
+            def raise_for_status(self):
+                raise RuntimeError("stop here -- only the request matters")
+
+        def fake_get(url, params=None, timeout=None):
+            captured.update(params or {})
+            return _Resp()
+
+        import src.providers.pollinations_provider as mod
+
+        original = mod.requests.get
+        mod.requests.get = fake_get
+        try:
+            try:
+                provider.generate(prompt)
+            except Exception:
+                pass
+        finally:
+            mod.requests.get = original
+        return captured
+
+    def test_the_same_prompt_gets_a_new_seed_each_time(self):
+        # It used to derive the seed from the prompt, so re-running the
+        # same prompt returned a byte-identical image and the generator
+        # looked stuck.
+        from src.providers.pollinations_provider import PollinationsProvider
+
+        seeds = {self._params(PollinationsProvider()).get("seed") for _ in range(8)}
+        self.assertGreater(len(seeds), 1, f"seed never varied: {seeds}")
+
+    def test_a_pinned_seed_is_honoured(self):
+        # Reproducibility is still available, just no longer the default.
+        from src.providers.pollinations_provider import PollinationsProvider
+
+        provider = PollinationsProvider(seed=4242)
+        self.assertEqual(self._params(provider).get("seed"), 4242)
+        self.assertEqual(self._params(provider).get("seed"), 4242)
+
+    def test_the_requested_size_is_passed_through(self):
+        from src.providers.pollinations_provider import PollinationsProvider
+
+        captured = {}
+
+        class _Resp:
+            content = b""
+
+            def raise_for_status(self):
+                raise RuntimeError("stop")
+
+        import src.providers.pollinations_provider as mod
+
+        original = mod.requests.get
+        mod.requests.get = lambda url, params=None, timeout=None: (
+            captured.update(params or {}), _Resp()
+        )[1]
+        try:
+            try:
+                PollinationsProvider().generate("x", width=1920, height=1920)
+            except Exception:
+                pass
+        finally:
+            mod.requests.get = original
+        self.assertEqual((captured.get("width"), captured.get("height")), (1920, 1920))
+
+
 class GeneratedBackgroundFidelityTest(unittest.TestCase):
     """A generated background has to arrive big enough not to be upscaled,
     and be fitted without distortion."""

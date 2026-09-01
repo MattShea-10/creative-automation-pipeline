@@ -1045,6 +1045,10 @@ def generate():
     # exactly where it was designed.
     upload_ai_image = None
     upload_ai_path = None
+    # Both are raised before background_notes/background_warnings exist,
+    # so they wait here and are flushed onto those lists below.
+    background_notes_pending = None
+    background_warning_pending = None
     if upload_ai_enabled:
         upload_ai_prompt_text = upload_ai_prompt or (
             f"professional studio product photo of {product_name or 'the product'}, clean background"
@@ -1061,6 +1065,21 @@ def generate():
                 f"{upload_ai_image.width}x{upload_ai_image.height} -- prompt: "
                 f"\"{upload_ai_prompt_text}\"."
             )
+            if (
+                upload_ai_image.width < upload_ai_width
+                or upload_ai_image.height < upload_ai_height
+            ):
+                # Providers cap their output. Worth saying out loud:
+                # anything smaller than the batch needs gets upscaled into
+                # the bigger sizes, and "why is this blurry" is otherwise
+                # a mystery with no visible cause.
+                background_warning_pending = (
+                    f"The '{upload_ai_provider}' provider returned "
+                    f"{upload_ai_image.width}x{upload_ai_image.height} for a requested "
+                    f"{upload_ai_width}x{upload_ai_height} -- sizes larger than that are upscaled "
+                    "from it, so they'll look softer. Try a provider without that cap, or supply "
+                    "the artwork yourself."
+                )
         except ImageProviderError as exc:
             # Same resilience as the hero generator: a flaky free API
             # degrades to the offline placeholder rather than failing the
@@ -1095,6 +1114,8 @@ def generate():
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
     if background_notes_pending:
         background_notes.append(background_notes_pending)
+    if background_warning_pending:
+        background_warnings.append(background_warning_pending)
 
     # Saved default templates (default_templates/) define the batch, but
     # only for a templated campaign -- one where the quick-campaign
