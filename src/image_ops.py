@@ -2101,6 +2101,108 @@ def _sample_edge_color(image: Image.Image, bbox: Tuple[int, int, int, int]) -> T
     return (r, g, b)
 
 
+def apply_layer_cta_override(
+    base_image: Image.Image,
+    bbox: Tuple[int, int, int, int],
+    text: str,
+    *,
+    button_color: Tuple[int, int, int] = (0, 87, 184),
+    text_color: Tuple[int, int, int] = (255, 255, 255),
+    font_size: Optional[int] = None,
+    font_family: str = "sans",
+    glow: bool = False,
+    glow_color: Tuple[int, int, int] = (255, 255, 255),
+    glow_size: int = 12,
+    glow_opacity: int = 100,
+    keep_alpha: bool = False,
+) -> Image.Image:
+    """Draw a pill-shaped CTA button filling `bbox`, with `text` centred.
+
+    The layer-box counterpart to add_cta_button(). That one decides where
+    a button goes from a `position` and sizes it to its own label; this
+    one is handed the footprint the template's designer already chose --
+    the "cta" layer's box -- and fills it. So there is no position
+    argument here, and none in the form: a template's CTA sits where the
+    template puts it.
+
+    `font_size` is a ceiling, not a demand -- the label is shrunk until it
+    fits the button's width, and truncated with an ellipsis if it still
+    won't, since a CTA label is meant to stay on one line. Omitted, it
+    starts from the button's own height, which is what makes the default
+    look right at every output size without being told.
+
+    `glow` matches the text override's: the pill is rendered as a mask,
+    blurred, boosted and tinted underneath the crisp button, so the halo
+    reads as light spilling out from behind it.
+    """
+    x0, y0, x1, y1 = bbox
+    box_w, box_h = x1 - x0, y1 - y0
+    if box_w <= 0 or box_h <= 0 or not text:
+        return base_image
+
+    canvas = base_image.convert("RGBA").copy() if keep_alpha else base_image.convert("RGB").copy()
+    probe = ImageDraw.Draw(canvas)
+
+    pad_x = max(int(box_w * 0.08), 6)
+    max_text_w = max(box_w - 2 * pad_x, 8)
+    size = font_size or max(int(box_h * 0.42), 8)
+    font = _load_font(size, family=font_family)
+    while size > 7:
+        width = probe.textbbox((0, 0), text, font=font)[2]
+        if width <= max_text_w:
+            break
+        size -= 1
+        font = _load_font(size, family=font_family)
+    # Still too wide at the floor -- trim rather than let it spill.
+    if probe.textbbox((0, 0), text, font=font)[2] > max_text_w:
+        trimmed = text
+        while len(trimmed) > 1:
+            trimmed = trimmed[:-1]
+            candidate = trimmed.rstrip() + "…"
+            if probe.textbbox((0, 0), candidate, font=font)[2] <= max_text_w:
+                text = candidate
+                break
+        else:
+            text = "…"
+
+    radius = box_h // 2
+
+    if glow and glow_size > 0 and glow_opacity > 0:
+        blur_radius = max(round(box_h * (glow_size / 100.0)), 1)
+        glow_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        ImageDraw.Draw(glow_layer).rounded_rectangle(
+            [x0, y0, x1, y1], radius=radius, fill=(255, 255, 255, 255)
+        )
+        alpha = glow_layer.split()[3].filter(ImageFilter.GaussianBlur(radius=blur_radius))
+        boost = 1.6 * (max(0, min(100, glow_opacity)) / 100.0)
+        alpha = alpha.point(lambda a: min(255, int(a * boost)))
+        colored = Image.new("RGBA", canvas.size, (glow_color[0], glow_color[1], glow_color[2], 0))
+        colored.putalpha(alpha)
+        if keep_alpha:
+            canvas = Image.alpha_composite(canvas, colored)
+        else:
+            canvas = Image.alpha_composite(canvas.convert("RGBA"), colored).convert("RGB")
+
+    draw = ImageDraw.Draw(canvas)
+    draw.rounded_rectangle(
+        [x0, y0, x1, y1],
+        radius=radius,
+        fill=(button_color[0], button_color[1], button_color[2], 255)
+        if keep_alpha
+        else button_color,
+    )
+    text_bbox = draw.textbbox((0, 0), text, font=font)
+    text_x = x0 + (box_w - (text_bbox[2] - text_bbox[0])) / 2 - text_bbox[0]
+    text_y = y0 + (box_h - (text_bbox[3] - text_bbox[1])) / 2 - text_bbox[1]
+    draw.text(
+        (text_x, text_y),
+        text,
+        font=font,
+        fill=(text_color[0], text_color[1], text_color[2], 255) if keep_alpha else text_color,
+    )
+    return canvas
+
+
 def apply_layer_text_override(
     base_image: Image.Image,
     bbox: Tuple[int, int, int, int],

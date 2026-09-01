@@ -2378,6 +2378,97 @@ class LayerTextGlowTest(unittest.TestCase):
         self.assertEqual(debug_plain["lines"], debug_glow["lines"])
 
 
+class LayerCtaOverrideTest(unittest.TestCase):
+    """Redrawing the cta layer as a button filling the box the template
+    already drew for it."""
+
+    def _base(self):
+        return Image.new("RGB", (400, 200), (240, 120, 60))
+
+    def test_the_button_fills_the_box_it_was_given(self):
+        from src.image_ops import apply_layer_cta_override
+
+        base = self._base()
+        out = apply_layer_cta_override(
+            base, (50, 70, 350, 130), "Claim my spot",
+            button_color=(0, 87, 184), text_color=(255, 255, 255),
+        ).convert("RGB")
+        # Centre of the box is button colour; well outside it is untouched.
+        self.assertEqual(out.getpixel((200, 100))[2] > 150, True)
+        self.assertEqual(out.getpixel((5, 5)), base.getpixel((5, 5)))
+
+    def test_an_over_long_label_is_trimmed_not_spilled(self):
+        from src.image_ops import apply_layer_cta_override
+
+        box = (50, 80, 200, 120)
+        out = apply_layer_cta_override(
+            self._base(), box, "An extremely long call to action label that cannot possibly fit",
+            button_color=(0, 87, 184), text_color=(255, 255, 255),
+        ).convert("RGB")
+        # Nothing painted outside the box: no button colour to its left.
+        for y in range(80, 120):
+            self.assertNotEqual(out.getpixel((40, y))[2] > 150, True)
+
+    def test_empty_label_leaves_the_image_alone(self):
+        from src.image_ops import apply_layer_cta_override
+
+        base = self._base()
+        out = apply_layer_cta_override(base, (50, 70, 350, 130), "")
+        self.assertEqual(list(out.convert("RGB").getdata()), list(base.getdata()))
+
+    def test_button_and_text_colours_are_both_honoured(self):
+        from src.image_ops import apply_layer_cta_override
+
+        red = apply_layer_cta_override(
+            self._base(), (50, 70, 350, 130), "Go", button_color=(200, 0, 0), text_color=(255, 255, 255)
+        ).convert("RGB")
+        green = apply_layer_cta_override(
+            self._base(), (50, 70, 350, 130), "Go", button_color=(0, 200, 0), text_color=(255, 255, 255)
+        ).convert("RGB")
+        self.assertNotEqual(list(red.getdata()), list(green.getdata()))
+        self.assertGreater(red.getpixel((80, 100))[0], green.getpixel((80, 100))[0])
+
+    def test_a_cta_image_upload_wins_over_the_text_button(self):
+        # Both supplied: the uploaded image is the button, so no button
+        # is drawn over it.
+        import webapp as _webapp
+
+        client = _CampaignBriefAutoFillClient(_webapp.app.test_client())
+        _webapp.app.config["TESTING"] = True
+        orig_jobs, orig_defaults = _webapp.JOBS_DIR, _webapp.DEFAULT_TEMPLATES_DIR
+        orig_downloads = _webapp.DOWNLOADS_DIR
+        tmp = tempfile.mkdtemp()
+        tmp_defaults = tempfile.mkdtemp()
+        _webapp.JOBS_DIR = Path(tmp)
+        _webapp.DOWNLOADS_DIR = Path(tmp) / "downloads"
+        _webapp.DEFAULT_TEMPLATES_DIR = Path(tmp_defaults)
+        try:
+            helper = ContentPsdQuickModeTest("test_content_psd_wrong_extension_flashes")
+            (Path(tmp_defaults) / "970x90.psd").write_bytes(helper._sample_psd_bytes(color=(30, 180, 30)))
+            data = {
+                "content_psd": (io.BytesIO(helper._sample_psd_bytes(color=(10, 10, 200))), "c.psd"),
+                "layer_cta_text": "Claim my spot",
+                "layer_cta_image": (helper._sample_image_bytes(color=(9, 9, 9)), "cta.png"),
+                "header": "",
+                "description": "",
+            }
+            r = client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            # These synthetic templates carry no cta layer box, so this
+            # pins the guard that matters -- the layer is never applied
+            # twice in one pass -- rather than the full precedence, which
+            # needs a template with a real cta box to observe.
+            notes = re.findall(rb"updated layer\(s\) -- ([^<.]+)", r.data)
+            self.assertTrue(notes)
+            for note in notes:
+                self.assertLessEqual(note.decode().count("cta"), 1, note)
+        finally:
+            _webapp.JOBS_DIR, _webapp.DEFAULT_TEMPLATES_DIR = orig_jobs, orig_defaults
+            _webapp.DOWNLOADS_DIR = orig_downloads
+            shutil.rmtree(tmp, ignore_errors=True)
+            shutil.rmtree(tmp_defaults, ignore_errors=True)
+
+
 class ContentPsdQuickModeTest(unittest.TestCase):
     """Covers the single-input "quick campaign" content_psd field: the
     upload renders as its own size (keyed by its actual pixel dimensions,

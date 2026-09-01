@@ -455,6 +455,57 @@
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
           </fieldset>
+          <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
+            <label for="layer_cta_text" style="font-weight: 400;">CTA button text</label>
+            <input type="text" id="layer_cta_text" name="layer_cta_text" placeholder="e.g. Claim my spot" value="{{ prefill.get('layer_cta_text', '') }}">
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_cta_font_family" style="font-weight: 400;">
+              <span style="white-space: nowrap;">CTA font</span>
+              <select class="font-family-select" id="layer_cta_font_family" name="layer_cta_font_family">
+                {% for family in ['sans', 'serif', 'mono', 'display'] %}
+                  <option value="{{ family }}" {% if prefill.get('layer_cta_font_family', 'sans') == family %}selected{% endif %}>{{ family }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <label for="layer_cta_font_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">CTA font size</span>
+              <input type="number" class="font-size-input" id="layer_cta_font_size" name="layer_cta_font_size" min="4" max="2000" placeholder="Auto" value="{{ prefill.get('layer_cta_font_size', '') }}">
+            </label>
+            <label for="layer_cta_button_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Button color</span>
+              <input type="color" id="layer_cta_button_color" name="layer_cta_button_color" value="{{ prefill.get('layer_cta_button_color', '#0057b8') }}">
+            </label>
+            <label for="layer_cta_text_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Button text color</span>
+              <input type="color" id="layer_cta_text_color" name="layer_cta_text_color" value="{{ prefill.get('layer_cta_text_color', '#ffffff') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_cta_glow">
+              <input type="checkbox" id="layer_cta_glow" name="layer_cta_glow" value="1" {% if prefill.get('layer_cta_glow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Glow behind button</span>
+            </label>
+            <label for="layer_cta_glow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow color</span>
+              <input type="color" id="layer_cta_glow_color" name="layer_cta_glow_color" value="{{ prefill.get('layer_cta_glow_color', '#ffffff') }}">
+            </label>
+            <label for="layer_cta_glow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow size %</span>
+              <input type="number" class="font-size-input" id="layer_cta_glow_size" name="layer_cta_glow_size" min="1" max="100" placeholder="12" value="{{ prefill.get('layer_cta_glow_size', '') }}">
+            </label>
+            <label for="layer_cta_glow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow opacity %</span>
+              <input type="number" class="font-size-input" id="layer_cta_glow_opacity" name="layer_cta_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_cta_glow_opacity', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            Redraws the <code>cta</code> layer as a pill button filling the box the template's designer drew for
+            it -- so there's no position setting here, unlike the hero-image tool's CTA. The label shrinks to fit
+            the button's width and is trimmed with an ellipsis rather than allowed to spill. Uploading a CTA
+            image below wins over this: that upload is the button.
+          </div>
+
           <div class="inline-controls" style="margin-top: 0.4rem;">
             <label for="layer_logo_image" style="font-weight: 400;">
               <span style="white-space: nowrap;">Logo image</span>

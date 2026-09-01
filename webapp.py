@@ -49,6 +49,7 @@ from src.image_ops import (
     VIDEO_EXTENSIONS,
     apply_layer_background_override,
     apply_layer_image_override,
+    apply_layer_cta_override,
     apply_layer_text_override,
     auto_transparent_background,
     center_crop_to_ratio,
@@ -192,6 +193,9 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_header_align", "layer_header_background_color", "layer_header_background_opacity",
     "layer_description_glow_color", "layer_description_glow_size", "layer_description_glow_opacity",
     "layer_description_align", "layer_description_background_color", "layer_description_background_opacity",
+    "layer_cta_text", "layer_cta_font_family", "layer_cta_font_size",
+    "layer_cta_button_color", "layer_cta_text_color",
+    "layer_cta_glow_color", "layer_cta_glow_size", "layer_cta_glow_opacity",
     "header", "description", "custom_sizes",
     "fit_mode",
     "header_text_color", "header_align", "header_font_size",
@@ -221,6 +225,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "layer_description_glow",
     "layer_header_background",
     "layer_description_background",
+    "layer_cta_glow",
 )
 
 # Euclidean RGB distance under which a pixel counts as "matching" a brand
@@ -1136,6 +1141,27 @@ def generate():
         request.form.get("layer_description_background_opacity")
     )
 
+    # The CTA layer's own text override. No position field, unlike the
+    # hero-image tool's CTA: a template's button sits in the box its
+    # designer drew, and that box is what gets filled.
+    layer_cta_text = (request.form.get("layer_cta_text") or "").strip() or None
+    layer_cta_font_family = (request.form.get("layer_cta_font_family") or "").strip()
+    if layer_cta_font_family not in VALID_FONT_FAMILIES:
+        layer_cta_font_family = "sans"
+    layer_cta_font_size = _parse_optional_font_size(request.form.get("layer_cta_font_size"))
+    layer_cta_button_color = _parse_hex_color(
+        request.form.get("layer_cta_button_color"), default=(0, 87, 184)
+    )
+    layer_cta_text_color = _parse_hex_color(
+        request.form.get("layer_cta_text_color"), default=(255, 255, 255)
+    )
+    layer_cta_glow = bool(request.form.get("layer_cta_glow"))
+    layer_cta_glow_color = _parse_hex_color(
+        request.form.get("layer_cta_glow_color"), default=(255, 255, 255)
+    )
+    layer_cta_glow_size = _parse_glow_size(request.form.get("layer_cta_glow_size"))
+    layer_cta_glow_opacity = _parse_glow_opacity(request.form.get("layer_cta_glow_opacity"))
+
     layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
     layer_upload_paths: dict = {}  # {field_name: Path} -- for form_state.json, see below
     for layer_name, field_name in (
@@ -1920,6 +1946,35 @@ def generate():
                         background_color=layer_description_background_color,
                         background_opacity=layer_description_background_opacity,
                     )
+                if layer_cta_text and "cta" not in layer_image_overrides:
+                    # Skipped when a CTA image was uploaded for this run:
+                    # that upload IS the button, and drawing one over it
+                    # would bury what the user just supplied.
+                    cta_box = layer_boxes.get("cta")
+                    if cta_box is not None:
+                        _clean_layer_box(cta_box, "cta", full_box=True)
+                        cta_kwargs = dict(
+                            button_color=layer_cta_button_color,
+                            text_color=layer_cta_text_color,
+                            font_size=layer_cta_font_size,
+                            font_family=layer_cta_font_family,
+                            glow=layer_cta_glow,
+                            glow_color=layer_cta_glow_color,
+                            glow_size=layer_cta_glow_size,
+                            glow_opacity=layer_cta_glow_opacity,
+                        )
+                        final_image = apply_layer_cta_override(
+                            final_image, cta_box, layer_cta_text, **cta_kwargs
+                        )
+                        export_layer_patches["cta"] = apply_layer_cta_override(
+                            Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
+                            cta_box,
+                            layer_cta_text,
+                            keep_alpha=True,
+                            **cta_kwargs,
+                        )
+                        applied_layers.append("cta")
+
                 if applied_layers:
                     background_notes.append(
                         f"{size_label(width, height)}: updated layer(s) -- " + ", ".join(applied_layers) + "."
