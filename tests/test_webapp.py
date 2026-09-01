@@ -6,6 +6,7 @@ description -> sized creatives + zip" flow a person would drive by hand.
 """
 
 import io
+import os
 import re
 import shutil
 import struct
