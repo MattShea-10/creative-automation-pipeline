@@ -3324,7 +3324,10 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # guidance appended, and the key went in the header.
         self.assertTrue(seen["prompt"].startswith("a stadium at dusk"), seen["prompt"])
         self.assertEqual(seen["key"], "test-key")
-        self.assertEqual(seen["aspect"], "5x4")  # 300x250 -> nearest named ratio
+        # Not the template's 300x250: the generator is asked for a size
+        # that covers the whole batch, floored at the content-PSD size
+        # (728x480 here), and 728x480 is nearest 3x2.
+        self.assertEqual(seen["aspect"], "3x2")
 
         # And its pixels are in the creative, via the background layer.
         self.assertIn(b"300x250: updated layer(s) -- background", r.data)
