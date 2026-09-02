@@ -228,7 +228,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_header_stroke_size", "layer_header_stroke_color",
     "layer_description_stroke_size", "layer_description_stroke_color",
     "layer_legal_stroke_size", "layer_legal_stroke_color",
-    "layer_cta_stroke_size", "layer_cta_stroke_color",
+    "layer_cta_stroke_size", "layer_cta_stroke_color", "layer_cta_radius",
     "layer_legal_align", "layer_legal_background_color", "layer_legal_background_opacity",
     "layer_legal_background_blur",
     "layer_cta_text", "layer_cta_font_family", "layer_cta_font_size",
@@ -284,6 +284,11 @@ EDIT_CHECKBOX_FIELD_NAMES = (
 # Euclidean RGB distance under which a pixel counts as "matching" a brand
 # color for find_missing_brand_colors() -- see that function's docstring
 # for why an exact-match check would be too strict.
+# The CTA button's own colour, and the value the form ships. Named so the
+# render can ask whether somebody actually chose a colour -- a CTA built
+# as a group is left as its designer drew it unless they did.
+CTA_BUTTON_COLOR_DEFAULT = (0, 87, 184)
+
 BRAND_COLOR_MATCH_TOLERANCE = 30
 
 # Fixed filename the AI-hero-fallback always saves under (see the
@@ -2016,7 +2021,7 @@ def generate():
         layer_cta_font_family = "sans"
     layer_cta_font_size = _parse_optional_font_size(request.form.get("layer_cta_font_size"))
     layer_cta_button_color = _parse_hex_color(
-        request.form.get("layer_cta_button_color"), default=(0, 87, 184)
+        request.form.get("layer_cta_button_color"), default=CTA_BUTTON_COLOR_DEFAULT
     )
     layer_cta_text_color = _parse_hex_color(
         request.form.get("layer_cta_text_color"), default=(255, 255, 255)
@@ -2028,6 +2033,12 @@ def generate():
     layer_cta_glow_size = _parse_glow_size(request.form.get("layer_cta_glow_size"))
     layer_cta_glow_opacity = _parse_glow_opacity(request.form.get("layer_cta_glow_opacity"))
     layer_cta_stroke_size = _parse_stroke_size(request.form.get("layer_cta_stroke_size"))
+    # None, not 0: 0 is a real answer (square corners), so "not set" has
+    # to be something else or the button could never keep its pill.
+    layer_cta_radius = request.form.get("layer_cta_radius")
+    layer_cta_radius = (
+        _parse_stroke_size(layer_cta_radius) if str(layer_cta_radius or "").strip() else None
+    )
     layer_cta_stroke_color = _parse_hex_color(
         request.form.get("layer_cta_stroke_color"), default=(0, 0, 0)
     )
@@ -3113,6 +3124,33 @@ def generate():
                             _reconstruct_box_background(final_image, cta_label_box),
                             cta_label_box[:2],
                         )
+                        # The rectangle itself, when the CTA settings say
+                        # to restyle it. Left alone the designer's button
+                        # is kept as drawn; give it a colour, a glow or a
+                        # stroke and it is redrawn with them, the label
+                        # going back on top afterwards. Drawn through the
+                        # same pill routine the flat-layer path uses, with
+                        # no text, so there is one implementation of what
+                        # a button looks like.
+                        if (
+                            layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT
+                            or layer_cta_glow
+                            or layer_cta_stroke_size
+                        ):
+                            final_image = apply_layer_cta_override(
+                                final_image,
+                                cta_box,
+                                "",
+                                button_color=layer_cta_button_color,
+                                text_color=layer_cta_text_color,
+                                glow=layer_cta_glow,
+                                glow_color=layer_cta_glow_color,
+                                glow_size=layer_cta_glow_size,
+                                glow_opacity=layer_cta_glow_opacity,
+                                border_size=layer_cta_stroke_size,
+                                border_color=layer_cta_stroke_color,
+                                corner_radius=layer_cta_radius,
+                            )
                         # ...and the new words go across the button, not
                         # into the box the old ones happened to occupy.
                         # "Click" is four characters; a replacement fitted
@@ -3132,13 +3170,10 @@ def generate():
                             layer_cta_font_size,
                             True,
                             layer_cta_text_color,
-                            glow=layer_cta_glow,
-                            glow_color=layer_cta_glow_color,
-                            glow_size=layer_cta_glow_size,
-                            glow_opacity=layer_cta_glow_opacity,
+                            # Glow and stroke belong to the button, not
+                            # to the words on it -- haloing both leaves
+                            # the label wearing the shape's styling.
                             align="center",
-                            stroke_size=layer_cta_stroke_size,
-                            stroke_color=layer_cta_stroke_color,
                             box_override=cta_label_box,
                             clean=False,
                         )
@@ -3155,6 +3190,7 @@ def generate():
                             glow_opacity=layer_cta_glow_opacity,
                             stroke_size=layer_cta_stroke_size,
                             stroke_color=layer_cta_stroke_color,
+                            corner_radius=layer_cta_radius,
                         )
                         final_image = apply_layer_cta_override(
                             final_image, cta_box, layer_cta_text, **cta_kwargs

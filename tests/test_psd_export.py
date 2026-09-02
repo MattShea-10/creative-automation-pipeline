@@ -404,6 +404,34 @@ class PsdExportTest(unittest.TestCase):
         large = outlined_pixels((640, 240))
         self.assertGreater(large, small * 4, f"stroke did not scale: {small} -> {large}")
 
+    def test_the_cta_button_takes_a_border_and_a_corner_radius(self):
+        # The button is the background rectangle of a CTA group, and it
+        # gets its own styling: fill, outline and how round the corners
+        # are. An empty label is legitimate here -- the words are set
+        # separately from the group's own text layer.
+        from src.image_ops import apply_layer_cta_override
+
+        base = Image.new("RGB", (300, 120), (255, 255, 255))
+
+        def corner(radius):
+            out = apply_layer_cta_override(
+                base, (20, 20, 280, 100), "", button_color=(0, 87, 184), corner_radius=radius
+            )
+            return out.getpixel((22, 22))
+
+        # 0 squares the corners off, so the corner pixel is the button.
+        self.assertEqual(corner(0), (0, 87, 184))
+        # Left alone it is a pill, and the corner is whatever was behind.
+        self.assertEqual(corner(None), (255, 255, 255))
+        self.assertEqual(corner(25), (255, 255, 255))
+
+        plain = apply_layer_cta_override(base, (20, 20, 280, 100), "", button_color=(0, 87, 184))
+        bordered = apply_layer_cta_override(
+            base, (20, 20, 280, 100), "", button_color=(0, 87, 184),
+            border_size=10, border_color=(255, 255, 255),
+        )
+        self.assertNotEqual(list(plain.getdata()), list(bordered.getdata()))
+
     def test_build_layered_psd_rejects_empty_layer_list(self):
         with self.assertRaises(ValueError):
             build_layered_psd([], (100, 100))

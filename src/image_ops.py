@@ -2298,6 +2298,9 @@ def apply_layer_cta_override(
     keep_alpha: bool = False,
     stroke_size: int = 0,
     stroke_color: Tuple[int, int, int] = (0, 0, 0),
+    border_size: int = 0,
+    border_color: Tuple[int, int, int] = (0, 0, 0),
+    corner_radius: Optional[int] = None,
 ) -> Image.Image:
     """Draw a pill-shaped CTA button filling `bbox`, with `text` centred.
 
@@ -2320,8 +2323,12 @@ def apply_layer_cta_override(
     """
     x0, y0, x1, y1 = bbox
     box_w, box_h = x1 - x0, y1 - y0
-    if box_w <= 0 or box_h <= 0 or not text:
+    if box_w <= 0 or box_h <= 0:
         return base_image
+    # An empty label is a legitimate request: restyling the button of a
+    # CTA group, where the words are set separately from the group's own
+    # text layer. Only the text pass is skipped.
+    draw_label = bool(text)
 
     canvas = base_image.convert("RGBA").copy() if keep_alpha else base_image.convert("RGB").copy()
     probe = ImageDraw.Draw(canvas)
@@ -2348,7 +2355,13 @@ def apply_layer_cta_override(
         else:
             text = "…"
 
+    # A pill by default -- half the height rounds the ends off
+    # completely. `corner_radius` is a percentage of that, so 0 is a
+    # square-cornered rectangle, 100 the pill, and anything between the
+    # softened rectangle most templates actually use.
     radius = box_h // 2
+    if corner_radius is not None:
+        radius = round((box_h // 2) * (max(0, min(100, corner_radius)) / 100.0))
 
     if glow and glow_size > 0 and glow_opacity > 0:
         blur_radius = max(round(box_h * (glow_size / 100.0)), 1)
@@ -2367,33 +2380,46 @@ def apply_layer_cta_override(
             canvas = Image.alpha_composite(canvas.convert("RGBA"), colored).convert("RGB")
 
     draw = ImageDraw.Draw(canvas)
+    # The button's own outline, as a percentage of its height for the
+    # same reason every other stroke here is relative: one setting has to
+    # hold across a 160x600 and a 1920x1080.
+    border_px = 0
+    if border_size:
+        border_px = max(1, round((y1 - y0) * (max(0, min(100, border_size)) / 100.0)))
     draw.rounded_rectangle(
         [x0, y0, x1, y1],
         radius=radius,
         fill=(button_color[0], button_color[1], button_color[2], 255)
         if keep_alpha
         else button_color,
-    )
-    text_bbox = draw.textbbox((0, 0), text, font=font)
-    text_x = x0 + (box_w - (text_bbox[2] - text_bbox[0])) / 2 - text_bbox[0]
-    text_y = y0 + (box_h - (text_bbox[3] - text_bbox[1])) / 2 - text_bbox[1]
-    # Same percentage-of-type-size stroke as the text layers -- see
-    # apply_layer_text_override() for why it isn't taken in pixels.
-    stroke_px = 0
-    if stroke_size:
-        stroke_px = max(1, round(font.size * (max(0, min(100, stroke_size)) / 100.0)))
-    draw.text(
-        (text_x, text_y),
-        text,
-        font=font,
-        fill=(text_color[0], text_color[1], text_color[2], 255) if keep_alpha else text_color,
-        stroke_width=stroke_px,
-        stroke_fill=(
-            ((stroke_color[0], stroke_color[1], stroke_color[2], 255) if keep_alpha else stroke_color)
-            if stroke_px
+        outline=(
+            ((border_color[0], border_color[1], border_color[2], 255) if keep_alpha else border_color)
+            if border_px
             else None
         ),
+        width=border_px,
     )
+    if draw_label:
+        text_bbox = draw.textbbox((0, 0), text, font=font)
+        text_x = x0 + (box_w - (text_bbox[2] - text_bbox[0])) / 2 - text_bbox[0]
+        text_y = y0 + (box_h - (text_bbox[3] - text_bbox[1])) / 2 - text_bbox[1]
+        # Same percentage-of-type-size stroke as the text layers -- see
+        # apply_layer_text_override() for why it isn't taken in pixels.
+        stroke_px = 0
+        if stroke_size:
+            stroke_px = max(1, round(font.size * (max(0, min(100, stroke_size)) / 100.0)))
+        draw.text(
+            (text_x, text_y),
+            text,
+            font=font,
+            fill=(text_color[0], text_color[1], text_color[2], 255) if keep_alpha else text_color,
+            stroke_width=stroke_px,
+            stroke_fill=(
+                ((stroke_color[0], stroke_color[1], stroke_color[2], 255) if keep_alpha else stroke_color)
+                if stroke_px
+                else None
+            ),
+        )
     return canvas
 
 
