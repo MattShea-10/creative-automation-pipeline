@@ -44,7 +44,13 @@
        the panel's own dark grey, so the controls read the way they do
        everywhere else on the form. Filling it green tinted every nested
        section and every line of hint text along with it. */
-    .custom-hero-box { @apply border border-emerald-600 rounded-md; background: #0f172a; }
+    .custom-hero-box {
+      /* px-4 py-3 to match .ai-hero-callout exactly -- it inherits
+         .layer-section's tighter px-3 py-2 otherwise, and the two routes
+         sitting one above the other made the difference obvious. */
+      @apply border border-emerald-600 rounded-md px-4 py-3;
+      background: #0f172a;
+    }
     .custom-hero-box .layer-section { @apply border-slate-800 bg-slate-900/30; }
     .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .manual-creative-box > summary { @apply uppercase tracking-wide; }
