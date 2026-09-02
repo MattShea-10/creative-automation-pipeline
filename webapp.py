@@ -1460,12 +1460,18 @@ def generate():
                 # Make the shortfall up once, here, rather than letting
                 # every output size enlarge from the same small source
                 # separately and unsharpened.
+                # Read the shortfall off the image BEFORE upscaling it --
+                # the upscale sets the size to exactly what was asked
+                # for, so measuring afterwards reports "returned
+                # 1920x1920 for a requested 1920x1920" and reads as a
+                # warning about nothing.
+                returned_width, returned_height = upload_ai_image.width, upload_ai_image.height
                 upload_ai_image = upscale_to_cover(
                     upload_ai_image, (upload_ai_width, upload_ai_height)
                 )
                 background_warnings_pending.append(
                     f"The '{upload_ai_provider}' provider returned "
-                    f"{upload_ai_image.width}x{upload_ai_image.height} for a requested "
+                    f"{returned_width}x{returned_height} for a requested "
                     f"{upload_ai_width}x{upload_ai_height} -- sizes larger than that are upscaled "
                     "from it, so they'll look softer. Try a provider without that cap, or supply "
                     "the artwork yourself."
