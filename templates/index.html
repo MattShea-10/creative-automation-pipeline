@@ -145,9 +145,6 @@
       @apply border-blue-500 rounded-lg px-[1.1rem] py-4;
       background: #172554;
     }
-    .upload-creative-box > summary {
-      @apply text-blue-300 text-[0.78rem] font-bold uppercase tracking-wider;
-    }
     /* Shown from the moment a batch is submitted until the results page
        replaces this one. A run is seconds at best and can be a minute
        when a provider is generating, with no browser feedback beyond a
@@ -301,8 +298,12 @@
         </div>
       </details>
 
-      <details class="upload-creative-box" open>
-        <summary>Upload Creative</summary>
+      {# Not a disclosure any more. Everything inside it now folds under
+         its own switch -- the two artwork routes, and the layer editing
+         under the custom one -- so an outer fold was a second lid on
+         boxes that already have their own, and its heading named a
+         section whose contents announce themselves. #}
+      <div class="upload-creative-box">
         <label for="upload_hero_image">Campaign hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp)</span></label>
         <div class="hint">
           <strong>This campaign needs artwork from one of two places: a hero image you upload here, or an
@@ -961,7 +962,7 @@
           {% endfor %}
 
         </div>
-      </details>
+      </div>
 
       <details class="manual-creative-box">
         <summary>Manual Creative</summary>
@@ -1789,9 +1790,6 @@
         });
         clone.querySelectorAll("details.manual-creative-box").forEach(function (d) {
           d.removeAttribute("open");
-        });
-        clone.querySelectorAll("details.upload-creative-box").forEach(function (d) {
-          d.setAttribute("open", "");
         });
         var brief = clone.querySelector("details.campaign-brief-box");
         if (brief) brief.setAttribute("open", "");
