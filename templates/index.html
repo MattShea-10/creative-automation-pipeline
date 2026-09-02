@@ -319,12 +319,19 @@
            rather than above the box, so the thing it governs and the thing it
            is next to are the same thing. #}
         <div class="layer-section custom-hero-box" data-role="custom-hero-section">
-        <div class="inline-controls" style="margin: 0; align-items: center;">
+        {# Not .inline-controls: that row is gap-6 and every field in it is
+           w-full, so the file input wrapped onto its own line under the
+           checkbox. Explicit flex with the width overridden inline, and the
+           input in a wrapper of its own so the "Location:" hint the script
+           inserts after it lands underneath rather than beside it. #}
+        <div style="display: flex; align-items: center; gap: 0.6rem; margin: 0;">
           <input type="checkbox" id="upload_custom_hero_enabled" name="upload_custom_hero_enabled" value="1"
-                 data-role="custom-hero-toggle" style="width: auto; flex: 0 0 auto;"
+                 data-role="custom-hero-toggle" style="width: auto; flex: 0 0 auto; margin: 0;"
                  title="Build this creative by hand -- opens the layer editing below"
                  {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
-          <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" style="flex: 1 1 auto;" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
+          <div style="flex: 1 1 auto; min-width: 0;">
+            <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
+          </div>
         </div>
         {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
         {# The file field stays visible with the checkbox -- it is the one
