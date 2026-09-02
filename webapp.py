@@ -223,6 +223,10 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_description_align", "layer_description_background_color", "layer_description_background_opacity",
     "layer_description_background_blur",
     "layer_legal_glow_color", "layer_legal_glow_size", "layer_legal_glow_opacity",
+    "layer_header_stroke_size", "layer_header_stroke_color",
+    "layer_description_stroke_size", "layer_description_stroke_color",
+    "layer_legal_stroke_size", "layer_legal_stroke_color",
+    "layer_cta_stroke_size", "layer_cta_stroke_color",
     "layer_legal_align", "layer_legal_background_color", "layer_legal_background_opacity",
     "layer_legal_background_blur",
     "layer_cta_text", "layer_cta_font_family", "layer_cta_font_size",
@@ -821,6 +825,21 @@ def _slugify_for_filename(text: str, *, max_length: int = 40) -> str:
 
 
 GLOW_SIZE_MIN, GLOW_SIZE_MAX, GLOW_SIZE_DEFAULT = 1, 100, 12
+
+
+def _parse_stroke_size(raw) -> int:
+    """A text outline's width as a percentage of the font size.
+
+    Relative for the same reason the glow radius is (see below): one
+    setting has to read the same on a 160x600 and a 1920x1080, and a
+    fixed pixel stroke cannot. 0 -- the default -- means no outline at
+    all, so the control is inert until somebody asks for it.
+    """
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(100, value))
 
 
 def _parse_glow_size(raw) -> int:
@@ -1875,6 +1894,10 @@ def generate():
         request.form.get("layer_header_background_opacity")
     )
     layer_header_background_blur = _parse_band_blur(request.form.get("layer_header_background_blur"))
+    layer_header_stroke_size = _parse_stroke_size(request.form.get("layer_header_stroke_size"))
+    layer_header_stroke_color = _parse_hex_color(
+        request.form.get("layer_header_stroke_color"), default=(0, 0, 0)
+    )
 
     layer_description_text = (request.form.get("layer_description_text") or "").strip() or None
     # By default the description override matches whatever font family,
@@ -1911,6 +1934,10 @@ def generate():
     )
     layer_description_background_blur = _parse_band_blur(
         request.form.get("layer_description_background_blur")
+    )
+    layer_description_stroke_size = _parse_stroke_size(request.form.get("layer_description_stroke_size"))
+    layer_description_stroke_color = _parse_hex_color(
+        request.form.get("layer_description_stroke_color"), default=(0, 0, 0)
     )
 
     # The "legal" text layer -- disclaimers, terms, the small print a
@@ -1950,6 +1977,10 @@ def generate():
     layer_legal_background_blur = _parse_band_blur(
         request.form.get("layer_legal_background_blur")
     )
+    layer_legal_stroke_size = _parse_stroke_size(request.form.get("layer_legal_stroke_size"))
+    layer_legal_stroke_color = _parse_hex_color(
+        request.form.get("layer_legal_stroke_color"), default=(0, 0, 0)
+    )
 
     # The CTA layer's own text override. No position field, unlike the
     # hero-image tool's CTA: a template's button sits in the box its
@@ -1971,6 +2002,10 @@ def generate():
     )
     layer_cta_glow_size = _parse_glow_size(request.form.get("layer_cta_glow_size"))
     layer_cta_glow_opacity = _parse_glow_opacity(request.form.get("layer_cta_glow_opacity"))
+    layer_cta_stroke_size = _parse_stroke_size(request.form.get("layer_cta_stroke_size"))
+    layer_cta_stroke_color = _parse_hex_color(
+        request.form.get("layer_cta_stroke_color"), default=(0, 0, 0)
+    )
 
     # Layers to leave out of every size entirely. A hide wins over any
     # content supplied for the same layer: "hide it" and "put this in it"
@@ -2722,6 +2757,8 @@ def generate():
                     background_color=(0, 0, 0),
                     background_opacity=60,
                     background_blur=0,
+                    stroke_size=0,
+                    stroke_color=(0, 0, 0),
                 ):
                     # Shared by every text-layer override (description,
                     # header, ...) -- reads that named layer's own PSD
@@ -2837,6 +2874,8 @@ def generate():
                         background_opacity=background_opacity,
                         background_blur=background_blur,
                         debug=text_debug,
+                        stroke_size=stroke_size,
+                        stroke_color=stroke_color,
                     )
                     # Same call again, but onto a transparent canvas with
                     # keep_alpha=True -- isolates just the new glyphs as
@@ -2863,6 +2902,8 @@ def generate():
                         background_opacity=background_opacity,
                         background_blur=background_blur,
                         keep_alpha=True,
+                        stroke_size=stroke_size,
+                        stroke_color=stroke_color,
                     )
                     applied_layers.append(layer_key)
                     background_notes.append(
@@ -2896,6 +2937,7 @@ def generate():
                     or layer_header_use_custom_color
                     or layer_header_font_family
                     or layer_header_font_size
+                    or layer_header_stroke_size
                 ):
                     _apply_text_layer_override(
                         "header",
@@ -2913,6 +2955,8 @@ def generate():
                         background_color=layer_header_background_color,
                         background_opacity=layer_header_background_opacity,
                         background_blur=layer_header_background_blur,
+                        stroke_size=layer_header_stroke_size,
+                        stroke_color=layer_header_stroke_color,
                     )
                 if (
                     layer_description_text
@@ -2921,6 +2965,7 @@ def generate():
                     or layer_description_use_custom_color
                     or layer_description_font_family
                     or layer_description_font_size
+                    or layer_description_stroke_size
                 ):
                     _apply_text_layer_override(
                         "description",
@@ -2938,6 +2983,8 @@ def generate():
                         background_color=layer_description_background_color,
                         background_opacity=layer_description_background_opacity,
                         background_blur=layer_description_background_blur,
+                        stroke_size=layer_description_stroke_size,
+                        stroke_color=layer_description_stroke_color,
                     )
                 if (
                     layer_legal_text
@@ -2946,6 +2993,7 @@ def generate():
                     or layer_legal_use_custom_color
                     or layer_legal_font_family
                     or layer_legal_font_size
+                    or layer_legal_stroke_size
                 ):
                     _apply_text_layer_override(
                         "legal",
@@ -2963,6 +3011,8 @@ def generate():
                         background_color=layer_legal_background_color,
                         background_opacity=layer_legal_background_opacity,
                         background_blur=layer_legal_background_blur,
+                        stroke_size=layer_legal_stroke_size,
+                        stroke_color=layer_legal_stroke_color,
                     )
                 if (
                     layer_cta_text
@@ -2984,6 +3034,8 @@ def generate():
                             glow_color=layer_cta_glow_color,
                             glow_size=layer_cta_glow_size,
                             glow_opacity=layer_cta_glow_opacity,
+                            stroke_size=layer_cta_stroke_size,
+                            stroke_color=layer_cta_stroke_color,
                         )
                         final_image = apply_layer_cta_override(
                             final_image, cta_box, layer_cta_text, **cta_kwargs

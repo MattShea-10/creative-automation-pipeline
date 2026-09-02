@@ -2258,6 +2258,8 @@ def apply_layer_cta_override(
     glow_size: int = 12,
     glow_opacity: int = 100,
     keep_alpha: bool = False,
+    stroke_size: int = 0,
+    stroke_color: Tuple[int, int, int] = (0, 0, 0),
 ) -> Image.Image:
     """Draw a pill-shaped CTA button filling `bbox`, with `text` centred.
 
@@ -2337,11 +2339,22 @@ def apply_layer_cta_override(
     text_bbox = draw.textbbox((0, 0), text, font=font)
     text_x = x0 + (box_w - (text_bbox[2] - text_bbox[0])) / 2 - text_bbox[0]
     text_y = y0 + (box_h - (text_bbox[3] - text_bbox[1])) / 2 - text_bbox[1]
+    # Same percentage-of-type-size stroke as the text layers -- see
+    # apply_layer_text_override() for why it isn't taken in pixels.
+    stroke_px = 0
+    if stroke_size:
+        stroke_px = max(1, round(font.size * (max(0, min(100, stroke_size)) / 100.0)))
     draw.text(
         (text_x, text_y),
         text,
         font=font,
         fill=(text_color[0], text_color[1], text_color[2], 255) if keep_alpha else text_color,
+        stroke_width=stroke_px,
+        stroke_fill=(
+            ((stroke_color[0], stroke_color[1], stroke_color[2], 255) if keep_alpha else stroke_color)
+            if stroke_px
+            else None
+        ),
     )
     return canvas
 
@@ -2369,6 +2382,8 @@ def apply_layer_text_override(
     background_color: Tuple[int, int, int] = (0, 0, 0),
     background_opacity: int = 60,
     background_blur: int = 0,
+    stroke_size: int = 0,
+    stroke_color: Tuple[int, int, int] = (0, 0, 0),
 ) -> Image.Image:
     """Return a copy of `base_image` with `text` painted directly into
     `bbox` -- same idea as apply_layer_image_override(): whatever's
@@ -2569,6 +2584,22 @@ def apply_layer_text_override(
         # alpha_composite() returns a new image -- rebind the Draw handle.
         draw = ImageDraw.Draw(canvas)
 
+    # An outline round the glyphs. Scaled off the font size rather than
+    # taken as pixels: the same override runs at every output size, and a
+    # 3px stroke that frames 176px type at 1920x1080 swallows the 30px it
+    # becomes at 160x600. The control is a percentage of the type size,
+    # so it stays proportionate wherever it lands.
+    stroke_px = 0
+    if stroke_size:
+        # font.size, not font_size: the latter is the requested ceiling and
+        # is None whenever the size came from the PSD. This is the size the
+        # fit search actually settled on, which is what the stroke has to
+        # stay proportionate to.
+        stroke_px = max(1, round(font.size * (max(0, min(100, stroke_size)) / 100.0)))
+    stroke_rgb = (
+        stroke_color if not keep_alpha else (stroke_color[0], stroke_color[1], stroke_color[2], 255)
+    )
+
     text_y = first_text_y
     for line in lines:
         text_x = _line_x(line)
@@ -2577,6 +2608,8 @@ def apply_layer_text_override(
             line,
             font=font,
             fill=text_color if not keep_alpha else (text_color[0], text_color[1], text_color[2], 255),
+            stroke_width=stroke_px,
+            stroke_fill=stroke_rgb if stroke_px else None,
         )
         text_y += line_height
 

@@ -431,6 +431,21 @@
               <input type="number" class="font-size-input" id="layer_header_glow_opacity" name="layer_header_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_header_glow_opacity', '') }}">
             </label>
           </div>
+            <div class="inline-controls" style="margin-top: 0.4rem;">
+              <label for="layer_header_stroke_size" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline %</span>
+                <input type="number" class="font-size-input" id="layer_header_stroke_size" name="layer_header_stroke_size" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_header_stroke_size', '') }}">
+              </label>
+              <label for="layer_header_stroke_color" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline color</span>
+                <input type="color" id="layer_header_stroke_color" name="layer_header_stroke_color" value="{{ prefill.get('layer_header_stroke_color', '#000000') }}">
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              An outline round the header letterforms, as a percentage of the type size rather than a
+              pixel width -- the same setting has to read the same on a 160x600 and a 1920x1080. 0 means
+              none. Useful where a glow is too soft to separate text from a busy photo behind it.
+            </div>
           <div class="hint" style="margin-top: -0.2rem;">
             A soft halo behind the letterforms -- for header text sitting over a photo, where any flat colour
             loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
@@ -532,6 +547,21 @@
               <input type="number" class="font-size-input" id="layer_description_glow_opacity" name="layer_description_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_description_glow_opacity', '') }}">
             </label>
           </div>
+            <div class="inline-controls" style="margin-top: 0.4rem;">
+              <label for="layer_description_stroke_size" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline %</span>
+                <input type="number" class="font-size-input" id="layer_description_stroke_size" name="layer_description_stroke_size" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_description_stroke_size', '') }}">
+              </label>
+              <label for="layer_description_stroke_color" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline color</span>
+                <input type="color" id="layer_description_stroke_color" name="layer_description_stroke_color" value="{{ prefill.get('layer_description_stroke_color', '#000000') }}">
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              An outline round the description letterforms, as a percentage of the type size rather than a
+              pixel width -- the same setting has to read the same on a 160x600 and a 1920x1080. 0 means
+              none. Useful where a glow is too soft to separate text from a busy photo behind it.
+            </div>
           <div class="hint" style="margin-top: -0.2rem;">
             A soft halo behind the letterforms -- for description text sitting over a photo, where any flat colour
             loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
@@ -641,6 +671,21 @@
               <input type="number" class="font-size-input" id="layer_legal_glow_opacity" name="layer_legal_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_legal_glow_opacity', '') }}">
             </label>
           </div>
+            <div class="inline-controls" style="margin-top: 0.4rem;">
+              <label for="layer_legal_stroke_size" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline %</span>
+                <input type="number" class="font-size-input" id="layer_legal_stroke_size" name="layer_legal_stroke_size" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_legal_stroke_size', '') }}">
+              </label>
+              <label for="layer_legal_stroke_color" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline color</span>
+                <input type="color" id="layer_legal_stroke_color" name="layer_legal_stroke_color" value="{{ prefill.get('layer_legal_stroke_color', '#000000') }}">
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              An outline round the legal letterforms, as a percentage of the type size rather than a
+              pixel width -- the same setting has to read the same on a 160x600 and a 1920x1080. 0 means
+              none. Useful where a glow is too soft to separate text from a busy photo behind it.
+            </div>
           <div class="hint" style="margin-top: -0.2rem;">
             A soft halo behind the letterforms -- for legal text sitting over a photo, where any flat colour
             loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
@@ -730,6 +775,21 @@
               <input type="number" class="font-size-input" id="layer_cta_glow_opacity" name="layer_cta_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_cta_glow_opacity', '') }}">
             </label>
           </div>
+            <div class="inline-controls" style="margin-top: 0.4rem;">
+              <label for="layer_cta_stroke_size" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline %</span>
+                <input type="number" class="font-size-input" id="layer_cta_stroke_size" name="layer_cta_stroke_size" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_cta_stroke_size', '') }}">
+              </label>
+              <label for="layer_cta_stroke_color" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Outline color</span>
+                <input type="color" id="layer_cta_stroke_color" name="layer_cta_stroke_color" value="{{ prefill.get('layer_cta_stroke_color', '#000000') }}">
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              An outline round the button letterforms, as a percentage of the type size rather than a
+              pixel width -- the same setting has to read the same on a 160x600 and a 1920x1080. 0 means
+              none. Useful where a glow is too soft to separate text from a busy photo behind it.
+            </div>
           <div class="hint" style="margin-top: -0.2rem;">
             Redraws the <code>cta</code> layer as a pill button filling the box the template's designer drew for
             it -- so there's no position setting here, unlike the hero-image tool's CTA. The label shrinks to fit

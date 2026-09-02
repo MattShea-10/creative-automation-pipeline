@@ -362,6 +362,48 @@ class PsdExportTest(unittest.TestCase):
         self.assertFalse(has(cropped, (255, 0, 0)))
         self.assertFalse(has(cropped, (0, 0, 255)))
 
+    def test_text_and_cta_overrides_take_a_stroke(self):
+        # The outline is a percentage of the type size, not a pixel
+        # width: one setting runs at every output size, and 3px that
+        # frames 176px type at 1920x1080 swallows the 30px it becomes at
+        # 160x600.
+        from src.image_ops import apply_layer_cta_override, apply_layer_text_override
+
+        base = Image.new("RGB", (400, 200), (120, 120, 120))
+        plain = apply_layer_text_override(base, (20, 20, 380, 120), "Hello")
+        outlined = apply_layer_text_override(
+            base, (20, 20, 380, 120), "Hello", stroke_size=8, stroke_color=(255, 0, 0)
+        )
+        self.assertNotEqual(list(plain.getdata()), list(outlined.getdata()))
+        # 0 is the default and has to be a true no-op.
+        self.assertEqual(
+            list(plain.getdata()),
+            list(apply_layer_text_override(base, (20, 20, 380, 120), "Hello", stroke_size=0).getdata()),
+        )
+
+        cta_plain = apply_layer_cta_override(base, (20, 140, 380, 190), "Go")
+        cta_outlined = apply_layer_cta_override(
+            base, (20, 140, 380, 190), "Go", stroke_size=10, stroke_color=(255, 0, 0)
+        )
+        self.assertNotEqual(list(cta_plain.getdata()), list(cta_outlined.getdata()))
+
+    def test_a_stroke_scales_with_the_size_it_lands_on(self):
+        # Same percentage, bigger box: the outline has to grow with the
+        # type rather than stay a fixed number of pixels.
+        from src.image_ops import apply_layer_text_override
+
+        def outlined_pixels(size):
+            base = Image.new("RGB", size, (255, 255, 255))
+            out = apply_layer_text_override(
+                base, (0, 0, size[0], size[1]), "Hi",
+                text_color=(255, 255, 255), stroke_size=10, stroke_color=(255, 0, 0),
+            )
+            return sum(1 for p in out.convert("RGB").getdata() if p[0] > 180 and p[1] < 80)
+
+        small = outlined_pixels((160, 60))
+        large = outlined_pixels((640, 240))
+        self.assertGreater(large, small * 4, f"stroke did not scale: {small} -> {large}")
+
     def test_build_layered_psd_rejects_empty_layer_list(self):
         with self.assertRaises(ValueError):
             build_layered_psd([], (100, 100))
