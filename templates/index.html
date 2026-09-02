@@ -39,8 +39,16 @@
        layers yourself), against the AI generator's yellow. Its own rule
        rather than the class, since this one is a nested .layer-section
        and inherits that sizing. */
-    .custom-hero-box { @apply border-emerald-600 bg-emerald-950/40; }
-    .custom-hero-box > .checkbox-row { @apply font-semibold text-emerald-200; }
+    /* The switch's whole scope is green -- box, nested sections and the
+       guidance inside them -- so what it governs is bounded by colour
+       rather than by counting borders. */
+    .custom-hero-box { @apply border-emerald-600; background: #052e1b; }
+    .custom-hero-box .layer-section {
+      @apply border-emerald-800;
+      background: #06371f;
+    }
+    .custom-hero-box .hint { @apply text-emerald-100/70; }
+    .custom-hero-box summary { @apply text-emerald-200; }
     .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .manual-creative-box > summary { @apply uppercase tracking-wide; }
     .manual-creative-box.is-disabled { @apply opacity-50 border-slate-700 bg-slate-800/30; }
@@ -304,24 +312,20 @@
          boxes that already have their own, and its heading named a
          section whose contents announce themselves. #}
       <div class="upload-creative-box">
-        {# The guidance for the whole panel, folded behind its own switch.
-           It is worth reading once and worth nothing on the twentieth run,
-           and it was the first thing between the top of the box and the
-           controls. Unticked by default: someone who needs it goes looking,
-           and everyone else gets the form. #}
-        <div class="checkbox-row" style="margin: 0;">
-          <input type="checkbox" id="upload_custom_hero_enabled" name="upload_custom_hero_enabled" value="1"
-                 data-role="custom-hero-toggle"
-                 {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
-          <label for="upload_custom_hero_enabled" style="margin: 0; font-weight: 600;">Campaign hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp)</span></label>
-        </div>
+        <label for="upload_hero_image">Campaign hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp)</span></label>
 
         {# The hand-built route: supply the picture yourself, then edit the
-           layers the templates draw over it. Folded together because they are
-           one job -- and because the AI route below has its own fold, so
-           leaving this one open made the two read as unequal. #}
+           layers the templates draw over it. The switch sits ON the file row
+           rather than above the box, so the thing it governs and the thing it
+           is next to are the same thing. #}
         <div class="layer-section custom-hero-box" data-role="custom-hero-section">
-        <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
+        <div class="inline-controls" style="margin: 0; align-items: center;">
+          <input type="checkbox" id="upload_custom_hero_enabled" name="upload_custom_hero_enabled" value="1"
+                 data-role="custom-hero-toggle" style="width: auto; flex: 0 0 auto;"
+                 title="Build this creative by hand -- opens the layer editing below"
+                 {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
+          <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" style="flex: 1 1 auto;" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
+        </div>
         {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
         {# The file field stays visible with the checkbox -- it is the one
            control this route always needs. Everything under it is layer
