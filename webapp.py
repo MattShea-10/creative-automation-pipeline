@@ -377,8 +377,42 @@ BACKGROUND_PROMPT_GUIDANCE_WITH_TEXT = (
 )
 
 
+# Rough plain-language names for the brand-colour clause below. A hex
+# triplet alone is a weak instruction to an image model -- it reads as
+# text, not as a colour -- so each one is sent as "#0057b8 (blue)", which
+# gives the model a word it actually steers on and keeps the exact value
+# for anyone reading the prompt back.
+_COLOUR_WORDS = (
+    ((0, 0, 0), "black"), ((255, 255, 255), "white"), ((128, 128, 128), "grey"),
+    ((255, 0, 0), "red"), ((0, 128, 0), "green"), ((0, 0, 255), "blue"),
+    ((255, 255, 0), "yellow"), ((255, 165, 0), "orange"), ((128, 0, 128), "purple"),
+    ((255, 192, 203), "pink"), ((165, 42, 42), "brown"), ((0, 255, 255), "cyan"),
+    ((0, 128, 128), "teal"), ((245, 245, 220), "cream"), ((25, 25, 112), "navy"),
+    # Extra anchors where one entry per hue misnames the colours brands
+    # actually use: a mid blue like #0057b8 sits numerically nearer pure
+    # teal than pure blue and came back "teal", which is not a word
+    # anyone would steer this palette with.
+    ((0, 87, 184), "blue"), ((65, 105, 225), "blue"), ((135, 206, 235), "light blue"),
+    ((50, 205, 50), "bright green"), ((255, 122, 0), "orange"), ((220, 20, 60), "red"),
+)
+
+
+def _colour_word(rgb) -> str:
+    """The nearest word from _COLOUR_WORDS to `rgb`, by plain RGB
+    distance. Approximate on purpose -- it only has to be close enough to
+    steer a prompt, not to name a paint."""
+    red, green, blue = rgb
+    return min(
+        _COLOUR_WORDS,
+        key=lambda entry: (entry[0][0] - red) ** 2
+        + (entry[0][1] - green) ** 2
+        + (entry[0][2] - blue) ** 2,
+    )[1]
+
+
 def _build_full_ad_prompt(
-    product_name, campaign_message, header_text, cta_text, audience, market
+    product_name, campaign_message, header_text, cta_text, audience, market,
+    brand_colors=None,
 ) -> str:
     """Compose a brief for a COMPLETE ad -- headline, hero, call to
     action -- out of what the campaign brief already says.
@@ -404,6 +438,14 @@ def _build_full_ad_prompt(
     if cta_text:
         lines.append(f'a clear call-to-action button reading exactly "{cta_text}"')
     parts.append("with " + ", ".join(lines))
+    if brand_colors:
+        # Only the ticked ones arrive here -- an unticked swatch still
+        # holds a colour in the form, and sending it would be steering
+        # the ad by a value the user switched off.
+        swatches = ", ".join(
+            f"#{r:02x}{g:02x}{b:02x} ({_colour_word((r, g, b))})" for r, g, b in brand_colors
+        )
+        parts.append(f"using the brand palette {swatches}")
     if audience:
         parts.append(f"art directed for {audience}")
     if market:
@@ -2239,6 +2281,7 @@ def generate():
             layer_cta_text,
             audience,
             market,
+            brand_colors=brand_colors,
         )
         provider_for_ads = get_provider(upload_ai_provider)
         background_notes.append(

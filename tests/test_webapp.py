@@ -2308,6 +2308,29 @@ class PaidProviderTest(unittest.TestCase):
         self.assertIn("runners 25-34", prompt)
         self.assertIn("hero product image", prompt)
 
+    def test_full_ad_prompt_carries_the_ticked_brand_colours(self):
+        # A hex triplet alone reads to an image model as text rather than
+        # as a colour, so each one goes in with a word beside it.
+        import webapp
+
+        prompt = webapp._build_full_ad_prompt(
+            "HydroBoost", "Stay charged", "First 500", "Claim my spot", None, None,
+            brand_colors=[(0, 87, 184), (255, 122, 0)],
+        )
+        self.assertIn("using the brand palette", prompt)
+        self.assertIn("#0057b8 (blue)", prompt)
+        self.assertIn("#ff7a00 (orange)", prompt)
+
+    def test_full_ad_prompt_says_nothing_about_colour_when_none_are_ticked(self):
+        # An unticked swatch still holds a colour in the form. Sending it
+        # would steer the ad by a value the user switched off.
+        import webapp
+
+        prompt = webapp._build_full_ad_prompt(
+            "HydroBoost", "Stay charged", None, None, None, None, brand_colors=[]
+        )
+        self.assertNotIn("brand palette", prompt)
+
     def test_full_ad_prompt_survives_an_empty_brief(self):
         import webapp
 
