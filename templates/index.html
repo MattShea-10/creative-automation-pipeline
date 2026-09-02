@@ -329,10 +329,14 @@
                  {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
           <span>Upload custom Hero Image</span>
         </div>
-        <div data-role="custom-hero-body">
         <label for="upload_hero_image" style="margin-top: 0.6rem; display: block;">Hero image file</label>
         <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
         {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
+        {# The file field stays visible with the checkbox -- it is the one
+           control this route always needs. Everything under it is layer
+           editing, which only matters once you have committed to building
+           the creative by hand. #}
+        <div data-role="custom-hero-body">
         <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every

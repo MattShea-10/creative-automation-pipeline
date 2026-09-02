@@ -5390,6 +5390,12 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertIn('name="upload_custom_hero_enabled"', page)
         self.assertIn('data-role="custom-hero-toggle"', page)
         self.assertIn('data-role="custom-hero-body"', page)
+        # The file field is the one control this route always needs, so
+        # it stays visible with the checkbox; only the layer editing
+        # under it folds.
+        body_at = page.index('data-role="custom-hero-body"')
+        self.assertLess(page.index('id="upload_hero_image"'), body_at)
+        self.assertGreater(page.index('id="layer_overrides_section"'), body_at)
         self.assertGreater(page.index('id="upload_hero_image"'), section_at)
         self.assertGreater(page.index('id="layer_overrides_section"'), section_at)
         # The layer guidance belongs under the input it applies to.
