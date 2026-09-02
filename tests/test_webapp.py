@@ -3576,12 +3576,19 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # win silently. Verified live in a browser; asserted here only as
         # far as markup can: the handler exists and is wired to the
         # generator checkbox, not to something else.
-        handler = page[page.index('name="upload_ai_enabled"]\''):]
-        handler = handler[:handler.index("}\n        }")]
-        self.assertIn("keepCheckbox.checked = false", handler)
+        script = page[page.index("var keepCheckbox"):]
+        self.assertIn("keepCheckbox.checked = false", script)
         # Only on the way on -- unticking the generator says nothing
         # about what should happen next time it's ticked.
-        self.assertIn("if (!aiEnabled.checked) return;", handler)
+        self.assertIn("if (!aiEnabledBox.checked) return;", script)
+        # And the reverse: keep unticks and locks the generate checkbox,
+        # since keeping the previous image and making a new one are
+        # opposite instructions.
+        self.assertIn("if (aiEnabledBox && kept) aiEnabledBox.checked = false;", script)
+        # Unticked, not locked: ticking it again is how you ask for a
+        # fresh image, and the handler above clears keep when you do.
+        # Disabling it would remove the obvious way back out.
+        self.assertNotIn("aiEnabledBox.disabled", script)
 
     def test_template_edits_reach_a_running_server(self):
         # Jinja compiles a template once and caches it for the process's
@@ -3636,6 +3643,69 @@ class ContentPsdQuickModeTest(unittest.TestCase):
             webapp.JOBS_DIR / second_job_id / "uploads" / "ai_generated_campaign.png"
         ).read_bytes()
         self.assertEqual(first_bytes, second_bytes)
+
+    def test_keep_works_with_the_generate_box_switched_off(self):
+        # The form unticks and locks "Generate the hero image with AI"
+        # while keep is on, so keep arrives WITHOUT it. The reuse must
+        # not be gated on that box, or the checkbox becomes a no-op that
+        # silently drops the artwork it promises to preserve.
+        self._write_template_with_a_background_layer("keepoff-300x250.psd", (300, 250))
+        first = self.client.post(
+            "/generate",
+            data={
+                "upload_ai_enabled": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": "a runner mid-stride",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        job_id = re.search(rb"/download/([0-9a-f]+)", first.data).group(1).decode()
+        first_bytes = (
+            webapp.JOBS_DIR / job_id / "uploads" / "ai_generated_campaign.png"
+        ).read_bytes()
+
+        second = self.client.post(
+            "/generate",
+            data={
+                "edit_job_id": job_id,
+                # No upload_ai_enabled at all -- exactly what the form
+                # posts once keep is ticked.
+                "upload_ai_keep": "1",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(second.status_code, 200)
+        self.assertIn(b"reused the image from the previous run", second.data)
+        second_job = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
+        self.assertEqual(
+            first_bytes,
+            (webapp.JOBS_DIR / second_job / "uploads" / "ai_generated_campaign.png").read_bytes(),
+        )
+
+    def test_keep_with_nothing_to_keep_says_so(self):
+        # First run, or a batch whose previous job folder is gone.
+        # Silence would be a campaign rendered without the artwork the
+        # checkbox implied it was preserving.
+        self._write_template_with_a_background_layer("keepnone-300x250.psd", (300, 250))
+        # A hero image so the run has something to render at all --
+        # keep-with-nothing-to-keep and nothing else is a batch with no
+        # artwork from any source, which the form rejects earlier.
+        r = self.client.post(
+            "/generate",
+            data={
+                "upload_hero_image": (self._sample_image_bytes(), "hero.png"),
+                "upload_ai_keep": "1",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"no previous image to keep", r.data)
 
     def test_unticking_keep_generates_a_fresh_image_again(self):
         # The other half of the contract -- the checkbox has to be a

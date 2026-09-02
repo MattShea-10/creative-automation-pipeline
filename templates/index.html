@@ -275,8 +275,9 @@
               first run: there's nothing to keep yet.
             </div>
             <div class="hint layer-off-note" data-role="upload-ai-kept-note" hidden style="margin-top: 0.4rem;">
-              The prompt, provider and backdrop tuning below are disabled because nothing new is being
-              generated -- the last run's image is reused as-is. Untick "Keep this image" to change them.
+              Generating is switched off and the prompt, provider and backdrop tuning below are disabled --
+              the last run's image is reused as-is, and no API call is made. Tick "Generate the hero image
+              with AI" again (or untick this) whenever you want a fresh one.
             </div>
 
             <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
@@ -1041,8 +1042,20 @@
       var freshFields = root.querySelector('[data-role="upload-ai-fresh"]');
       var keptNote = root.querySelector('[data-role="upload-ai-kept-note"]');
       if (keepCheckbox && freshFields) {
+        var aiEnabledBox = root.querySelector('[name="upload_ai_enabled"]');
         var syncKeep = function () {
           var kept = keepCheckbox.checked;
+          // Keeping the previous image and generating a new one are
+          // opposite instructions, so ticking keep unticks the generate
+          // checkbox. It stays enabled, not locked: ticking it again is
+          // how you ask for a fresh image, and the handler below clears
+          // keep when you do. Locking it would take away the obvious way
+          // back out.
+          //
+          // The server matches this: the reuse is no longer gated on the
+          // generate checkbox, or unticking it here would make "keep"
+          // silently drop the artwork it promises to preserve.
+          if (aiEnabledBox && kept) aiEnabledBox.checked = false;
           freshFields.classList.toggle("is-inactive", kept);
           // Not [type=hidden]: upload_ai_background_style_seen is how
           // the server tells "unticked" from "this form predates the
@@ -1063,10 +1076,9 @@
         // in contradiction with the reuse silently winning. Only on the
         // way on: unticking the generator says nothing about what should
         // happen the next time it's ticked.
-        var aiEnabled = root.querySelector('[name="upload_ai_enabled"]');
-        if (aiEnabled) {
-          aiEnabled.addEventListener("change", function () {
-            if (!aiEnabled.checked) return;
+        if (aiEnabledBox) {
+          aiEnabledBox.addEventListener("change", function () {
+            if (!aiEnabledBox.checked) return;
             if (!keepCheckbox.checked) return;
             keepCheckbox.checked = false;
             syncKeep();

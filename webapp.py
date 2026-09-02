@@ -1335,7 +1335,15 @@ def generate():
     background_notes_pending = None
     background_warnings_pending = []
     kept_ai_path = None
-    if upload_ai_enabled and upload_ai_keep:
+    # NOT gated on upload_ai_enabled. Ticking "Keep this image" now
+    # unticks and disables the generate checkbox in the form -- keeping
+    # the previous image and generating a new one are opposite
+    # instructions, and leaving both lit invited a run that did one while
+    # appearing to promise the other. So by the time this arrives,
+    # upload_ai_enabled is False whenever keep is ticked, and gating on
+    # it here would make the checkbox a no-op that silently dropped the
+    # artwork it was asked to preserve.
+    if upload_ai_keep:
         # Carried forward from the previous run's job folder under its own
         # key, so it can only ever come back when it was explicitly asked
         # for. (A generated image carried forward *silently* is poison: it
@@ -1361,6 +1369,16 @@ def generate():
                 "Campaign artwork: reused the image from the previous run -- \"Keep this image\" "
                 "is ticked, so no new one was generated. Untick it to generate a fresh one."
             )
+    elif upload_ai_keep:
+        # Ticked with nothing to carry forward: a first run, or a batch
+        # whose previous job folder is gone. Silence here would be a
+        # campaign rendered without the artwork the checkbox implied it
+        # was preserving.
+        background_warnings_pending.append(
+            "\"Keep this image\" is ticked but there's no previous image to keep -- nothing was "
+            "generated and the templates kept their own backdrops. Untick it and tick "
+            "\"Generate the hero image with AI\" to make one."
+        )
     if upload_ai_enabled and upload_ai_image is None:
         # A backdrop, not a product shot. This used to ask for
         # "professional studio product photo of X", which is the wrong
