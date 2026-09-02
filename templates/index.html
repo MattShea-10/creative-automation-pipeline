@@ -801,11 +801,10 @@
           {% set layer_image_fields = [
               ('layer_logo_image', 'Logo'),
               ('layer_product_image', 'Product'),
-              ('layer_background_image', 'Background'),
           ] %}
           {% set has_layer_images = layer_image_fields | selectattr('0', 'in', prefill_files) | list %}
           <details class="layer-section"{% if has_layer_images %} open{% endif %}>
-          <summary><span class="caret">&#9656;</span>Layer images <span style="font-weight: 400; color: var(--muted);">(logo, CTA, product, background)</span></summary>
+          <summary><span class="caret">&#9656;</span>Layer images <span style="font-weight: 400; color: var(--muted);">(logo, product)</span></summary>
           <div class="inline-controls" style="margin-top: 0.4rem;">
             <label for="layer_logo_image" data-layer-controls="logo" style="font-weight: 400;">
               <span style="white-space: nowrap;">Logo image</span>
@@ -814,10 +813,6 @@
             <label for="layer_product_image" data-layer-controls="product" style="font-weight: 400;">
               <span style="white-space: nowrap;">Product image</span>
               <input type="file" id="layer_product_image" name="layer_product_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
-            </label>
-            <label for="layer_background_image" style="font-weight: 400;">
-              <span style="white-space: nowrap;">Background image</span>
-              <input type="file" id="layer_background_image" name="layer_background_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
           </div>
           {% if has_layer_images %}

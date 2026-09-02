@@ -4253,26 +4253,6 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         e = self.client.get(f"/edit/{first_id}")
         self.assertIn(b"blue ocean", e.data)
 
-    def test_upload_ai_does_not_override_a_hand_uploaded_background(self):
-        # A background image the user picked themselves still wins over
-        # the generated one -- the generator fills a gap, it doesn't
-        # overrule a choice.
-        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
-        data = {
-            "upload_ai_enabled": "1",
-            "upload_ai_provider": "mock",
-            "layer_background_image": (self._sample_image_bytes(color=(7, 7, 7)), "bg.png"),
-            "header": "",
-            "description": "",
-        }
-        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
-        self.assertEqual(r.status_code, 200)
-        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        e = self.client.get(f"/edit/{job_id}")
-        # The cached background chip shows the uploaded file, not the
-        # generated one.
-        self.assertIn(b"bg.png", e.data)
-
     def test_every_preview_is_clickable_and_the_lightbox_ships_closed(self):
         # Clicking a preview opens it at its own pixel size. The grid
         # scales everything to a uniform tile, which is no use for
@@ -5369,57 +5349,6 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         pixels = list(Image.open(path).convert("RGB").getdata())
         return sum(1 for p in pixels if predicate(p)) / len(pixels)
 
-    def test_a_new_hero_image_beats_a_carried_forward_background(self):
-        # Picking a new hero and watching the previous run's background
-        # come back instead reads as the upload having done nothing. A
-        # carried-forward file is a default; one chosen in this request
-        # is an instruction.
-        self._stage_real_template()
-        first = {
-            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
-            "campaign_message": "Stay charged", "upload_custom_hero_enabled": "1",
-            "layer_background_image": (self._solid_png((0, 255, 0)), "bg.png"),
-            "header": "", "description": "",
-        }
-        r = self.client.post("/generate", data=first, content_type="multipart/form-data")
-        job = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-
-        second = {k: v for k, v in first.items() if k != "layer_background_image"}
-        second["edit_job_id"] = job
-        second["upload_hero_image"] = (self._solid_png((255, 0, 255)), "hero.png")
-        r2 = self.client.post("/generate", data=second, content_type="multipart/form-data")
-        self.assertEqual(r2.status_code, 200)
-        job2 = re.search(rb"/download/([0-9a-f]+)", r2.data).group(1).decode()
-
-        rendered = [
-            p for p in (webapp.JOBS_DIR / job2).glob("*.png") if "source" not in p.name
-        ]
-        self.assertTrue(rendered)
-        magenta = self._share_of(rendered[0], lambda p: p[0] > 200 and p[1] < 80 and p[2] > 200)
-        green = self._share_of(rendered[0], lambda p: p[1] > 200 and p[0] < 80 and p[2] < 80)
-        self.assertGreater(magenta, 0.2, "the newly chosen hero should fill the background")
-        self.assertLess(green, 0.05, "the carried-forward background should be gone")
-
-    def test_a_background_chosen_in_the_same_request_still_wins(self):
-        # Two instructions in one submission: the layer override is the
-        # more specific of the two and keeps precedence.
-        self._stage_real_template()
-        data = {
-            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
-            "campaign_message": "Stay charged", "upload_custom_hero_enabled": "1",
-            "upload_hero_image": (self._solid_png((255, 0, 255)), "hero.png"),
-            "layer_background_image": (self._solid_png((0, 255, 0)), "bg.png"),
-            "header": "", "description": "",
-        }
-        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
-        self.assertEqual(r.status_code, 200)
-        job = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
-        rendered = [
-            p for p in (webapp.JOBS_DIR / job).glob("*.png") if "source" not in p.name
-        ]
-        green = self._share_of(rendered[0], lambda p: p[1] > 200 and p[0] < 80 and p[2] < 80)
-        self.assertGreater(green, 0.2, "the background override chosen alongside it should win")
-
     def test_a_layer_image_alone_renders_the_saved_templates(self):
         # A replacement background, logo, CTA or product only means
         # anything composited into a template's named layer, so supplying
@@ -5427,7 +5356,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # route is. Without this the run was rejected for having no hero
         # image, in a case where nothing needed one.
         self._stage_real_template()
-        for field in ("layer_background_image", "layer_logo_image"):
+        for field in ("layer_logo_image", "layer_product_image"):
             with self.subTest(field=field):
                 data = {
                     "product_name": "HydroBoost",
@@ -5848,7 +5777,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         (w, h), staged_path = self._stage_real_template()
         data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
-            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "upload_hero_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
             "header": "",
             "description": "",
         }
@@ -5933,7 +5862,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
 
         override_data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
-            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "upload_hero_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
             "header": "",
             "description": "",
         }
@@ -5967,7 +5896,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         buf.seek(0)
         data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
-            "layer_background_image": (buf, "near_white_bg.png"),
+            "upload_hero_image": (buf, "near_white_bg.png"),
             "header": "",
             "description": "",
         }
@@ -6031,7 +5960,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
 
         data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
-            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "upload_hero_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
             "layer_logo_image": (self._sample_image_bytes(size=(80, 80), color=(0, 0, 255)), "logo.png"),
             "header": "",
             "description": "",
@@ -6096,7 +6025,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
 
         data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
-            "layer_background_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
+            "upload_hero_image": (self._sample_image_bytes(size=(80, 80), color=(0, 200, 0)), "bg.png"),
             "header": "",
             "description": "",
         }

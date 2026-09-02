@@ -1818,7 +1818,6 @@ def generate():
         (request.files.get(field) is not None and bool(request.files[field].filename))
         or (prior_form_state.get("files") or {}).get(field)
         for field in (
-            "layer_background_image",
             "layer_logo_image",
             "layer_product_image",
         )
@@ -2041,15 +2040,9 @@ def generate():
 
     layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
     layer_upload_paths: dict = {}  # {field_name: Path} -- for form_state.json, see below
-    # Which of those the user actually chose in THIS request, as opposed
-    # to inheriting from the job being edited. A carried-forward file is
-    # a default; a freshly picked one is an instruction, and where the
-    # two compete for the same layer the instruction has to win.
-    layer_images_chosen_now: set = set()
     for layer_name, field_name in (
         ("logo", "layer_logo_image"),
         ("product", "layer_product_image"),
-        ("background", "layer_background_image"),
     ):
         layer_file = request.files.get(field_name)
         layer_fresh = layer_file is not None and bool(layer_file.filename)
@@ -2072,8 +2065,6 @@ def generate():
         if layer_path is None:
             continue
         layer_upload_paths[field_name] = layer_path
-        if layer_fresh:
-            layer_images_chosen_now.add(layer_name)
         try:
             layer_image = Image.open(layer_path).convert("RGBA")
         except Exception as exc:
@@ -2130,29 +2121,6 @@ def generate():
     # uploaded can only mean "keep this design, change the backdrop".
     if upload_ai_image is not None:
         layer_image_overrides["background"] = upload_ai_image.convert("RGBA")
-    # A hero image chosen in this request beats a LAYER OVERRIDE that was
-    # only carried forward. Not the generator: a ticked generator means
-    # "make me a new background" every time and outranks any upload --
-    # see the assignment below, and the test that pins it.
-    #
-    # Otherwise: picking a new hero and watching the
-    # previous run's background come back instead reads as the upload
-    # having done nothing at all. An override chosen in this same request
-    # still wins -- it is the more specific of two instructions.
-    if (
-        upload_hero_fresh
-        and upload_hero_image is not None
-        and upload_ai_image is None
-        and "layer_background_image" in layer_upload_paths
-        and "background" in layer_image_overrides
-        and "background" not in layer_images_chosen_now
-    ):
-        layer_image_overrides.pop("background", None)
-        background_notes.append(
-            "Campaign hero image: replaced the background layer, so the background image "
-            "carried over from the previous run was not used. Untick it with the (x) beside "
-            "it if you want it gone for good."
-        )
     if upload_hero_image is not None and "background" not in layer_image_overrides:
         # The hero image reaches the templates exactly as the generated
         # backdrop does -- it just yields to one when the generator is on.
