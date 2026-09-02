@@ -126,6 +126,33 @@
     .upload-creative-box > summary {
       @apply text-blue-300 text-[0.78rem] font-bold uppercase tracking-wider;
     }
+    /* Shown from the moment a batch is submitted until the results page
+       replaces this one. A run is seconds at best and can be a minute
+       when a provider is generating, with no browser feedback beyond a
+       spinning tab -- long enough that the honest reading is "nothing
+       happened", and the natural response is to press the button again
+       and pay for a second generation. */
+    .busy-overlay {
+      @apply fixed inset-0 z-50 flex flex-col items-center justify-center gap-4 px-6 text-center;
+      background: rgba(2, 6, 23, 0.93);
+    }
+    .busy-overlay[hidden] { display: none; }
+    .busy-spinner {
+      @apply rounded-full;
+      width: 46px; height: 46px;
+      border: 4px solid #1e293b;
+      border-top-color: var(--brand-blue);
+      animation: busy-spin 0.9s linear infinite;
+    }
+    @keyframes busy-spin { to { transform: rotate(360deg); } }
+    /* Respect a system setting that exists because motion makes some
+       people ill -- the overlay still communicates, it just holds still. */
+    @media (prefers-reduced-motion: reduce) {
+      .busy-spinner { animation: none; border-top-color: var(--brand-blue); }
+    }
+    .busy-title { @apply text-slate-100 text-lg font-semibold; }
+    .busy-detail { @apply text-slate-400 text-[0.9rem] max-w-[30rem] leading-relaxed; }
+
     .campaign-card { @apply mb-8; }
     .campaign-brief-box > summary { @apply flex items-center justify-between gap-3; list-style: none; }
     .campaign-brief-box > summary::-webkit-details-marker { display: none; }
@@ -171,6 +198,12 @@
         {% endfor %}
       {% endif %}
     {% endwith %}
+
+    <div class="busy-overlay" data-role="busy" hidden>
+      <div class="busy-spinner" role="status" aria-live="polite" aria-label="Generating"></div>
+      <div class="busy-title" data-role="busy-title">Generating your creatives&hellip;</div>
+      <div class="busy-detail" data-role="busy-detail"></div>
+    </div>
 
     <div id="campaigns-container">
       {% for campaign in campaigns %}
@@ -1416,6 +1449,68 @@
           clone.scrollIntoView({ behavior: "smooth", block: "start" });
         }
       }
+
+      // The busy overlay. Wired once for the page, on every card's form.
+      (function () {
+        var overlay = document.querySelector('[data-role="busy"]');
+        if (!overlay) return;
+        var detail = overlay.querySelector('[data-role="busy-detail"]');
+
+        function describe(form) {
+          // Say what is actually being waited on. "Please wait" tells
+          // someone nothing about whether 40 seconds is normal; naming
+          // the provider does, and it is the difference between waiting
+          // and pressing the button again.
+          var parts = [];
+          var gen = form.querySelector('[name="upload_ai_enabled"]');
+          var hero = form.querySelector('[name="ai_hero_enabled"]');
+          var keep = form.querySelector('[name="upload_ai_keep"]');
+          var provider = form.querySelector('[name="upload_ai_provider"]');
+          var providerName = provider
+            ? provider.options[provider.selectedIndex].text.split(" (")[0]
+            : "the provider";
+          if (keep && keep.checked) {
+            parts.push("Reusing your kept image -- no new one is being generated.");
+          } else if ((gen && gen.checked) || (hero && hero.checked)) {
+            parts.push(
+              "Generating artwork with " + providerName +
+              ". This usually takes 10-40 seconds, and longer if a result comes back " +
+              "with text in it and has to be regenerated."
+            );
+          }
+          parts.push("Every size is rendered from your saved templates, so don't reload or press Generate again.");
+          detail.textContent = parts.join(" ");
+        }
+
+        document.addEventListener("submit", function (event) {
+          var form = event.target;
+          if (!form.classList || !form.classList.contains("creative-form")) return;
+          // Only after the browser has accepted the form: an invalid
+          // required field never fires this event, so the overlay can't
+          // strand someone behind a validation error they can't see.
+          describe(form);
+          overlay.hidden = false;
+          var button = form.querySelector('button[type="submit"]');
+          if (button) {
+            // Submission is already under way, so disabling here stops a
+            // second click without cancelling the first.
+            button.disabled = true;
+            button.textContent = "Generating\u2026";
+          }
+        });
+
+        // Coming back with the Back button can restore this page from
+        // the cache exactly as it was left -- mid-submit, overlay up,
+        // button dead. Undo that.
+        window.addEventListener("pageshow", function (event) {
+          if (!event.persisted) return;
+          overlay.hidden = true;
+          document.querySelectorAll('.creative-form button[type="submit"]').forEach(function (b) {
+            b.disabled = false;
+            b.textContent = "Generate creatives";
+          });
+        });
+      })();
 
       addBtn.addEventListener("click", addCampaignCard);
 

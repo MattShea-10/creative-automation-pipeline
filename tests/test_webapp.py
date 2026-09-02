@@ -3590,6 +3590,30 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # Disabling it would remove the obvious way back out.
         self.assertNotIn("aiEnabledBox.disabled", script)
 
+    def test_the_form_shows_a_busy_overlay_while_a_batch_runs(self):
+        # A run is seconds at best and a minute when a provider is
+        # generating, with no browser feedback beyond a spinning tab --
+        # long enough to read as "nothing happened", and the natural
+        # response is to press Generate again and pay for a second
+        # generation. Verified live in a browser; asserted here as far as
+        # markup can go.
+        page = self.client.get("/").data.decode()
+        self.assertIn('data-role="busy"', page)
+        # Hidden until a submit is actually accepted.
+        self.assertIn('class="busy-overlay" data-role="busy" hidden', page)
+        # The submit listener guards on the form's class, so a stray
+        # submit elsewhere on the page can't strand someone behind it.
+        self.assertIn('classList.contains("creative-form")', page)
+        # Double-submit protection, applied after submission has started
+        # so it blocks the second click without cancelling the first.
+        self.assertIn("button.disabled = true", page)
+        # Restoring the page from the back/forward cache must undo it,
+        # or Back lands you on a dead button behind a live overlay.
+        self.assertIn('"pageshow"', page)
+        self.assertIn("if (!event.persisted) return;", page)
+        # Motion is a system-level accessibility setting, not a taste.
+        self.assertIn("prefers-reduced-motion", page)
+
     def test_template_edits_reach_a_running_server(self):
         # Jinja compiles a template once and caches it for the process's
         # lifetime, and the dev reloader only watches .py files -- so
