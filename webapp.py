@@ -263,6 +263,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "upload_ai_enabled",
     "upload_ai_keep",
     "upload_ai_allow_text",
+    "upload_ai_full_ad",
     "layer_header_glow",
     "layer_description_glow",
     "layer_header_background",
@@ -373,6 +374,42 @@ BACKGROUND_PROMPT_GUIDANCE_WITH_TEXT = (
     "sharp focus, crisp fine detail, high resolution, professional graphic design, "
     "clean legible typography, balanced composition"
 )
+
+
+def _build_full_ad_prompt(
+    product_name, campaign_message, header_text, cta_text, audience, market
+) -> str:
+    """Compose a brief for a COMPLETE ad -- headline, hero, call to
+    action -- out of what the campaign brief already says.
+
+    The copy goes in quoted. A model handed "write a headline" invents
+    one; handed the exact words in quotes it sets those words, which is
+    the difference between a mock-up and something that could run. The
+    audience and market steer art direction only, so they are described
+    rather than quoted -- nobody wants "ages 25-34" rendered into the
+    picture.
+    """
+    parts = ["a complete advertisement layout"]
+    if product_name:
+        parts.append(f"for {product_name}")
+    lines = []
+    if header_text:
+        lines.append(f'a large headline reading exactly "{header_text}"')
+    elif campaign_message:
+        lines.append(f'a large headline reading exactly "{campaign_message}"')
+    lines.append("a hero product image as the focus")
+    if cta_text:
+        lines.append(f'a clear call-to-action button reading exactly "{cta_text}"')
+    parts.append("with " + ", ".join(lines))
+    if audience:
+        parts.append(f"art directed for {audience}")
+    if market:
+        parts.append(f"for the {market} market")
+    parts.append(
+        "professional advertising design, clean legible typography, "
+        "balanced composition, generous margins so nothing is cropped at the edges"
+    )
+    return ", ".join(parts)
 
 
 def _generate_text_free(provider, prompt: str, width: int, height: int, allow_text: bool = False):
@@ -1088,6 +1125,16 @@ def generate():
     # poster -- and every no-text defence downstream has to stand down or
     # it will spend the retry budget destroying what was asked for.
     upload_ai_allow_text = bool(request.form.get("upload_ai_allow_text"))
+    # Let the model build the whole ad, not the backdrop under one. The
+    # brief already holds the copy -- product, message, headline, CTA --
+    # so it is composed into the prompt and the result IS the creative:
+    # no template layers are drawn over it, because the model has already
+    # drawn them and a second headline on top of the first is the one
+    # thing this must not produce. Implies allow_text: an ad with the
+    # lettering suppressed is a photograph.
+    upload_ai_full_ad = bool(request.form.get("upload_ai_full_ad"))
+    if upload_ai_full_ad:
+        upload_ai_allow_text = True
     upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
     # ALL_PROVIDER_NAMES, not PROVIDER_NAMES: the offline placeholder is
@@ -2108,6 +2155,39 @@ def generate():
                 + ", ".join(found_brands)
                 + " as text -- worth a second look before this goes out."
             )
+
+    # Full-ad mode: one generation PER SIZE, at that size's own aspect.
+    # A laid-out ad cannot be cropped from a single square the way a
+    # backdrop can -- cropping is what takes the right-hand third off a
+    # headline. It is also why this is the expensive option, and why the
+    # count is said out loud rather than discovered on the bill.
+    if upload_ai_full_ad and sizes:
+        full_ad_prompt = _build_full_ad_prompt(
+            product_name, campaign_message, layer_header_text, layer_cta_text, audience, market
+        )
+        provider_for_ads = get_provider(upload_ai_provider)
+        background_notes.append(
+            f"Full ad mode: {len(sizes)} separate generation(s) with "
+            f"{upload_ai_provider}, one per output size -- prompt: \"{full_ad_prompt}\"."
+        )
+        for width, height in sizes:
+            try:
+                ad_image = provider_for_ads.generate(
+                    full_ad_prompt, width=width, height=height
+                )
+            except ImageProviderError as exc:
+                background_warnings.append(
+                    f"{size_label(width, height)}: full ad generation failed ({exc}) -- "
+                    "this size fell back to the saved template."
+                )
+                continue
+            if ad_image.width < width or ad_image.height < height:
+                ad_image = upscale_to_cover(ad_image, (width, height))
+            size_templates[(width, height)] = ad_image
+            # No path for it, so no layer override, no PSD rebuild, and
+            # no text drawn over the model's own -- see the
+            # size_template_paths lookups in the render loop.
+            size_template_paths.pop((width, height), None)
 
     creatives = []
     for width, height in sizes:

@@ -2289,6 +2289,40 @@ class PaidProviderTest(unittest.TestCase):
         seeds = self._ideogram_seeds(2, seed=4242)
         self.assertEqual(seeds, [4242, 4242])
 
+    def test_full_ad_prompt_quotes_the_copy_and_describes_the_direction(self):
+        # A model told "write a headline" invents one; handed the words in
+        # quotes it sets those words. Audience and market steer art
+        # direction only -- nobody wants "runners 25-34" rendered into the
+        # picture, so they are described rather than quoted.
+        import webapp
+
+        prompt = webapp._build_full_ad_prompt(
+            "HydroBoost", "Stay charged", "First 500 get free cans",
+            "Claim my spot", "runners 25-34", "UK",
+        )
+        self.assertIn('reading exactly "First 500 get free cans"', prompt)
+        self.assertIn('reading exactly "Claim my spot"', prompt)
+        self.assertIn("HydroBoost", prompt)
+        self.assertNotIn('"runners 25-34"', prompt)
+        self.assertIn("runners 25-34", prompt)
+        self.assertIn("hero product image", prompt)
+
+    def test_full_ad_prompt_survives_an_empty_brief(self):
+        import webapp
+
+        prompt = webapp._build_full_ad_prompt(None, None, None, None, None, None)
+        self.assertIn("advertisement layout", prompt)
+        self.assertIn("hero product image", prompt)
+        self.assertNotIn('""', prompt)
+
+    def test_full_ad_falls_back_to_the_campaign_message_for_a_headline(self):
+        import webapp
+
+        prompt = webapp._build_full_ad_prompt(
+            "HydroBoost", "Stay charged", None, None, None, None
+        )
+        self.assertIn('reading exactly "Stay charged"', prompt)
+
     def test_allow_text_sends_no_negative_prompt_and_never_retries(self):
         # Ticked, the picture is meant to carry type. Every no-text
         # defence has to stand down or the retry budget gets spent
@@ -5062,6 +5096,32 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             legal_fields,
             "legal must offer exactly the edit properties the header does",
         )
+
+    def test_full_ad_mode_replaces_the_template_instead_of_layering_over_it(self):
+        # The whole point: the model has already drawn a headline, so the
+        # template must not draw a second one on top of it.
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "product_name": "HydroBoost",
+            "market": "UK",
+            "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_ai_enabled": "1",
+            "upload_ai_full_ad": "1",
+            "upload_ai_provider": "mock",
+            "layer_header_text": "Big headline",
+            "layer_cta_text": "Claim my spot",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Full ad mode", r.data)
+        self.assertIn(b"separate generation", r.data)
+        # The per-size overlay notes belong to the template path, which
+        # full ad mode skips entirely.
+        self.assertNotIn(b"updated layer(s)", r.data)
 
     def test_legal_text_override_applies_like_header_and_description(self):
         # The legal layer carries the small print a campaign is required

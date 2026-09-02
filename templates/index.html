@@ -343,6 +343,18 @@
             <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
             <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
             <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
+              <span>Generate the whole ad <span style="font-weight: 400; color: var(--muted);">(headline, hero and CTA, from your campaign brief)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              The model lays out the entire creative and the result is used as-is -- your saved templates are
+              not drawn over it, or its headline and theirs would both appear. The prompt is composed from the
+              campaign brief: product name, header text and CTA text go in as exact quoted copy, audience and
+              market steer the art direction. One generation per output size, at that size's own shape, since
+              a laid-out ad can't be cropped from a square without losing the edge of the headline -- so this
+              costs one API call per size, not one per run.
+            </div>
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="checkbox" id="upload_ai_allow_text" name="upload_ai_allow_text" value="1" {% if prefill.get('upload_ai_allow_text') %}checked{% endif %}>
               <span>Let the model set type <span style="font-weight: 400; color: var(--muted);">(logo, headline, a laid-out creative)</span></span>
             </div>
