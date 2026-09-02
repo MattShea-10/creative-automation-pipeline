@@ -23,6 +23,7 @@ from src.psd_export import (
     _tight_bbox_crop,
     build_layered_psd,
     save_layered_psd,
+    save_layered_psd_preserving_type,
     set_type_layer_colors,
 )
 
@@ -125,6 +126,172 @@ class PsdExportTest(unittest.TestCase):
         junk = self.tmp_dir / "not-a.psd"
         junk.write_bytes(b"nope")
         self.assertEqual(set_type_layer_colors(junk, {"description": (1, 2, 3)}), [])
+
+    def _template_shaped_layers(self, size):
+        """A render stack named to match the real template's own layers,
+        so the preserved type layer has somewhere to slot back into."""
+        width, height = size
+        def block(color):
+            image = Image.new("RGBA", size, (0, 0, 0, 0))
+            image.paste(color, (5, 5, width // 2, height // 2))
+            return image
+
+        return [
+            ("Background", Image.new("RGBA", size, (20, 30, 60, 255))),
+            ("background", block((40, 80, 140, 255))),
+            ("product", block((200, 120, 40, 255))),
+            ("cta", block((240, 60, 60, 255))),
+            ("description", block((0, 255, 0, 255))),
+            ("logo", block((255, 255, 255, 255))),
+        ]
+
+    @unittest.skipUnless(
+        REAL_TEMPLATE.is_file(),
+        "needs a real template with a live type layer -- the synthetic fixtures have none",
+    )
+    def test_preserving_type_keeps_the_description_editable(self):
+        # The whole point of the preserving export: the downloaded PSD's
+        # description has to open in Photoshop as characters somebody can
+        # retype, not as a picture of characters.
+        template = PSDImage.open(self.REAL_TEMPLATE)
+        size = (template.width, template.height)
+        dest = self.tmp_dir / "live.psd"
+
+        kept = save_layered_psd_preserving_type(
+            self._template_shaped_layers(size),
+            size,
+            dest,
+            template_path=self.REAL_TEMPLATE,
+            preserve_text={"description": "Limited drop: 500 free cans"},
+            layer_names={},
+        )
+        self.assertEqual(kept, ["description"])
+
+        after = PSDImage.open(dest)
+        layers = {l.name: l for l in after}
+        self.assertEqual(
+            layers["description"].kind,
+            "type",
+            "the description must survive as live type, not pixels",
+        )
+        self.assertEqual(layers["description"].text, "Limited drop: 500 free cans")
+        # Everything else is still ordinary pixel art, and the stack is
+        # intact rather than partially rebuilt.
+        self.assertEqual(layers["logo"].kind, "pixel")
+        self.assertEqual([l.name for l in after], [n for n, _ in self._template_shaped_layers(size)])
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_preserving_type_without_an_override_keeps_the_templates_own_words(self):
+        template = PSDImage.open(self.REAL_TEMPLATE)
+        size = (template.width, template.height)
+        original = [l for l in template if l.kind == "type" and l.name == "description"][0].text
+        dest = self.tmp_dir / "unchanged.psd"
+
+        kept = save_layered_psd_preserving_type(
+            self._template_shaped_layers(size),
+            size,
+            dest,
+            template_path=self.REAL_TEMPLATE,
+            preserve_text={"description": None},
+            layer_names={},
+        )
+        self.assertEqual(kept, ["description"])
+        layer = [l for l in PSDImage.open(dest) if l.name == "description"][0]
+        self.assertEqual(layer.kind, "type")
+        self.assertEqual(layer.text, original)
+
+    def test_preserving_type_falls_back_to_a_plain_export_without_a_type_layer(self):
+        # A template whose text is already flattened art (every CTA in
+        # default_templates today) can't give the export a type layer
+        # back. That has to degrade to the ordinary pixel export rather
+        # than losing the PSD download altogether.
+        size = (120, 90)
+        flat = self.tmp_dir / "flat-template.psd"
+        save_layered_psd([("description", Image.new("RGBA", size, (10, 10, 10, 255)))], size, flat, layer_names={})
+        dest = self.tmp_dir / "fallback.psd"
+
+        kept = save_layered_psd_preserving_type(
+            [("Background", Image.new("RGBA", size, (1, 2, 3, 255)))],
+            size,
+            dest,
+            template_path=flat,
+            preserve_text={"description": "nope"},
+            layer_names={},
+        )
+        self.assertEqual(kept, [])
+        self.assertTrue(dest.is_file(), "the PSD download must still be written")
+        self.assertEqual([l.name for l in PSDImage.open(dest)], ["Background"])
+
+    def test_preserving_type_falls_back_when_the_template_is_unreadable(self):
+        size = (80, 60)
+        junk = self.tmp_dir / "not-a.psd"
+        junk.write_bytes(b"nope")
+        dest = self.tmp_dir / "fallback2.psd"
+        kept = save_layered_psd_preserving_type(
+            [("Background", Image.new("RGBA", size, (9, 9, 9, 255)))],
+            size,
+            dest,
+            template_path=junk,
+            preserve_text={"description": "x"},
+            layer_names={},
+        )
+        self.assertEqual(kept, [])
+        self.assertTrue(dest.is_file())
+
+    HEADER_TEMPLATE = Path(__file__).resolve().parent.parent / "default_templates" / "tester-1080x1080.psd"
+
+    @unittest.skipUnless(HEADER_TEMPLATE.is_file(), "needs a template with a live header type layer")
+    def test_preserving_type_keeps_header_and_description_editable_together(self):
+        # Six of the seven shipped templates carry both a header and a
+        # description as live type; preserving one must not cost the
+        # other, and each has to end up saying its own override.
+        template = PSDImage.open(self.HEADER_TEMPLATE)
+        size = (template.width, template.height)
+        names = [l.name for l in template]
+        layers = [
+            (name, Image.new("RGBA", size, (30 + i * 20, 40, 60, 255)))
+            for i, name in enumerate(names)
+        ]
+        dest = self.tmp_dir / "both.psd"
+
+        kept = save_layered_psd_preserving_type(
+            layers,
+            size,
+            dest,
+            template_path=self.HEADER_TEMPLATE,
+            preserve_text={"description": "Body copy here", "header": "Big Headline"},
+            layer_names={},
+        )
+        self.assertEqual(sorted(kept), ["description", "header"])
+
+        after = {l.name: l for l in PSDImage.open(dest)}
+        self.assertEqual(after["header"].kind, "type")
+        self.assertEqual(after["header"].text, "Big Headline")
+        self.assertEqual(after["description"].kind, "type")
+        self.assertEqual(after["description"].text, "Body copy here")
+        self.assertEqual(after["logo"].kind, "pixel")
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_preserving_type_skips_a_name_the_template_has_no_type_layer_for(self):
+        # tester-160x600.psd has no header at all. Asking for one must
+        # quietly preserve just the description rather than failing.
+        small = Path(__file__).resolve().parent.parent / "default_templates" / "tester-160x600.psd"
+        if not small.is_file():
+            self.skipTest("needs the 160x600 template")
+        template = PSDImage.open(small)
+        size = (template.width, template.height)
+        layers = [(l.name, Image.new("RGBA", size, (5, 5, 5, 255))) for l in template]
+        dest = self.tmp_dir / "no-header.psd"
+        kept = save_layered_psd_preserving_type(
+            layers, size, dest,
+            template_path=small,
+            preserve_text={"description": "Still works", "header": "Ignored"},
+            layer_names={},
+        )
+        self.assertEqual(kept, ["description"])
+        after = {l.name: l for l in PSDImage.open(dest)}
+        self.assertEqual(after["description"].text, "Still works")
+        self.assertNotIn("header", after)
 
     def test_build_layered_psd_rejects_empty_layer_list(self):
         with self.assertRaises(ValueError):

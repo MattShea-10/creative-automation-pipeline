@@ -46,7 +46,11 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 
 from src.creative_render import render_creative, render_creative_layers
-from src.psd_export import save_layered_psd, set_type_layer_colors
+from src.psd_export import (
+    save_layered_psd,
+    save_layered_psd_preserving_type,
+    set_type_layer_colors,
+)
 from src.compliance import check_profanity, check_trademark_text
 from src.image_ops import (
     get_psd_text_layers,
@@ -2639,12 +2643,35 @@ def generate():
                                         + "."
                                     )
                         psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
-                        save_layered_psd(
+                        # Inherit the template's live text layers instead
+                        # of baking this size's copy into pixels like
+                        # every other layer. psd-tools can author pixel
+                        # layers and nothing else, so a type layer can
+                        # only ever be carried over from a file that
+                        # already has one -- which makes the template the
+                        # single source of editable text in the pipeline.
+                        # A typed description override becomes that
+                        # layer's new words; with no override it keeps the
+                        # template's own. Anything the template already
+                        # holds as flattened art (the CTA, in every
+                        # default_templates PSD today) can't come back as
+                        # text and is simply left as pixels.
+                        kept_live = save_layered_psd_preserving_type(
                             export_layers,
                             (width, height),
                             job_dir / psd_candidate_filename,
+                            template_path=psd_path_for_size,
+                            preserve_text={
+                                "description": layer_description_text,
+                                "header": layer_header_text,
+                            },
                             layer_names={},
                         )
+                        if kept_live:
+                            background_notes.append(
+                                f"{size_label(width, height)}: PSD download keeps live, "
+                                "editable text -- " + ", ".join(kept_live) + "."
+                            )
                         psd_filename = psd_candidate_filename
                     except Exception:
                         pass

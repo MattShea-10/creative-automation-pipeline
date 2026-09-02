@@ -204,3 +204,144 @@ def save_layered_psd(
 ) -> None:
     """build_layered_psd() and write it straight to `dest_path`."""
     build_layered_psd(layers, size, layer_names=layer_names).save(dest_path)
+
+
+def _rewrite_type_layer_text(layer, text: str) -> bool:
+    """Replace a live type layer's copy with `text`, in place, keeping it
+    editable text rather than turning it into pixels.
+
+    A type layer stores its string TWICE, and Photoshop will disagree
+    with itself if only one is updated: once as the `Txt ` value in the
+    layer's type-tool descriptor (what psd-tools' own `.text` reads back)
+    and again inside the EngineData blob at `Editor/Text` (what Photoshop
+    actually lays out on open). Both are set here.
+
+    The style and paragraph run arrays carry per-run character counts
+    that have to keep summing to the new string's length -- a stale count
+    is what makes Photoshop reject a file as damaged. Any extra runs are
+    dropped and the survivor is stretched over the whole string, which
+    means a replacement inherits the styling of the original's first run:
+    mixed styling within one layer collapses to its first style. That is
+    a deliberate trade for text that stays editable.
+
+    The trailing NUL matters -- Photoshop's own strings carry it, and the
+    run lengths count it -- hence the +1 and the "\\x00" on both writes.
+
+    Returns True when the copy was actually rewritten. Best-effort by
+    design, like set_type_layer_colors(): an unexpectedly shaped engine
+    dict returns False and leaves the layer untouched rather than
+    raising, because this only ever decorates a download that is already
+    correct.
+    """
+    payload = f"{text}\x00"
+    try:
+        layer._data.text_data[b"Txt "].value = payload
+        engine = layer.engine_dict
+        engine["Editor"]["Text"].value = payload
+    except Exception:
+        return False
+    length = len(payload)
+    for key in ("StyleRun", "ParagraphRun"):
+        try:
+            lengths = engine[key]["RunLengthArray"]
+            runs = engine[key]["RunArray"]
+        except Exception:
+            continue
+        while len(lengths) > 1:
+            lengths.pop()
+            if len(runs) > 1:
+                runs.pop()
+        if lengths:
+            lengths[0].value = length
+    return True
+
+
+def save_layered_psd_preserving_type(
+    layers: List[Tuple[str, Image.Image]],
+    size: Tuple[int, int],
+    dest_path,
+    *,
+    template_path,
+    preserve_text: Optional[dict] = None,
+    layer_names: Optional[dict] = None,
+) -> List[str]:
+    """save_layered_psd(), except any layer named in `preserve_text` that
+    is a live type layer in `template_path` is carried over as live type
+    instead of being written as rendered pixels.
+
+    `preserve_text` maps a lowercased layer name to the copy that layer
+    should end up saying -- or to None to keep the template's own words.
+    A name that isn't a type layer in the template is ignored, so asking
+    to preserve "cta" against a template whose CTA is already flattened
+    art costs nothing and changes nothing.
+
+    Why it works this way: psd-tools can only ever CREATE pixel layers
+    (PSDImage exposes create_pixel_layer and create_group, and nothing
+    that authors a type layer), so live text can only be inherited, never
+    generated. The document therefore starts as the template -- the one
+    file in play that has real type layers -- gets emptied of its
+    original artwork, and is refilled with this render's pixel layers,
+    with the preserved type layer re-inserted at the same point in the
+    stack it occupied in `layers`. Its z-order relative to everything
+    else is preserved; what it loses is any font-size or alignment
+    override, since those live in the render, not in the type layer.
+
+    Returns the names of the layers actually kept live -- empty when
+    nothing was preserved, in which case the file written is exactly what
+    save_layered_psd() would have written. Falls back to that same plain
+    export on any failure: a PSD download that is layered-but-rasterized
+    is a far better outcome than no PSD at all.
+    """
+    wanted = {
+        name.strip().lower(): text for name, text in (preserve_text or {}).items()
+    }
+    if not wanted:
+        save_layered_psd(layers, size, dest_path, layer_names=layer_names)
+        return []
+
+    try:
+        psd = PSDImage.open(template_path)
+    except Exception:
+        save_layered_psd(layers, size, dest_path, layer_names=layer_names)
+        return []
+
+    kept = {}
+    for layer in list(psd):
+        key = layer.name.strip().lower()
+        if key in wanted and getattr(layer, "kind", None) == "type":
+            kept[key] = layer
+    if not kept:
+        save_layered_psd(layers, size, dest_path, layer_names=layer_names)
+        return []
+
+    if layer_names is None:
+        layer_names = REUPLOAD_LAYER_NAMES
+
+    try:
+        # Empty the template of its own artwork, keeping the detached
+        # type layer objects alive in `kept` so they can go back in at
+        # the right height in the stack below.
+        for layer in list(psd):
+            psd.remove(layer)
+
+        preserved: List[str] = []
+        for name, layer_img in layers:
+            key = name.strip().lower()
+            if key in kept:
+                layer = kept[key]
+                replacement = wanted[key]
+                if replacement:
+                    _rewrite_type_layer_text(layer, replacement)
+                psd.insert(len(list(psd)), layer)
+                preserved.append(layer.name)
+                continue
+            rgba = layer_img if layer_img.mode == "RGBA" else layer_img.convert("RGBA")
+            cropped, left, top = _tight_bbox_crop(rgba)
+            psd.create_pixel_layer(
+                cropped, name=layer_names.get(name, name), top=top, left=left
+            )
+        psd.save(dest_path)
+        return preserved
+    except Exception:
+        save_layered_psd(layers, size, dest_path, layer_names=layer_names)
+        return []
