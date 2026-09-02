@@ -2936,7 +2936,7 @@ class LayerCtaOverrideTest(unittest.TestCase):
             data = {
                 "content_psd": (io.BytesIO(helper._sample_psd_bytes(color=(10, 10, 200))), "c.psd"),
                 "layer_cta_text": "Claim my spot",
-                "layer_cta_image": (helper._sample_image_bytes(color=(9, 9, 9)), "cta.png"),
+                "layer_product_image": (helper._sample_image_bytes(color=(9, 9, 9)), "product.png"),
                 "header": "",
                 "description": "",
             }
@@ -5808,20 +5808,20 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # "badge" isn't one of this template's named layers (it has
         # background/product/cta/description/logo) -- a CTA image update
         # should still apply fine, this just confirms an unmatched field
-        # (there isn't a "badge" field at all, so instead: request a CTA
-        # image update against a template known to have that layer, and
+        # (there isn't a "badge" field at all, so instead: request a
+        # product image update against a template known to have that layer, and
         # confirm the request never errors even when description text is
         # also given for a template).
         data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
-            "layer_cta_image": (self._sample_image_bytes(color=(255, 0, 0)), "cta.png"),
+            "layer_product_image": (self._sample_image_bytes(color=(255, 0, 0)), "product.png"),
             "header": "",
             "description": "",
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"updated layer(s)", r.data)
-        self.assertIn(b"cta", r.data)
+        self.assertIn(b"product", r.data)
 
     def test_no_layer_override_fields_leaves_template_untouched(self):
         _, staged_path = self._stage_real_template()

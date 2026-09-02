@@ -793,14 +793,13 @@
           <div class="hint" style="margin-top: -0.2rem;">
             Redraws the <code>cta</code> layer as a pill button filling the box the template's designer drew for
             it -- so there's no position setting here, unlike the hero-image tool's CTA. The label shrinks to fit
-            the button's width and is trimmed with an ellipsis rather than allowed to spill. Uploading a CTA
-            image below wins over this: that upload is the button.
+            the button's width and is trimmed with an ellipsis rather than allowed to spill. The button is drawn from
+            these settings -- there is no image upload for it.
           </div>
           </details>
 
           {% set layer_image_fields = [
               ('layer_logo_image', 'Logo'),
-              ('layer_cta_image', 'CTA'),
               ('layer_product_image', 'Product'),
               ('layer_background_image', 'Background'),
           ] %}
@@ -811,10 +810,6 @@
             <label for="layer_logo_image" data-layer-controls="logo" style="font-weight: 400;">
               <span style="white-space: nowrap;">Logo image</span>
               <input type="file" id="layer_logo_image" name="layer_logo_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
-            </label>
-            <label for="layer_cta_image" data-layer-controls="cta" style="font-weight: 400;">
-              <span style="white-space: nowrap;">CTA image</span>
-              <input type="file" id="layer_cta_image" name="layer_cta_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
             <label for="layer_product_image" data-layer-controls="product" style="font-weight: 400;">
               <span style="white-space: nowrap;">Product image</span>

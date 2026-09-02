@@ -1820,7 +1820,6 @@ def generate():
         for field in (
             "layer_background_image",
             "layer_logo_image",
-            "layer_cta_image",
             "layer_product_image",
         )
     )
@@ -2049,7 +2048,6 @@ def generate():
     layer_images_chosen_now: set = set()
     for layer_name, field_name in (
         ("logo", "layer_logo_image"),
-        ("cta", "layer_cta_image"),
         ("product", "layer_product_image"),
         ("background", "layer_background_image"),
     ):
