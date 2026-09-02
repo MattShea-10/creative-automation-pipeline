@@ -1714,36 +1714,37 @@ def generate():
     # rendering from their saved templates untouched. A layer the user
     # uploaded by hand above wins; this only fills the gaps.
     propagated_layer_names = set()
+    # Order matters, and it is the opposite of what it was. The generated
+    # backdrop is set FIRST and wins outright: a ticked generator means
+    # "make me a new background", every time, and the only thing that
+    # stops it is "Keep this image" -- which prevents the generation from
+    # happening at all, further up, rather than discarding it here.
+    #
+    # It used to be the other way round, with an uploaded hero outranking
+    # a generation on the theory that an explicit file beats an invented
+    # one. That reasoning fails on an Edit, which is where this tool is
+    # actually used: the hero upload is carried forward automatically, so
+    # it silently outranked every later generation. Ticking the generator
+    # on an edit appeared to do nothing at all -- it ran, cost an API
+    # call, and had its result thrown away.
+    #
+    # Deliberately NOT recorded in layer_upload_paths: that dict is what
+    # gets carried forward on an Edit, and a generated image carried
+    # forward is poison. It would come back as though the user had
+    # uploaded it and overwrite the new file on its way past -- so
+    # changing the prompt and re-running produced a byte-identical
+    # result. A generated image belongs to the run that generated it.
+    #
+    # Set before the content PSD's own layers are propagated below, and
+    # that loop skips any layer already overridden, so the generated
+    # backdrop wins over the PSD's too. Ticking the generator with a PSD
+    # uploaded can only mean "keep this design, change the backdrop".
+    if upload_ai_image is not None:
+        layer_image_overrides["background"] = upload_ai_image.convert("RGBA")
     if upload_hero_image is not None and "background" not in layer_image_overrides:
         # The hero image reaches the templates exactly as the generated
-        # backdrop does. It is set first, and the generator's branch
-        # below skips a background that's already overridden, so an
-        # uploaded hero outranks a generated one -- an explicit file
-        # beats one the tool invented. (The layer-update "Background
-        # image" field, handled above, outranks both: it is the most
-        # specific instruction of the three.)
+        # backdrop does -- it just yields to one when the generator is on.
         layer_image_overrides["background"] = upload_hero_image
-    if upload_ai_image is not None and "background" not in layer_image_overrides:
-        # Deliberately NOT recorded in layer_upload_paths: that dict is
-        # what gets carried forward on an Edit, and a generated image
-        # carried forward is poison. It would come back as though the
-        # user had uploaded it, outrank the fresh generation, and
-        # overwrite the new file on its way past -- so changing the
-        # prompt and re-running produced a byte-identical result and
-        # looked like the generator was ignoring you. A generated image
-        # belongs to the run that generated it.
-        #
-        # The generated artwork reaches the templates the same way an
-        # uploaded content PSD's own background layer does -- as a
-        # background override, fitted to each size's background box.
-        #
-        # Set before the content PSD's own layers are propagated below,
-        # and that loop skips any layer already overridden, so the
-        # generated backdrop wins over the PSD's. Deliberate: ticking the
-        # generator with a PSD uploaded can only mean "keep this design,
-        # change the backdrop". A background image uploaded by hand
-        # outranks both -- an explicit file beats a generated one.
-        layer_image_overrides["background"] = upload_ai_image.convert("RGBA")
     if content_psd_provided:
         for layer_name, layer_image in _content_psd_layer_images(content_psd_path).items():
             if layer_name in layer_image_overrides:

@@ -3695,11 +3695,15 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertIn(b"300x250: updated layer(s) -- background", r.data)
         self.assertNotIn(b"800x600", r.data)
 
-    def test_an_uploaded_hero_image_beats_a_generated_one(self):
-        # Both supplied is not an error -- an explicit file wins, so
-        # trying your own picture doesn't mean unticking the generator
-        # first. (A mock generation is deliberately used here: if it won,
-        # the placeholder's own gradient would land in the background.)
+    def test_a_generated_image_beats_an_uploaded_hero(self):
+        # A ticked generator means "make me a new background", every
+        # time. It used to be the other way round -- an uploaded hero
+        # outranked a generation, on the theory that an explicit file
+        # beats an invented one. That reasoning collapses on an Edit,
+        # which is how this tool is actually used: the hero upload is
+        # carried forward automatically, so it silently outranked every
+        # later generation and ticking the generator appeared to do
+        # nothing, having run and been billed for.
         self._write_template_with_a_background_layer("hero-300x250.psd", (300, 250))
         data = {
             "upload_hero_image": (self._sample_image_bytes(color=(9, 200, 9)), "hero.png"),
@@ -3716,11 +3720,50 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         rendered = Image.open(
             next((Path(self.tmp_dir) / job_id).glob("*300x250*.png"))
         ).convert("RGB")
-        # The uploaded flat green, not the placeholder's gradient.
+        # The placeholder's gradient, not the uploaded flat green.
         greens = sum(
             1 for r_, g_, b_ in rendered.getdata() if g_ > 150 and r_ < 80 and b_ < 80
         )
-        self.assertGreater(greens, rendered.width * rendered.height * 0.2)
+        self.assertLess(greens, rendered.width * rendered.height * 0.2)
+
+    def test_the_generator_replaces_a_carried_forward_hero_on_edit(self):
+        # The exact reported failure: upload a hero, generate, then Edit
+        # and tick the generator. The carried-forward upload must not
+        # win, or the new backdrop is generated and thrown away.
+        self._write_template_with_a_background_layer("edit-300x250.psd", (300, 250))
+        first = self.client.post(
+            "/generate",
+            data={
+                "upload_hero_image": (self._sample_image_bytes(color=(9, 200, 9)), "hero.png"),
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        job_id = re.search(rb"/download/([0-9a-f]{32})", first.data).group(1).decode()
+
+        second = self.client.post(
+            "/generate",
+            data={
+                "edit_job_id": job_id,
+                "upload_ai_enabled": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": "a runner mid-stride",
+                "header": "",
+                "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(second.status_code, 200)
+        second_job = re.search(rb"/download/([0-9a-f]{32})", second.data).group(1).decode()
+        rendered = Image.open(
+            next((Path(self.tmp_dir) / second_job).glob("*300x250*.png"))
+        ).convert("RGB")
+        greens = sum(
+            1 for r_, g_, b_ in rendered.getdata() if g_ > 150 and r_ < 80 and b_ < 80
+        )
+        self.assertLess(greens, rendered.width * rendered.height * 0.2,
+                        "the carried-forward hero upload survived a generation")
 
     def test_a_deliberate_provider_choice_wins_over_the_other_default(self):
         # Upload Creative and Manual Creative each have a provider

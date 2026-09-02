@@ -247,8 +247,8 @@
         </div>
         <div class="hint" style="margin-top: 0.3rem;">
           Cropped to fill each size's <code>background</code> layer, so a wide image is safe -- but the edges
-          get trimmed differently per size. Keep the subject away from them. Upload one here and it wins over
-          a generated image, so you don't have to untick the generator to try your own. The "Output
+          get trimmed differently per size. Keep the subject away from them. This is used when the AI
+          generator below is switched off; with it on, a freshly generated image wins. The "Output
           sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
           batch is whatever's in <code>default_templates/</code>.
         </div>
@@ -306,9 +306,11 @@
             </div>
             <div class="hint" style="margin-top: 0.4rem;">
               The generated image fills each template's <code>background</code> layer only, so the logo,
-              product, CTA and text those templates carry stay where they were designed. A hero image uploaded
-              above takes precedence over this, and the "Background image" field further down overrides both.
-              If the provider fails, the offline placeholder is used and a warning explains why.
+              product, CTA and text those templates carry stay where they were designed. While this is ticked
+              it wins over the hero image above and the "Background image" field further down: ticking it
+              means "make me a new background", and it makes one on every Generate. "Keep this image" is the
+              one thing that stops it -- and it stops the generation happening at all, rather than throwing
+              the result away. If the provider fails, the offline placeholder is used and a warning says why.
             </div>
           </div>
         </div>
