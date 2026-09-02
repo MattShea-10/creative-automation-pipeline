@@ -592,14 +592,20 @@
           </fieldset>
 
 
-          {# Unlike header and description, a legal layer is optional -- older
-             templates predate it entirely. Absent, the section is not shown at
-             all rather than shown disabled under a note about a layer being
-             "switched off", which would be describing something that was never
-             there. #}
+          {# Present but switched off is a different thing from absent. Off,
+             the controls show greyed with the note below -- turning the layer
+             on in Photoshop is a real way to reach them. Absent from every
+             template, there is nothing to turn on, so the section isn't shown
+             at all rather than sitting there permanently dead. #}
+          {% set legal_present = 'legal' in present_text_layers %}
           {% set legal_editable = 'legal' in editable_text_layers %}
-          {% if legal_editable %}
-          <fieldset class="layer-text-group" data-layer-controls="legal">
+          {% if legal_present %}
+          {% if not legal_editable %}
+            <div class="hint layer-off-note">The <code>legal</code> layer is switched off in your saved
+            templates, so there are no visible words to restyle -- these fields are disabled. Turn the layer
+            on in Photoshop and re-save the template to use them.</div>
+          {% endif %}
+          <fieldset class="layer-text-group" data-layer-controls="legal"{% if not legal_editable %} disabled{% endif %}>
           <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_legal_text" style="font-weight: 400;">Legal text</label>
             <input type="text" id="layer_legal_text" name="layer_legal_text" placeholder="e.g. First 500 get free cans" value="{{ prefill.get('layer_legal_text', '') }}">

@@ -899,6 +899,25 @@ def _editable_text_layers() -> set:
     return editable
 
 
+def _present_text_layers() -> set:
+    """Every named text layer the saved templates have at all -- switched
+    on or off.
+
+    The companion to _editable_text_layers(), and the distinction matters
+    for whether a section is offered: a layer that is PRESENT but off can
+    be turned on in Photoshop, so its controls are worth showing greyed
+    out with an explanation. A layer that isn't in any template has
+    nothing to explain and no path to enabling it, so its controls aren't
+    shown at all rather than sitting there permanently dead.
+    """
+    present = set()
+    _templates, template_paths = _default_size_templates()
+    for path in template_paths.values():
+        for name in get_psd_text_layers(path):
+            present.add(name)
+    return present
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template(
@@ -909,6 +928,7 @@ def index():
         campaigns=[{"prefill": {}, "prefill_files": {}, "edit_job_id": None}],
         session_id=uuid.uuid4().hex,
         editable_text_layers=_editable_text_layers(),
+        present_text_layers=_present_text_layers(),
         hideable_layers=HIDEABLE_LAYER_NAMES,
     )
 
@@ -952,6 +972,7 @@ def edit(job_id):
         campaigns=campaigns,
         session_id=session_id,
         editable_text_layers=_editable_text_layers(),
+        present_text_layers=_present_text_layers(),
         hideable_layers=HIDEABLE_LAYER_NAMES,
     )
 

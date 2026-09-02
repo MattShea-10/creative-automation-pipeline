@@ -4941,6 +4941,33 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         buf.seek(0)
         return buf
 
+    def test_legal_controls_are_offered_whenever_the_layer_exists(self):
+        # Switched off is not the same as absent: the layer can be turned
+        # back on in Photoshop, so its controls show greyed with an
+        # explanation rather than vanishing -- the same deal the header
+        # gets. Every field the header offers, legal offers too.
+        _size, staged_path = self._stage_real_template()
+        from src.image_ops import get_psd_text_layers
+
+        names = get_psd_text_layers(staged_path)
+        if "legal" not in names or "header" not in names:
+            self.skipTest("staged template lacks a legal or header layer to compare")
+        page = self.client.get("/").data.decode()
+        self.assertIn('data-layer-controls="legal"', page)
+        header_fields = {
+            m.split("layer_header_")[1]
+            for m in re.findall(r'name="layer_header_[a-z_]+"', page)
+        }
+        legal_fields = {
+            m.split("layer_legal_")[1]
+            for m in re.findall(r'name="layer_legal_[a-z_]+"', page)
+        }
+        self.assertEqual(
+            header_fields,
+            legal_fields,
+            "legal must offer exactly the edit properties the header does",
+        )
+
     def test_legal_text_override_applies_like_header_and_description(self):
         # The legal layer carries the small print a campaign is required
         # to show, and it changes per campaign more often than the header
