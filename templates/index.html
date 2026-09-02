@@ -54,6 +54,16 @@
        controls are disabled too, but a disabled input is barely
        distinguishable on this dark theme and a <label>'s text never
        greys at all -- so the dimming has to be explicit. */
+    /* A whole layer section switched off by its hide checkbox. Dimmed
+       and its title muted, so the state reads from the collapsed
+       summary alone -- the controls inside are disabled either way, but
+       a folded section shows none of them. */
+    details.layer-section.is-layer-hidden { @apply opacity-50; }
+    details.layer-section.is-layer-hidden > summary { @apply text-slate-500; }
+    details.layer-section.is-layer-hidden > summary::after {
+      content: " -- hidden";
+      @apply font-normal text-slate-500;
+    }
     [data-layer-controls].is-layer-hidden {
       @apply opacity-40;
       pointer-events: none;
@@ -406,7 +416,7 @@
             </div>
           </div>
 
-          <details class="layer-section"{% if prefill.get('layer_header_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="header"{% if prefill.get('layer_header_text') %} open{% endif %}>
           <summary><span class="caret">&#9656;</span>Header text</summary>
           {% set header_editable = 'header' in editable_text_layers %}
           {% if not header_editable %}
@@ -507,7 +517,7 @@
           </fieldset>
           </details>
 
-          <details class="layer-section"{% if prefill.get('layer_description_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="description"{% if prefill.get('layer_description_text') %} open{% endif %}>
           <summary><span class="caret">&#9656;</span>Description text</summary>
           {% set description_editable = 'description' in editable_text_layers %}
           {% if not description_editable %}
@@ -617,7 +627,7 @@
           {% set legal_present = 'legal' in present_text_layers %}
           {% set legal_editable = 'legal' in editable_text_layers %}
           {% if legal_present %}
-          <details class="layer-section"{% if prefill.get('layer_legal_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="legal"{% if prefill.get('layer_legal_text') %} open{% endif %}>
           <summary><span class="caret">&#9656;</span>Legal text</summary>
           {% if not legal_editable %}
             <div class="hint layer-off-note">The <code>legal</code> layer is switched off in your saved
@@ -718,7 +728,7 @@
           </details>
           {% endif %}
 
-          <details class="layer-section"{% if prefill.get('layer_cta_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="cta"{% if prefill.get('layer_cta_text') %} open{% endif %}>
           <summary><span class="caret">&#9656;</span>CTA button</summary>
           <div class="field" data-layer-controls="cta" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_cta_text" style="font-weight: 400;">CTA button text</label>
@@ -1313,6 +1323,20 @@
             var targets = root.querySelectorAll(
               '[data-layer-controls="' + box.dataset.layer + '"]'
             );
+            // The section around those controls, too: the controls are
+            // disabled either way, but a collapsed <details> shows none
+            // of them, so without this a hidden layer looks identical to
+            // a live one until you open it.
+            var section = root.querySelector(
+              'details.layer-section[data-layer-section="' + box.dataset.layer + '"]'
+            );
+            if (section) {
+              section.classList.toggle("is-layer-hidden", box.checked);
+              // Fold it away when it goes inactive. Not reopened on
+              // unhide -- that is the user's call, and springing a
+              // section open under the cursor is worse than leaving it.
+              if (box.checked) section.open = false;
+            }
             targets.forEach(function (target) {
               target.classList.toggle("is-layer-hidden", box.checked);
               target.querySelectorAll("input, select, textarea").forEach(function (el) {

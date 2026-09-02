@@ -4941,6 +4941,26 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         buf.seek(0)
         return buf
 
+    def test_every_hideable_text_section_is_addressable_by_its_hide_box(self):
+        # The hide checkbox greys its section by looking for
+        # details[data-layer-section=<layer>]. That pairing is a contract
+        # between two attributes in one template with nothing to enforce
+        # it, so a renamed layer would silently stop dimming anything.
+        page = self.client.get("/").data.decode()
+        hide_layers = set(re.findall(r'data-role="layer-hide" data-layer="([a-z]+)"', page))
+        section_layers = set(re.findall(r'data-layer-section="([a-z]+)"', page))
+        self.assertTrue(hide_layers, "expected some hide checkboxes")
+        # Image-only layers have no text section of their own -- they
+        # grey field by field inside "Layer images" instead.
+        for layer in ("header", "description", "cta"):
+            if layer in hide_layers:
+                self.assertIn(
+                    layer,
+                    section_layers,
+                    f"{layer} has a hide box but no section for it to dim",
+                )
+        self.assertTrue(section_layers <= hide_layers | {"legal"})
+
     def test_layer_sections_collapse_and_open_when_they_hold_something(self):
         # The layer-override block grew to five full control sets and had
         # become a single unbroken scroll. Each is its own disclosure now,
@@ -4952,7 +4972,10 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         for summary in ("Header text", "Description text", "CTA button", "Layer images"):
             self.assertIn(summary, page)
         # Nothing prefilled: every section closed.
-        self.assertNotIn('class="layer-section" open', page)
+        self.assertIsNone(
+            re.search(r'<details class="layer-section"[^>]*\sopen>', page),
+            "no section should start open on a blank form",
+        )
 
     def test_a_prefilled_layer_section_comes_back_open(self):
         (w, h), staged_path = self._stage_real_template()
@@ -4966,7 +4989,10 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         page = self.client.get(f"/edit/{job_id}").data.decode()
         self.assertIn("Carried forward words", page)
-        self.assertIn('class="layer-section" open', page)
+        self.assertRegex(
+            page,
+            r'<details class="layer-section" data-layer-section="description"[^>]*\sopen>',
+        )
 
     def test_legal_controls_are_offered_whenever_the_layer_exists(self):
         # Switched off is not the same as absent: the layer can be turned
