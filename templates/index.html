@@ -311,10 +311,12 @@
           sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
           batch is whatever's in <code>default_templates/</code>.
         </div>
+        <label for="upload_hero_image" style="margin-top: 0.6rem; display: block;">Upload custom Hero Image</label>
         <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
         {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
 
-        <div class="ai-hero-callout" style="margin-top: 0.9rem;">
+        <label style="margin-top: 0.9rem; display: block;">Upload AI Image</label>
+        <div class="ai-hero-callout" style="margin-top: 0.3rem;">
           <div class="checkbox-row" style="margin: 0;">
             <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
             <span><span class="ai-badge">AI</span> Generate the hero image with AI instead of uploading one --
