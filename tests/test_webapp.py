@@ -5378,6 +5378,34 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, "full ad mode should not need a hero image")
         self.assertIn(b"Full ad mode", r.data)
 
+    def test_the_hand_built_route_is_one_folded_section(self):
+        # Supplying your own picture and editing the layers drawn over it
+        # are one job, so they fold together -- and the AI route has its
+        # own fold, so leaving this one open made the two read as unequal.
+        page = self.client.get("/").data.decode()
+        self.assertIn('data-role="custom-hero-section"', page)
+        section_at = page.index('data-role="custom-hero-section"')
+        self.assertGreater(page.index('id="upload_hero_image"'), section_at)
+        self.assertGreater(page.index('id="layer_overrides_section"'), section_at)
+        # The layer guidance belongs under the input it applies to.
+        self.assertGreater(
+            page.index("Update layers across all template sizes"),
+            page.index('id="upload_hero_image"'),
+        )
+
+    def test_hide_layers_sits_below_both_ways_of_supplying_artwork(self):
+        # Hiding is about what the templates DRAW, not where the picture
+        # came from, so it is its own section rather than a footnote to
+        # the upload route.
+        page = self.client.get("/").data.decode()
+        hide_at = page.index(">Hide layers<")
+        self.assertGreater(hide_at, page.index("Upload AI Image"))
+        self.assertGreater(hide_at, page.index('id="layer_overrides_section"'))
+        self.assertEqual(
+            len(re.findall(r'data-role="layer-hide" data-layer="[a-z]+"', page)),
+            len(webapp.HIDEABLE_LAYER_NAMES),
+        )
+
     def test_the_generator_controls_live_under_its_own_checkbox(self):
         # Folded away until the generator is switched on. The script
         # finds the group by this attribute, and every control it governs

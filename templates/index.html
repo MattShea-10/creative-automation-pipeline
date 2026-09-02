@@ -311,125 +311,15 @@
           sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
           batch is whatever's in <code>default_templates/</code>.
         </div>
-        <label for="upload_hero_image" style="margin-top: 0.6rem; display: block;">Upload custom Hero Image</label>
+        {# The hand-built route: supply the picture yourself, then edit the
+           layers the templates draw over it. Folded together because they are
+           one job -- and because the AI route below has its own fold, so
+           leaving this one open made the two read as unequal. #}
+        <details class="layer-section" data-role="custom-hero-section">
+        <summary><span class="caret">&#9656;</span>Upload custom Hero Image</summary>
+        <label for="upload_hero_image" style="margin-top: 0.6rem; display: block;">Hero image file</label>
         <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
         {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
-
-        <label style="margin-top: 0.9rem; display: block;">Upload AI Image</label>
-        <div class="ai-hero-callout" style="margin-top: 0.3rem;">
-          <div class="checkbox-row" style="margin: 0;">
-            <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
-            <span><span class="ai-badge">AI</span> Generate the hero image with AI instead of uploading one --
-            it becomes the backdrop on every size saved in <code>default_templates/</code>, the 728x480
-            included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
-          </div>
-          {# Everything the generator needs lives under its own checkbox and
-             stays out of sight until it is ticked. Unticked, none of it does
-             anything, and a dozen controls dimmed-but-present is most of what
-             makes this form long. #}
-          <div data-role="upload-ai-body">
-          <div class="inline-controls" style="margin-top: 0.5rem;">
-              <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
-                <span style="white-space: nowrap;">Provider</span>
-                <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
-                  <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
-                  <option value="ideogram" {% if prefill.get('upload_ai_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
-                </select>
-              </label>
-            </div>
-          <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
-            <div class="checkbox-row" style="margin-top: 0;">
-              <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
-              <span>Keep this image <span style="font-weight: 400; color: var(--muted);">(don't generate a new one)</span></span>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Tick this and the next Generate reuses the image from your last run instead of calling the
-              provider. Two generations from an identical prompt are never the same picture, so without it,
-              nudging a font size or a glow colour means losing the backdrop you were nudging it against --
-              and paying for the replacement. Untick it whenever you want a fresh one. It has no effect on a
-              first run: there's nothing to keep yet.
-            </div>
-            <div class="hint layer-off-note" data-role="upload-ai-kept-note" hidden style="margin-top: 0.4rem;">
-              Generating is switched off and the prompt, provider and backdrop tuning below are disabled --
-              the last run's image is reused as-is, and no API call is made. Tick "Generate the hero image
-              with AI" again (or untick this) whenever you want a fresh one.
-            </div>
-
-            <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
-            <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
-            <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
-            {# Only Ideogram is worth handing a laid-out ad or live type to;
-               Pollinations has no typography to speak of, so these switches are
-               hidden rather than offered and disappointed. #}
-            <div data-role="ideogram-only">
-            <div class="checkbox-row" style="margin-top: 0.5rem;">
-              <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
-              <span>Generate the whole ad <span style="font-weight: 400; color: var(--muted);">(headline, hero and CTA, from your campaign brief)</span></span>
-            </div>
-            <div class="field" style="margin-top: 0.5rem; margin-bottom: 0;">
-              <label for="upload_ai_headline" style="font-weight: 400;">Ad headline <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
-              <input type="text" id="upload_ai_headline" name="upload_ai_headline" placeholder="Leave blank to use the header text, then the campaign message" value="{{ prefill.get('upload_ai_headline', '') }}">
-              <div class="hint" style="margin-top: 0.2rem;">
-                The words the model is told to set, quoted exactly. Separate from the header override above,
-                which greys out when the template's header layer is switched off -- right for a layer nobody
-                will draw, wrong here, where the copy goes into the prompt rather than into a layer.
-              </div>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              The model lays out the entire creative and the result is used as-is -- your saved templates are
-              not drawn over it, or its headline and theirs would both appear. The prompt is composed from the
-              campaign brief: product name, header text and CTA text go in as exact quoted copy, audience and
-              market steer the art direction. One generation per output size, at that size's own shape, since
-              a laid-out ad can't be cropped from a square without losing the edge of the headline -- so this
-              costs one API call per size, not one per run. The campaign backdrop generator is skipped
-              while this is on -- its image would be replaced unseen.
-            </div>
-            <div class="checkbox-row" style="margin-top: 0.5rem;">
-              <input type="checkbox" id="upload_ai_allow_text" name="upload_ai_allow_text" value="1" {% if prefill.get('upload_ai_allow_text') %}checked{% endif %}>
-              <span>Let the model set type <span style="font-weight: 400; color: var(--muted);">(logo, headline, a laid-out creative -- applies to both generators)</span></span>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Off, the image is a backdrop: no-text is asked for, the result is checked for lettering, a
-              run that comes back with words is regenerated, and anything left is painted out -- because
-              the template's own header, description and CTA sit on top of it. Tick this and all three
-              stand down, so Ideogram can render the typography it is actually good at.
-              <strong>It lifts the ban; it doesn't place an order.</strong> A prompt like "marathon
-              runners" still describes a photograph and still comes back as one -- ask for the words you
-              want, in quotes: <em>poster reading "First 500 get free cans"</em>. Leave the prompt blank
-              and one is built for you. Like the provider, this is one choice for the whole run: the
-              Manual Creative hero generator below honours it too, since a run that wants lettering in the
-              campaign artwork doesn't want it stripped out of the hero image beside it. Expect words in
-              the picture, and check they say what you want.
-            </div>
-            </div>
-            <div class="checkbox-row" style="margin-top: 0.5rem;">
-              <input type="hidden" name="upload_ai_background_style_seen" value="1">
-              <input type="checkbox" id="upload_ai_background_style" name="upload_ai_background_style" value="1" {% if prefill.get('upload_ai_background_style', True) %}checked{% endif %}>
-              <span>Optimize the prompt for backdrops <span style="font-weight: 400; color: var(--muted);">(recommended)</span></span>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Adds "sharp focus, crisp detail, no faces, no logos, space for overlaid text" to your prompt.
-              Models are worst at faces, hands and lettering -- exactly what a backdrop doesn't need -- so
-              steering away from them removes most of what reads as distortion. It asks for sharpness, not
-              softness: use the band and glow controls to keep text legible over a crisp backdrop.
-              <strong>With "Let the model set type" ticked this switches to design guidance instead</strong>
-              -- "professional graphic design, clean legible typography, balanced composition" -- since the
-              backdrop wording asks for the opposite of what that mode is for. The full prompt used is shown
-              on the results page.
-            </div>
-            </div>
-            <div class="hint" style="margin-top: 0.4rem;">
-              The generated image fills each template's <code>background</code> layer only, so the logo,
-              product, CTA and text those templates carry stay where they were designed. While this is ticked
-              it wins over the hero image above and the "Background image" field further down: ticking it
-              means "make me a new background", and it makes one on every Generate. "Keep this image" is the
-              one thing that stops it -- and it stops the generation happening at all, rather than throwing
-              the result away. If the provider fails, the offline placeholder is used and a warning says why.
-            </div>
-          </div>
-          </div>
-        </div>
-
         <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
@@ -444,35 +334,7 @@
             can't edit a PSD's live text layer directly. These are PSD updates only -- they don't affect the
             general hero-image tool below.
           </div>
-          <div class="field" style="margin-top: 0.8rem; margin-bottom: 0.2rem;">
-            <label style="font-weight: 400;">Hide layers</label>
-            <div class="hint" style="margin-top: -0.2rem;">
-              Leave a layer out of every template size. The box it occupied is wiped back to the template's own
-              backdrop, so what's behind it shows through rather than a blank patch. Hiding wins over anything
-              else set for that layer -- files and text you've entered stay put and come back when you unhide.
-              <code>background</code> isn't offered: it sits behind everything, so hiding it leaves a hole
-              rather than a cleaner creative. Replace it instead, with the hero image or the generator above.
-            </div>
-            <div class="inline-controls" style="margin-top: 0.4rem;">
-              {% for layer in hideable_layers %}
-                {# Switched off in Photoshop in every template that has it: the
-                   layer is not drawn whatever this form says, so the box is
-                   already true and there is nothing here that can make it
-                   false. Ticked and locked, with a hidden input carrying the
-                   value -- a disabled checkbox posts nothing, which would
-                   record the layer as visible in a run where it wasn't. #}
-                {% set forced_off = layer in switched_off_layers %}
-                <label for="layer_{{ layer }}_hidden" style="font-weight: 400;"
-                       {% if forced_off %}class="is-forced-off" title="The {{ layer }} layer is switched off in your saved templates, so it is never drawn. Turn it on in Photoshop and re-save to control it here."{% endif %}>
-                  <input type="checkbox" id="layer_{{ layer }}_hidden" name="layer_{{ layer }}_hidden" value="1"
-                         data-role="layer-hide" data-layer="{{ layer }}"
-                         {% if forced_off %}checked disabled data-forced-off="1"{% elif prefill.get('layer_' ~ layer ~ '_hidden') %}checked{% endif %}>
-                  {% if forced_off %}<input type="hidden" name="layer_{{ layer }}_hidden" value="1">{% endif %}
-                  {{ layer }}
-                </label>
-              {% endfor %}
-            </div>
-          </div>
+
 
           <details class="layer-section" data-layer-section="header"{% if prefill.get('layer_header_text') %} open{% endif %}>
           <summary><span class="caret">&#9656;</span>Header text</summary>
@@ -894,6 +756,158 @@
           {% endif %}
           </details>
         </div>
+        </details>
+
+        <label style="margin-top: 0.9rem; display: block;">Upload AI Image</label>
+        <div class="ai-hero-callout" style="margin-top: 0.3rem;">
+          <div class="checkbox-row" style="margin: 0;">
+            <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
+            <span><span class="ai-badge">AI</span> Generate the hero image with AI instead of uploading one --
+            it becomes the backdrop on every size saved in <code>default_templates/</code>, the 728x480
+            included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
+          </div>
+          {# Everything the generator needs lives under its own checkbox and
+             stays out of sight until it is ticked. Unticked, none of it does
+             anything, and a dozen controls dimmed-but-present is most of what
+             makes this form long. #}
+          <div data-role="upload-ai-body">
+          <div class="inline-controls" style="margin-top: 0.5rem;">
+              <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Provider</span>
+                <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
+                  <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
+                  <option value="ideogram" {% if prefill.get('upload_ai_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
+                </select>
+              </label>
+            </div>
+          <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
+            <div class="checkbox-row" style="margin-top: 0;">
+              <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
+              <span>Keep this image <span style="font-weight: 400; color: var(--muted);">(don't generate a new one)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Tick this and the next Generate reuses the image from your last run instead of calling the
+              provider. Two generations from an identical prompt are never the same picture, so without it,
+              nudging a font size or a glow colour means losing the backdrop you were nudging it against --
+              and paying for the replacement. Untick it whenever you want a fresh one. It has no effect on a
+              first run: there's nothing to keep yet.
+            </div>
+            <div class="hint layer-off-note" data-role="upload-ai-kept-note" hidden style="margin-top: 0.4rem;">
+              Generating is switched off and the prompt, provider and backdrop tuning below are disabled --
+              the last run's image is reused as-is, and no API call is made. Tick "Generate the hero image
+              with AI" again (or untick this) whenever you want a fresh one.
+            </div>
+
+            <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
+            <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+            <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
+            {# Only Ideogram is worth handing a laid-out ad or live type to;
+               Pollinations has no typography to speak of, so these switches are
+               hidden rather than offered and disappointed. #}
+            <div data-role="ideogram-only">
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
+              <span>Generate the whole ad <span style="font-weight: 400; color: var(--muted);">(headline, hero and CTA, from your campaign brief)</span></span>
+            </div>
+            <div class="field" style="margin-top: 0.5rem; margin-bottom: 0;">
+              <label for="upload_ai_headline" style="font-weight: 400;">Ad headline <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+              <input type="text" id="upload_ai_headline" name="upload_ai_headline" placeholder="Leave blank to use the header text, then the campaign message" value="{{ prefill.get('upload_ai_headline', '') }}">
+              <div class="hint" style="margin-top: 0.2rem;">
+                The words the model is told to set, quoted exactly. Separate from the header override above,
+                which greys out when the template's header layer is switched off -- right for a layer nobody
+                will draw, wrong here, where the copy goes into the prompt rather than into a layer.
+              </div>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              The model lays out the entire creative and the result is used as-is -- your saved templates are
+              not drawn over it, or its headline and theirs would both appear. The prompt is composed from the
+              campaign brief: product name, header text and CTA text go in as exact quoted copy, audience and
+              market steer the art direction. One generation per output size, at that size's own shape, since
+              a laid-out ad can't be cropped from a square without losing the edge of the headline -- so this
+              costs one API call per size, not one per run. The campaign backdrop generator is skipped
+              while this is on -- its image would be replaced unseen.
+            </div>
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="checkbox" id="upload_ai_allow_text" name="upload_ai_allow_text" value="1" {% if prefill.get('upload_ai_allow_text') %}checked{% endif %}>
+              <span>Let the model set type <span style="font-weight: 400; color: var(--muted);">(logo, headline, a laid-out creative -- applies to both generators)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Off, the image is a backdrop: no-text is asked for, the result is checked for lettering, a
+              run that comes back with words is regenerated, and anything left is painted out -- because
+              the template's own header, description and CTA sit on top of it. Tick this and all three
+              stand down, so Ideogram can render the typography it is actually good at.
+              <strong>It lifts the ban; it doesn't place an order.</strong> A prompt like "marathon
+              runners" still describes a photograph and still comes back as one -- ask for the words you
+              want, in quotes: <em>poster reading "First 500 get free cans"</em>. Leave the prompt blank
+              and one is built for you. Like the provider, this is one choice for the whole run: the
+              Manual Creative hero generator below honours it too, since a run that wants lettering in the
+              campaign artwork doesn't want it stripped out of the hero image beside it. Expect words in
+              the picture, and check they say what you want.
+            </div>
+            </div>
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="hidden" name="upload_ai_background_style_seen" value="1">
+              <input type="checkbox" id="upload_ai_background_style" name="upload_ai_background_style" value="1" {% if prefill.get('upload_ai_background_style', True) %}checked{% endif %}>
+              <span>Optimize the prompt for backdrops <span style="font-weight: 400; color: var(--muted);">(recommended)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Adds "sharp focus, crisp detail, no faces, no logos, space for overlaid text" to your prompt.
+              Models are worst at faces, hands and lettering -- exactly what a backdrop doesn't need -- so
+              steering away from them removes most of what reads as distortion. It asks for sharpness, not
+              softness: use the band and glow controls to keep text legible over a crisp backdrop.
+              <strong>With "Let the model set type" ticked this switches to design guidance instead</strong>
+              -- "professional graphic design, clean legible typography, balanced composition" -- since the
+              backdrop wording asks for the opposite of what that mode is for. The full prompt used is shown
+              on the results page.
+            </div>
+            </div>
+            <div class="hint" style="margin-top: 0.4rem;">
+              The generated image fills each template's <code>background</code> layer only, so the logo,
+              product, CTA and text those templates carry stay where they were designed. While this is ticked
+              it wins over the hero image above and the "Background image" field further down: ticking it
+              means "make me a new background", and it makes one on every Generate. "Keep this image" is the
+              one thing that stops it -- and it stops the generation happening at all, rather than throwing
+              the result away. If the provider fails, the offline placeholder is used and a warning says why.
+            </div>
+          </div>
+          </div>
+        </div>
+
+        {# Its own section, and below both ways of supplying artwork on
+           purpose: hiding is about what the templates DRAW, not about where
+           the picture came from, and it applies whichever route was used. #}
+        <label style="margin-top: 0.9rem; display: block;">Hide layers</label>
+        <div style="margin-top: 0.3rem;">
+          <div class="field" style="margin-top: 0.8rem; margin-bottom: 0.2rem;">
+                        <div class="hint" style="margin-top: -0.2rem;">
+              Leave a layer out of every template size. The box it occupied is wiped back to the template's own
+              backdrop, so what's behind it shows through rather than a blank patch. Hiding wins over anything
+              else set for that layer -- files and text you've entered stay put and come back when you unhide.
+              <code>background</code> isn't offered: it sits behind everything, so hiding it leaves a hole
+              rather than a cleaner creative. Replace it instead, with the hero image or the generator above.
+            </div>
+            <div class="inline-controls" style="margin-top: 0.4rem;">
+              {% for layer in hideable_layers %}
+                {# Switched off in Photoshop in every template that has it: the
+                   layer is not drawn whatever this form says, so the box is
+                   already true and there is nothing here that can make it
+                   false. Ticked and locked, with a hidden input carrying the
+                   value -- a disabled checkbox posts nothing, which would
+                   record the layer as visible in a run where it wasn't. #}
+                {% set forced_off = layer in switched_off_layers %}
+                <label for="layer_{{ layer }}_hidden" style="font-weight: 400;"
+                       {% if forced_off %}class="is-forced-off" title="The {{ layer }} layer is switched off in your saved templates, so it is never drawn. Turn it on in Photoshop and re-save to control it here."{% endif %}>
+                  <input type="checkbox" id="layer_{{ layer }}_hidden" name="layer_{{ layer }}_hidden" value="1"
+                         data-role="layer-hide" data-layer="{{ layer }}"
+                         {% if forced_off %}checked disabled data-forced-off="1"{% elif prefill.get('layer_' ~ layer ~ '_hidden') %}checked{% endif %}>
+                  {% if forced_off %}<input type="hidden" name="layer_{{ layer }}_hidden" value="1">{% endif %}
+                  {{ layer }}
+                </label>
+              {% endfor %}
+            </div>
+          </div>        </div>
+
+
           <div class="field" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a; margin-bottom: 0;">
             <label><span class="psd-badge">PSD</span> Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
           <div class="hint">
