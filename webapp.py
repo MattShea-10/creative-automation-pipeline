@@ -1203,6 +1203,12 @@ def generate():
     # drawn them and a second headline on top of the first is the one
     # thing this must not produce. Implies allow_text: an ad with the
     # lettering suppressed is a photograph.
+    # Ticking the custom route is itself a statement that this batch is
+    # built from the saved templates -- even with no file chosen yet. The
+    # templates are a complete design on their own; a hero image only
+    # replaces their background layer, and the layer overrides in that
+    # same section are reason enough to run without one.
+    upload_custom_hero_enabled = bool(request.form.get("upload_custom_hero_enabled"))
     upload_ai_full_ad = bool(request.form.get("upload_ai_full_ad"))
     # The headline for a generated ad, kept separate from
     # layer_header_text on purpose. That one is an override for the
@@ -1802,11 +1808,30 @@ def generate():
     # per saved size and hands each in as that size's template. Without
     # it here the saved sizes are never brought in, and a run that needs
     # no hero image at all is rejected for not having one.
+    # A layer-image override is a statement about the templates too: a
+    # replacement background, logo, CTA or product only means anything
+    # composited into a template's named layer, so supplying one is
+    # asking for a templated batch as surely as ticking the route is.
+    # Read straight off the request rather than from
+    # layer_image_overrides, which isn't built until further down.
+    layer_image_supplied = any(
+        (request.files.get(field) is not None and bool(request.files[field].filename))
+        or (prior_form_state.get("files") or {}).get(field)
+        for field in (
+            "layer_background_image",
+            "layer_logo_image",
+            "layer_cta_image",
+            "layer_product_image",
+        )
+    )
+
     if (
         content_psd_provided
         or upload_ai_image is not None
         or upload_hero_image is not None
         or upload_ai_full_ad
+        or upload_custom_hero_enabled
+        or layer_image_supplied
     ):
         default_templates, default_template_paths = _default_size_templates()
     else:

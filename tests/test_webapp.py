@@ -5359,6 +5359,51 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b'reading exactly &#34;First 500 get free cans&#34;', r.data)
 
+    def test_a_layer_image_alone_renders_the_saved_templates(self):
+        # A replacement background, logo, CTA or product only means
+        # anything composited into a template's named layer, so supplying
+        # one is asking for a templated batch as surely as ticking the
+        # route is. Without this the run was rejected for having no hero
+        # image, in a case where nothing needed one.
+        self._stage_real_template()
+        for field in ("layer_background_image", "layer_logo_image"):
+            with self.subTest(field=field):
+                data = {
+                    "product_name": "HydroBoost",
+                    "market": "UK",
+                    "audience": "runners",
+                    "campaign_message": "Stay charged",
+                    field: (self._sample_image_bytes(), "layer.png"),
+                    "header": "",
+                    "description": "",
+                }
+                r = self.client.post(
+                    "/generate", data=data, content_type="multipart/form-data"
+                )
+                self.assertEqual(r.status_code, 200)
+                self.assertIn(b"/download/", r.data)
+
+    def test_the_custom_route_renders_the_saved_templates_without_a_file(self):
+        # Ticking the route is itself a statement that this batch comes
+        # from the saved templates. They are a complete design already --
+        # a hero image only replaces their background layer -- so
+        # demanding one up front rejected a run that would have rendered
+        # every size correctly.
+        self._stage_real_template()
+        data = {
+            "product_name": "HydroBoost",
+            "market": "UK",
+            "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, "the saved templates alone should be enough")
+        self.assertIn(b"used the saved default template as-is", r.data)
+        self.assertIn(b"/download/", r.data)
+
     def test_full_ad_mode_needs_no_hero_image_of_its_own(self):
         # It supplies every size itself, so demanding a hero image (or a
         # template) up front rejected a run that was going to render fine.
