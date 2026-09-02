@@ -2042,6 +2042,7 @@ def apply_layer_background_override(
     replacement: Image.Image,
     *,
     keep_alpha: bool = False,
+    fit: str = "crop",
 ) -> Image.Image:
     """Return a copy of `base_image` with `replacement` filling `bbox`
     completely -- center-cropped to the box's exact aspect ratio (see
@@ -2070,9 +2071,42 @@ def apply_layer_background_override(
         return base_image
 
     canvas = base_image.convert("RGBA").copy()
-    filled = center_crop_to_ratio(replacement.convert("RGB"), (box_w, box_h)).convert("RGBA")
+    source = replacement.convert("RGB")
+    if fit == "contain":
+        # For artwork the model laid out -- a headline, a logo lockup --
+        # cropping to fill is what takes the right-hand third off the
+        # words. Fit the whole thing inside the box instead and pad the
+        # remainder with the image's own edge colour, so the margin reads
+        # as part of the design rather than as black bars.
+        fitted = resize_to_contain(source, (box_w, box_h))
+        plate = Image.new("RGB", (box_w, box_h), _edge_colour(source))
+        plate.paste(
+            fitted,
+            ((box_w - fitted.width) // 2, (box_h - fitted.height) // 2),
+        )
+        filled = plate.convert("RGBA")
+    else:
+        filled = center_crop_to_ratio(source, (box_w, box_h)).convert("RGBA")
     canvas.paste(filled, (x0, y0))
     return canvas if keep_alpha else canvas.convert("RGB")
+
+
+def _edge_colour(image: Image.Image) -> Tuple[int, int, int]:
+    """The average colour of a one-pixel frame around `image` -- what to
+    pad with when fitting it into a box that isn't its shape. Sampling
+    the border rather than the whole image keeps a dark vignette dark and
+    a pale studio shot pale, instead of averaging a busy picture into
+    mud."""
+    small = image.convert("RGB").resize((32, 32))
+    pixels = list(small.getdata())
+    frame = [
+        pixels[y * 32 + x]
+        for y in range(32)
+        for x in range(32)
+        if x in (0, 31) or y in (0, 31)
+    ]
+    count = len(frame) or 1
+    return tuple(sum(channel) // count for channel in zip(*frame))
 
 
 def _reconstruct_box_background(image: Image.Image, bbox: Tuple[int, int, int, int]) -> Image.Image:

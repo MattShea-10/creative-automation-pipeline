@@ -432,6 +432,12 @@ def _build_full_ad_prompt(
         lines.append(f'the product name "{product_name}" set as type')
     if header_text:
         lines.append(f'a large headline reading exactly "{header_text}"')
+        # The campaign message is its own piece of copy, not a spare
+        # headline. With a headline already given it becomes the
+        # supporting line under it; on its own it IS the headline, since
+        # an ad with no words at the top is not an ad.
+        if campaign_message and campaign_message.strip() != header_text.strip():
+            lines.append(f'a supporting line reading exactly "{campaign_message}"')
     elif campaign_message:
         lines.append(f'a large headline reading exactly "{campaign_message}"')
     lines.append("a hero product image as the focus")
@@ -2631,7 +2637,16 @@ def generate():
                         # them through a fit/crop for no gain.
                         continue
                     if layer_name == "background":
-                        final_image = apply_layer_background_override(final_image, box, override_image)
+                        # Artwork the model laid out has to fit, not
+                        # fill: cropping a generated headline to a
+                        # size's shape is what takes the end off the
+                        # words. A plain backdrop still crops to fill --
+                        # there is nothing in it to lose, and letterbox
+                        # margins on a texture look like a mistake.
+                        background_fit = "contain" if upload_ai_allow_text else "crop"
+                        final_image = apply_layer_background_override(
+                            final_image, box, override_image, fit=background_fit
+                        )
                         background_only_image = final_image.copy()
                         foreground_mask_source = (
                             get_psd_layer_foreground(psd_path_for_size, layer_name)
@@ -2650,6 +2665,7 @@ def generate():
                             box,
                             override_image,
                             keep_alpha=True,
+                            fit=background_fit,
                         )
                     else:
                         _clean_layer_box(box, layer_name)

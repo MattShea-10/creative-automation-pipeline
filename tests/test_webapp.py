@@ -2303,6 +2303,8 @@ class PaidProviderTest(unittest.TestCase):
         self.assertIn('the product name "HydroBoost" set as type', prompt)
         self.assertIn('reading exactly "First 500 get free cans"', prompt)
         self.assertIn('reading exactly "Claim my spot"', prompt)
+        # The campaign message is its own copy, not a spare headline.
+        self.assertIn('a supporting line reading exactly "Stay charged"', prompt)
         self.assertIn("HydroBoost", prompt)
         self.assertNotIn('"runners 25-34"', prompt)
         self.assertIn("runners 25-34", prompt)
@@ -2340,12 +2342,23 @@ class PaidProviderTest(unittest.TestCase):
         self.assertNotIn('""', prompt)
 
     def test_full_ad_falls_back_to_the_campaign_message_for_a_headline(self):
+        # With no headline given it is promoted rather than demoted to a
+        # supporting line -- an ad with no words at the top is not an ad.
         import webapp
 
         prompt = webapp._build_full_ad_prompt(
             "HydroBoost", "Stay charged", None, None, None, None
         )
-        self.assertIn('reading exactly "Stay charged"', prompt)
+        self.assertIn('a large headline reading exactly "Stay charged"', prompt)
+        self.assertNotIn("supporting line", prompt)
+
+    def test_full_ad_does_not_repeat_a_message_identical_to_the_headline(self):
+        import webapp
+
+        prompt = webapp._build_full_ad_prompt(
+            "HydroBoost", "Stay charged", "Stay charged", None, None, None
+        )
+        self.assertEqual(prompt.count("Stay charged"), 1)
 
     def test_allow_text_sends_no_negative_prompt_and_never_retries(self):
         # Ticked, the picture is meant to carry type. Every no-text

@@ -332,6 +332,36 @@ class PsdExportTest(unittest.TestCase):
             "every top-level layer must survive isolation, groups included",
         )
 
+    def test_background_override_can_fit_instead_of_crop(self):
+        # Cropping to fill is right for a texture and wrong for artwork
+        # the model laid out: it takes the end off a generated headline.
+        # "contain" has to keep the whole image, top and bottom included.
+        from src.image_ops import apply_layer_background_override
+
+        art = Image.new("RGB", (300, 300), (10, 10, 10))
+        art.paste((255, 0, 0), (0, 0, 300, 20))       # a band at the very top
+        art.paste((0, 0, 255), (0, 280, 300, 300))    # and one at the very bottom
+        base = Image.new("RGB", (400, 200), (9, 9, 9))
+
+        cropped = apply_layer_background_override(base, (0, 0, 400, 200), art)
+        contained = apply_layer_background_override(
+            base, (0, 0, 400, 200), art, fit="contain"
+        )
+        self.assertEqual(contained.size, (400, 200))
+
+        def has(image, colour):
+            return any(
+                abs(p[0] - colour[0]) + abs(p[1] - colour[1]) + abs(p[2] - colour[2]) < 40
+                for p in image.convert("RGB").getdata()
+            )
+
+        # A square fitted into a wide box keeps both edge bands...
+        self.assertTrue(has(contained, (255, 0, 0)), "top of the artwork was lost")
+        self.assertTrue(has(contained, (0, 0, 255)), "bottom of the artwork was lost")
+        # ...where filling the same box crops them away.
+        self.assertFalse(has(cropped, (255, 0, 0)))
+        self.assertFalse(has(cropped, (0, 0, 255)))
+
     def test_build_layered_psd_rejects_empty_layer_list(self):
         with self.assertRaises(ValueError):
             build_layered_psd([], (100, 100))
