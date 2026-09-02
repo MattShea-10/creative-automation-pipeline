@@ -34,6 +34,17 @@
     textarea { @apply resize-y min-h-[4.5rem]; }
     details { @apply border border-slate-700 rounded-md px-4 py-3 mb-5 bg-slate-800/40; }
     summary { @apply font-semibold cursor-pointer text-[0.92rem] text-slate-200; }
+    /* The hand-built route, tinted like Manual Creative below it -- the
+       two are the same kind of thing (you supply the artwork and set the
+       layers yourself), against the AI generator's yellow. Its own rule
+       rather than the class, since this one is a nested .layer-section
+       and inherits that sizing. */
+    details.layer-section[data-role="custom-hero-section"] {
+      @apply border-emerald-600 bg-emerald-950/40;
+    }
+    details.layer-section[data-role="custom-hero-section"] > summary {
+      @apply text-emerald-200;
+    }
     .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .manual-creative-box > summary { @apply uppercase tracking-wide; }
     .manual-creative-box.is-disabled { @apply opacity-50 border-slate-700 bg-slate-800/30; }
