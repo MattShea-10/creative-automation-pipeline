@@ -4941,6 +4941,48 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         buf.seek(0)
         return buf
 
+    def test_a_layer_switched_off_in_the_template_locks_its_hide_box(self):
+        # The layer isn't drawn whatever the form says, so the box is
+        # already true and nothing here can make it false. Ticked and
+        # locked beats a box that invites a click that changes nothing.
+        import webapp as _webapp
+
+        self._stage_real_template()
+        off = _webapp._switched_off_layers()
+        if not off:
+            self.skipTest("no switched-off layers in the staged templates")
+        page = self.client.get("/").data.decode()
+        for layer in off:
+            if layer not in _webapp.HIDEABLE_LAYER_NAMES:
+                continue
+            box = re.search(
+                r'<input type="checkbox" id="layer_%s_hidden".*?>' % layer, page, re.S
+            )
+            self.assertIsNotNone(box, f"no hide box rendered for {layer}")
+            self.assertIn("checked", box.group(0))
+            self.assertIn("disabled", box.group(0))
+            # A disabled checkbox posts nothing, so the true value has to
+            # travel some other way or the run would record the layer as
+            # visible when it wasn't.
+            self.assertRegex(
+                page,
+                r'<input type="hidden" name="layer_%s_hidden" value="1">' % layer,
+            )
+
+    def test_a_visible_layer_keeps_an_editable_hide_box(self):
+        import webapp as _webapp
+
+        page = self.client.get("/").data.decode()
+        for layer in _webapp.HIDEABLE_LAYER_NAMES:
+            if layer in _webapp._switched_off_layers():
+                continue
+            box = re.search(
+                r'<input type="checkbox" id="layer_%s_hidden".*?>' % layer, page, re.S
+            )
+            if box is None:
+                continue
+            self.assertNotIn("disabled", box.group(0), f"{layer} must stay changeable")
+
     def test_every_hideable_text_section_is_addressable_by_its_hide_box(self):
         # The hide checkbox greys its section by looking for
         # details[data-layer-section=<layer>]. That pairing is a contract

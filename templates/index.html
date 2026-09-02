@@ -64,6 +64,11 @@
       content: " -- hidden";
       @apply font-normal text-slate-500;
     }
+    /* A hide checkbox the form cannot change: the layer is off in the
+       template itself. Dimmed like any inactive control, and not
+       clickable, so it reads as a statement of fact rather than a
+       setting someone failed to notice. */
+    label.is-forced-off { @apply opacity-50; cursor: not-allowed; }
     [data-layer-controls].is-layer-hidden {
       @apply opacity-40;
       pointer-events: none;
@@ -406,10 +411,19 @@
             </div>
             <div class="inline-controls" style="margin-top: 0.4rem;">
               {% for layer in hideable_layers %}
-                <label for="layer_{{ layer }}_hidden" style="font-weight: 400;">
+                {# Switched off in Photoshop in every template that has it: the
+                   layer is not drawn whatever this form says, so the box is
+                   already true and there is nothing here that can make it
+                   false. Ticked and locked, with a hidden input carrying the
+                   value -- a disabled checkbox posts nothing, which would
+                   record the layer as visible in a run where it wasn't. #}
+                {% set forced_off = layer in switched_off_layers %}
+                <label for="layer_{{ layer }}_hidden" style="font-weight: 400;"
+                       {% if forced_off %}class="is-forced-off" title="The {{ layer }} layer is switched off in your saved templates, so it is never drawn. Turn it on in Photoshop and re-save to control it here."{% endif %}>
                   <input type="checkbox" id="layer_{{ layer }}_hidden" name="layer_{{ layer }}_hidden" value="1"
                          data-role="layer-hide" data-layer="{{ layer }}"
-                         {% if prefill.get('layer_' ~ layer ~ '_hidden') %}checked{% endif %}>
+                         {% if forced_off %}checked disabled data-forced-off="1"{% elif prefill.get('layer_' ~ layer ~ '_hidden') %}checked{% endif %}>
+                  {% if forced_off %}<input type="hidden" name="layer_{{ layer }}_hidden" value="1">{% endif %}
                   {{ layer }}
                 </label>
               {% endfor %}
@@ -1360,6 +1374,11 @@
             root.querySelectorAll("[data-layer-controls]").forEach(function (target) {
               if (target.tagName === "FIELDSET" && target.disabled) return;
               target.querySelectorAll("input, select, textarea").forEach(function (el) {
+                // A box locked because its layer is off in the template
+                // stays disabled: its value is carried by the hidden
+                // input beside it, and re-enabling it here would post
+                // the field twice.
+                if (el.dataset && el.dataset.forcedOff) return;
                 el.disabled = false;
               });
             });

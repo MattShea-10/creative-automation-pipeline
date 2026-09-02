@@ -46,6 +46,8 @@ from PIL import Image
 from werkzeug.utils import secure_filename
 
 from src.creative_render import render_creative, render_creative_layers
+from psd_tools import PSDImage
+
 from src.psd_export import (
     save_layered_psd,
     save_layered_psd_preserving_type,
@@ -899,6 +901,35 @@ def _editable_text_layers() -> set:
     return editable
 
 
+def _switched_off_layers() -> set:
+    """Named layers the saved templates HAVE but that are switched off in
+    every template carrying them.
+
+    Not the same as absent, and not the same as hidden-by-this-form: the
+    designer turned these off in Photoshop, so they are not drawn no
+    matter what the form asks for. The "hide" checkbox for one of them is
+    therefore already true and cannot be made false from here -- it is
+    shown ticked and locked rather than left inviting a click that would
+    change nothing.
+
+    Every layer kind, not just text: logo, cta and product get a hide
+    checkbox too, and a designer can switch any of them off.
+    """
+    seen, visible = set(), set()
+    _templates, template_paths = _default_size_templates()
+    for path in template_paths.values():
+        try:
+            psd = PSDImage.open(path)
+        except Exception:
+            continue
+        for layer in psd.descendants():
+            name = layer.name.strip().lower()
+            seen.add(name)
+            if layer.visible:
+                visible.add(name)
+    return seen - visible
+
+
 def _present_text_layers() -> set:
     """Every named text layer the saved templates have at all -- switched
     on or off.
@@ -929,6 +960,7 @@ def index():
         session_id=uuid.uuid4().hex,
         editable_text_layers=_editable_text_layers(),
         present_text_layers=_present_text_layers(),
+        switched_off_layers=_switched_off_layers(),
         hideable_layers=HIDEABLE_LAYER_NAMES,
     )
 
@@ -973,6 +1005,7 @@ def edit(job_id):
         session_id=session_id,
         editable_text_layers=_editable_text_layers(),
         present_text_layers=_present_text_layers(),
+        switched_off_layers=_switched_off_layers(),
         hideable_layers=HIDEABLE_LAYER_NAMES,
     )
 
