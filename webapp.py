@@ -254,6 +254,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "ai_hero_enabled",
     "upload_ai_enabled",
     "upload_ai_keep",
+    "upload_ai_allow_text",
     "layer_header_glow",
     "layer_description_glow",
     "layer_header_background",
@@ -354,9 +355,26 @@ BACKGROUND_PROMPT_GUIDANCE = (
     "even lighting, plenty of empty space for overlaid text"
 )
 
+# The same guidance for a run that WANTS type in the picture. The
+# no-logos/leave-room-for-text half of the clause above exists to keep a
+# backdrop out of the template's way; asked to set type, the model is no
+# longer painting a backdrop and that half is working against the brief.
+BACKGROUND_PROMPT_GUIDANCE_WITH_TEXT = (
+    "sharp focus, crisp fine detail, high resolution, professional graphic design, "
+    "clean legible typography, balanced composition"
+)
 
-def _generate_text_free(provider, prompt: str, width: int, height: int):
+
+def _generate_text_free(provider, prompt: str, width: int, height: int, allow_text: bool = False):
     """Generate `prompt`, and regenerate if the result has text baked in.
+
+    With `allow_text`, none of that happens: no negative prompt, no OCR
+    check, no retry. Suppressing lettering is right for a backdrop the
+    template's own header and CTA sit on top of, and exactly wrong when
+    someone has asked the model for a logo, a headline or a laid-out
+    creative -- which is the one thing Ideogram is here for. The caller
+    decides which of the two it wants; this only stops fighting the
+    result once it has.
 
     Returns (image, prompt_used, attempts, leftover_findings) where
     `leftover_findings` is a TextCheckResult describing what's still in
@@ -386,6 +404,11 @@ def _generate_text_free(provider, prompt: str, width: int, height: int):
     # Providers without such a field (Pollinations' GET endpoint) fold it
     # into the prompt themselves -- weaker, but it's that or nothing.
     negative = NO_TEXT_CLAUSE
+    if allow_text:
+        # One call, taken as it comes: nothing to steer away from and
+        # nothing to verify, so the retry budget stays unspent.
+        image = provider.generate(prompt, width=width, height=height)
+        return image, prompt, 1, TextCheckResult(available=False)
     # The offline placeholder draws the prompt across its own gradient on
     # purpose -- that is what makes it recognisable as a placeholder. It
     # would fail the check every single time, burn the whole retry budget
@@ -996,6 +1019,13 @@ def generate():
     # the backdrop you were adjusting it against -- and paying for the
     # replacement.
     upload_ai_keep = bool(request.form.get("upload_ai_keep"))
+    # Let the model set type. Off by default: a generated backdrop sits
+    # under the template's own header, description and CTA, and lettering
+    # there is noise competing with them. Ticked, the picture is being
+    # asked to BE the creative -- a logo lockup, a headline, a laid-out
+    # poster -- and every no-text defence downstream has to stand down or
+    # it will spend the retry budget destroying what was asked for.
+    upload_ai_allow_text = bool(request.form.get("upload_ai_allow_text"))
     upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
     # ALL_PROVIDER_NAMES, not PROVIDER_NAMES: the offline placeholder is
@@ -1403,12 +1433,24 @@ def generate():
         # The product name stays: it steers mood and subject matter,
         # which is the useful part. "unbranded" is what stops it being
         # read as a logo brief.
-        upload_ai_prompt_text = upload_ai_prompt or (
-            f"abstract background texture evoking {product_name or 'the product'}, "
-            "unbranded, subtle gradient, soft lighting"
-        )
+        if upload_ai_allow_text:
+            # "unbranded" is the whole point of the default auto-prompt
+            # and the opposite of what this run is for, so it doesn't
+            # appear here.
+            upload_ai_prompt_text = upload_ai_prompt or (
+                f"advertising creative for {product_name or 'the product'}, "
+                "bold headline typography, clean layout"
+            )
+        else:
+            upload_ai_prompt_text = upload_ai_prompt or (
+                f"abstract background texture evoking {product_name or 'the product'}, "
+                "unbranded, subtle gradient, soft lighting"
+            )
         if upload_ai_background_style:
-            upload_ai_prompt_text = f"{upload_ai_prompt_text}, {BACKGROUND_PROMPT_GUIDANCE}"
+            upload_ai_prompt_text = (
+                f"{upload_ai_prompt_text}, "
+                f"{BACKGROUND_PROMPT_GUIDANCE_WITH_TEXT if upload_ai_allow_text else BACKGROUND_PROMPT_GUIDANCE}"
+            )
         try:
             upload_ai_width, upload_ai_height = _generation_size(
                 _default_template_sizes(), CONTENT_PSD_SIZE
@@ -1423,12 +1465,18 @@ def generate():
                 upload_ai_prompt_text,
                 upload_ai_width,
                 upload_ai_height,
+                allow_text=upload_ai_allow_text,
             )
             background_notes_pending = (
                 f"Campaign artwork generated with AI ({upload_ai_provider}) at "
                 f"{upload_ai_image.width}x{upload_ai_image.height} -- prompt: "
                 f"\"{upload_ai_prompt_used}\"."
             )
+            if upload_ai_allow_text:
+                background_notes_pending += (
+                    " Text was allowed in this image, so no no-text instruction was sent, "
+                    "nothing was checked for lettering, and nothing was painted out."
+                )
             if upload_ai_attempts > 1:
                 background_notes_pending += (
                     f" Regenerated {upload_ai_attempts - 1} more time"
@@ -1443,7 +1491,7 @@ def generate():
                     background_notes_pending += " " + cleaned_note
                 if cleaned_warning:
                     background_warnings_pending.append(cleaned_warning)
-            elif not upload_ai_text.available:
+            elif not upload_ai_text.available and not upload_ai_allow_text:
                 background_warnings_pending.append(
                     "Couldn't check the generated backdrop for text -- Tesseract isn't "
                     "installed (macOS: brew install tesseract). The image may have "

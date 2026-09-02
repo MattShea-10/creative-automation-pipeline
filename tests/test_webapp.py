@@ -2289,6 +2289,55 @@ class PaidProviderTest(unittest.TestCase):
         seeds = self._ideogram_seeds(2, seed=4242)
         self.assertEqual(seeds, [4242, 4242])
 
+    def test_allow_text_sends_no_negative_prompt_and_never_retries(self):
+        # Ticked, the picture is meant to carry type. Every no-text
+        # defence has to stand down or the retry budget gets spent
+        # destroying exactly what was asked for.
+        from PIL import Image as _Image
+
+        import webapp
+
+        calls = []
+
+        class _Provider:
+            name = "stub"
+            supports_negative_prompt = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                calls.append((prompt, negative_prompt))
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        image, shown, attempts, result = webapp._generate_text_free(
+            _Provider(), "poster with a big headline", 64, 64, allow_text=True
+        )
+        self.assertEqual(len(calls), 1, "one call, no retries")
+        self.assertIsNone(calls[0][1], "no negative prompt may be sent")
+        self.assertEqual(attempts, 1)
+        self.assertNotIn("excluded", shown)
+        self.assertFalse(result.available, "nothing should have been OCR-checked")
+
+    def test_without_allow_text_the_no_text_clause_still_goes_out(self):
+        from PIL import Image as _Image
+
+        import webapp
+
+        calls = []
+
+        class _Provider:
+            name = "stub"
+            supports_negative_prompt = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                calls.append((prompt, negative_prompt))
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        _image, shown, _attempts, _result = webapp._generate_text_free(
+            _Provider(), "a backdrop", 64, 64
+        )
+        self.assertIsNotNone(calls[0][1])
+        self.assertIn("no text", calls[0][1])
+        self.assertIn("excluded", shown)
+
     def test_ideogram_snaps_a_request_to_an_aspect_it_renders(self):
         # Ideogram takes a named ratio rather than pixels.
         from src.providers.ideogram_provider import _closest_aspect
