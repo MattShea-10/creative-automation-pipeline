@@ -315,13 +315,6 @@
                  {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
           <label for="upload_custom_hero_enabled" style="margin: 0; font-weight: 600;">Campaign hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp)</span></label>
         </div>
-        {# The guidance keeps a switch of its own rather than riding on the
-           one above: "explain this panel" and "this is the route I am
-           taking" are different questions, and one box cannot answer both. #}
-        <div class="checkbox-row" style="margin: 0.2rem 0 0;">
-          <input type="checkbox" id="upload_creative_help" data-role="upload-creative-help-toggle">
-          <label for="upload_creative_help" style="margin: 0; font-weight: 400; color: var(--muted);">How this works</label>
-        </div>
 
         {# The hand-built route: supply the picture yourself, then edit the
            layers the templates draw over it. Folded together because they are
@@ -335,6 +328,20 @@
            editing, which only matters once you have committed to building
            the creative by hand. #}
         <div data-role="custom-hero-body">
+        <div class="hint">
+          <strong>This campaign needs artwork from one of two places: a hero image you upload here, or an
+          AI-generated one below.</strong> Either way you supply a single picture, not a design -- the layout
+          comes from the 728x480 PSD already saved in <code>default_templates/</code>, which your image
+          becomes the backdrop of. From there it carries onto every other saved size, each one keeping its own
+          product, logo, CTA and text exactly where they were designed.
+        </div>
+        <div class="hint" style="margin-top: 0.3rem;">
+          Cropped to fill each size's <code>background</code> layer, so a wide image is safe -- but the edges
+          get trimmed differently per size. Keep the subject away from them. This is used when the AI
+          generator below is switched off; with it on, a freshly generated image wins. The "Output
+          sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
+          batch is whatever's in <code>default_templates/</code>.
+        </div>
         <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
@@ -772,22 +779,7 @@
           {% endif %}
           </details>
         </div>
-        <div data-role="upload-creative-help" hidden>
-        <div class="hint">
-          <strong>This campaign needs artwork from one of two places: a hero image you upload here, or an
-          AI-generated one below.</strong> Either way you supply a single picture, not a design -- the layout
-          comes from the 728x480 PSD already saved in <code>default_templates/</code>, which your image
-          becomes the backdrop of. From there it carries onto every other saved size, each one keeping its own
-          product, logo, CTA and text exactly where they were designed.
-        </div>
-        <div class="hint" style="margin-top: 0.3rem;">
-          Cropped to fill each size's <code>background</code> layer, so a wide image is safe -- but the edges
-          get trimmed differently per size. Keep the subject away from them. This is used when the AI
-          generator below is switched off; with it on, a freshly generated image wins. The "Output
-          sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
-          batch is whatever's in <code>default_templates/</code>.
-        </div>
-        </div>
+
         </details>
 
         <label style="margin-top: 0.9rem; display: block;">Upload AI Image</label>
@@ -1391,17 +1383,6 @@
             });
           });
         }
-      }
-
-      // Panel guidance, folded behind its own switch. No name -- it is a
-      // reading aid, not a setting, and posting it would put a field in
-      // form_state that means nothing to a run.
-      var helpToggle = root.querySelector('[data-role="upload-creative-help-toggle"]');
-      var helpBody = root.querySelector('[data-role="upload-creative-help"]');
-      if (helpToggle && helpBody) {
-        var syncHelp = function () { helpBody.hidden = !helpToggle.checked; };
-        helpToggle.addEventListener("change", syncHelp);
-        syncHelp();
       }
 
       // The two ways of supplying artwork are one choice, so their
