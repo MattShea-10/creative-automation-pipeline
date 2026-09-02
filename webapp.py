@@ -214,7 +214,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "product_name", "market", "audience", "campaign_message",
     "brand_color_1", "brand_color_2", "brand_color_3",
     "ai_hero_prompt", "ai_hero_provider",
-    "upload_ai_prompt", "upload_ai_provider",
+    "upload_ai_prompt", "upload_ai_provider", "upload_ai_headline",
     "upload_ai_background_style",
     "layer_header_glow_color", "layer_header_glow_size", "layer_header_glow_opacity",
     "layer_header_align", "layer_header_background_color", "layer_header_background_opacity",
@@ -1136,6 +1136,15 @@ def generate():
     # thing this must not produce. Implies allow_text: an ad with the
     # lettering suppressed is a photograph.
     upload_ai_full_ad = bool(request.form.get("upload_ai_full_ad"))
+    # The headline for a generated ad, kept separate from
+    # layer_header_text on purpose. That one is an override for the
+    # template's own header layer, and it greys out when the layer is
+    # switched off in Photoshop -- correct for a layer nobody will draw,
+    # and wrong here, where the words are not going into a layer at all
+    # but into the prompt. Falls back to the layer field, then to the
+    # campaign message, so a brief that is already filled in needs
+    # nothing typed twice.
+    upload_ai_headline = (request.form.get("upload_ai_headline") or "").strip() or None
     if upload_ai_full_ad:
         upload_ai_allow_text = True
     upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
@@ -1531,7 +1540,11 @@ def generate():
             "generated and the templates kept their own backdrops. Untick it and tick "
             "\"Generate the hero image with AI\" to make one."
         )
-    if upload_ai_enabled and upload_ai_image is None:
+    # Full ad mode replaces every template with its own generation, so a
+    # campaign backdrop generated here is paid for, waited on, and then
+    # thrown away -- an extra call and up to 40s on top of the one-per-
+    # size the mode already costs.
+    if upload_ai_enabled and upload_ai_image is None and not upload_ai_full_ad:
         # A backdrop, not a product shot. This used to ask for
         # "professional studio product photo of X", which is the wrong
         # brief entirely for a layer that sits *behind* the template's
@@ -1717,7 +1730,16 @@ def generate():
     # how a second campaign card, cloned blank with its file inputs
     # reset, ended up previewing a set indistinguishable from the first
     # one's.
-    if content_psd_provided or upload_ai_image is not None or upload_hero_image is not None:
+    # Full ad mode drives a templated batch as well: it renders one image
+    # per saved size and hands each in as that size's template. Without
+    # it here the saved sizes are never brought in, and a run that needs
+    # no hero image at all is rejected for not having one.
+    if (
+        content_psd_provided
+        or upload_ai_image is not None
+        or upload_hero_image is not None
+        or upload_ai_full_ad
+    ):
         default_templates, default_template_paths = _default_size_templates()
     else:
         default_templates, default_template_paths = {}, {}
@@ -2211,7 +2233,12 @@ def generate():
     # count is said out loud rather than discovered on the bill.
     if upload_ai_full_ad and sizes:
         full_ad_prompt = _build_full_ad_prompt(
-            product_name, campaign_message, layer_header_text, layer_cta_text, audience, market
+            product_name,
+            campaign_message,
+            upload_ai_headline or layer_header_text,
+            layer_cta_text,
+            audience,
+            market,
         )
         provider_for_ads = get_provider(upload_ai_provider)
         background_notes.append(

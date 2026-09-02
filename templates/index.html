@@ -346,13 +346,23 @@
               <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
               <span>Generate the whole ad <span style="font-weight: 400; color: var(--muted);">(headline, hero and CTA, from your campaign brief)</span></span>
             </div>
+            <div class="field" style="margin-top: 0.5rem; margin-bottom: 0;">
+              <label for="upload_ai_headline" style="font-weight: 400;">Ad headline <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+              <input type="text" id="upload_ai_headline" name="upload_ai_headline" placeholder="Leave blank to use the header text, then the campaign message" value="{{ prefill.get('upload_ai_headline', '') }}">
+              <div class="hint" style="margin-top: 0.2rem;">
+                The words the model is told to set, quoted exactly. Separate from the header override above,
+                which greys out when the template's header layer is switched off -- right for a layer nobody
+                will draw, wrong here, where the copy goes into the prompt rather than into a layer.
+              </div>
+            </div>
             <div class="hint" style="margin-top: 0.2rem;">
               The model lays out the entire creative and the result is used as-is -- your saved templates are
               not drawn over it, or its headline and theirs would both appear. The prompt is composed from the
               campaign brief: product name, header text and CTA text go in as exact quoted copy, audience and
               market steer the art direction. One generation per output size, at that size's own shape, since
               a laid-out ad can't be cropped from a square without losing the edge of the headline -- so this
-              costs one API call per size, not one per run.
+              costs one API call per size, not one per run. The campaign backdrop generator is skipped
+              while this is on -- its image would be replaced unseen.
             </div>
             <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="checkbox" id="upload_ai_allow_text" name="upload_ai_allow_text" value="1" {% if prefill.get('upload_ai_allow_text') %}checked{% endif %}>

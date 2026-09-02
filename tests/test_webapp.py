@@ -5269,6 +5269,69 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # campaign creative. The brief has to ask for a picture too.
         self.assertIn("hero product image or a photographic background", calls[0])
 
+    def test_full_ad_mode_does_not_also_generate_a_backdrop_it_will_discard(self):
+        # Every size gets its own generation and each one replaces that
+        # size's template outright, so a campaign backdrop generated
+        # first is paid for, waited on, and thrown away.
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "product_name": "HydroBoost",
+            "market": "UK",
+            "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_ai_enabled": "1",
+            "upload_ai_full_ad": "1",
+            "upload_ai_provider": "mock",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Full ad mode", r.data)
+        self.assertNotIn(b"Campaign artwork generated with AI", r.data)
+
+    def test_full_ad_headline_is_independent_of_the_header_layer_override(self):
+        # The header override greys out when the template's header layer
+        # is switched off -- right for a layer nobody draws, wrong for
+        # copy that goes into a prompt. The ad headline is its own field.
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "product_name": "HydroBoost",
+            "market": "UK",
+            "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_ai_enabled": "1",
+            "upload_ai_full_ad": "1",
+            "upload_ai_provider": "mock",
+            "upload_ai_headline": "First 500 get free cans",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b'reading exactly &#34;First 500 get free cans&#34;', r.data)
+
+    def test_full_ad_mode_needs_no_hero_image_of_its_own(self):
+        # It supplies every size itself, so demanding a hero image (or a
+        # template) up front rejected a run that was going to render fine.
+        self._stage_real_template()
+        data = {
+            "product_name": "HydroBoost",
+            "market": "UK",
+            "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_ai_enabled": "1",
+            "upload_ai_full_ad": "1",
+            "upload_ai_provider": "mock",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, "full ad mode should not need a hero image")
+        self.assertIn(b"Full ad mode", r.data)
+
     def test_full_ad_mode_replaces_the_template_instead_of_layering_over_it(self):
         # The whole point: the model has already drawn a headline, so the
         # template must not draw a second one on top of it.
