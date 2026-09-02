@@ -11,3 +11,10 @@ better-profanity>=0.7.0
 # binary too (macOS: brew install tesseract). Without either, the check
 # reports itself as unavailable and the run carries on.
 pytesseract>=0.3.10
+# Vector shape rendering for psd-tools. A template whose CTA is a group
+# containing a rectangle has a vector shape layer in it, and without this
+# psd-tools raises ImportError from composite() the moment any layer's
+# visibility is toggled -- which is how the app isolates layers. Missing,
+# every per-layer operation silently returns nothing and the render loses
+# the layers it was meant to keep.
+aggdraw>=1.3.15

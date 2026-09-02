@@ -7,6 +7,8 @@ import re
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, Union
 
+import logging
+
 from PIL import Image, ImageDraw, ImageFilter, ImageFont
 
 # Video files a hero "image" can also be sourced from -- a single frame is
@@ -14,6 +16,9 @@ from PIL import Image, ImageDraw, ImageFilter, ImageFont
 # hero image from that point on. Requires opencv-python(-headless), listed
 # in requirements.txt.
 VIDEO_EXTENSIONS = (".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm")
+
+
+_log = logging.getLogger(__name__)
 
 
 def extract_video_frame(path: Union[str, Path], frame_seconds: Optional[float] = None) -> Image.Image:
@@ -1405,6 +1410,17 @@ def get_psd_layer_stack(psd_path: Union[str, Path]) -> Optional[List[Tuple[str, 
                 layer.visible = layer is target
             try:
                 composite = psd.composite()
+            except ImportError as exc:
+                # Same aggdraw dependency as
+                # _psd_composite_with_layers_hidden() above. Skipped
+                # silently, the layer simply vanishes from the stack --
+                # and from the rebuilt PSD download built out of it.
+                _log.error(
+                    "Cannot isolate layer %r in %s -- %s. Install aggdraw "
+                    "(pip install aggdraw) or this layer is dropped from the "
+                    "exported PSD.", target.name, psd_path, exc,
+                )
+                continue
             except Exception:
                 continue
             if composite is None:
@@ -1680,6 +1696,21 @@ def _psd_composite_with_layers_hidden(
         for layer in targets:
             layer.visible = False
         composite = psd.composite()
+    except ImportError as exc:
+        # psd-tools can only draw a VECTOR SHAPE layer with aggdraw
+        # installed, and it raises the moment a composite has to be
+        # re-rendered rather than read from the file's cached preview --
+        # which is every call here, since isolating a layer means
+        # toggling visibility. A template whose CTA is a group holding a
+        # rectangle has such a layer. Swallowed silently this returns
+        # None, the caller reads that as "nothing to restore", and the
+        # render quietly drops every layer this was meant to bring back.
+        _log.error(
+            "Cannot recomposite %s with layers hidden -- %s. Install aggdraw "
+            "(pip install aggdraw) or the layers around a replaced background "
+            "will be lost.", psd_path, exc,
+        )
+        return None
     except Exception:
         return None
     finally:

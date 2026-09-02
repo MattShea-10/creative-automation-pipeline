@@ -293,6 +293,44 @@ class PsdExportTest(unittest.TestCase):
         self.assertEqual(after["description"].text, "Still works")
         self.assertNotIn("header", after)
 
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_vector_shape_layer_does_not_cost_us_the_other_layers(self):
+        # A CTA built as a group holding a rectangle puts a VECTOR SHAPE
+        # layer in the template. psd-tools can only draw one with aggdraw
+        # installed, and it raises the moment a composite has to be
+        # re-rendered -- which is every per-layer operation here, since
+        # isolating a layer means toggling visibility. Both call sites
+        # caught that silently: the foreground came back as None so a
+        # replaced background restored nothing over itself, and the stack
+        # simply lost the layer. The creative arrived as a bare backdrop.
+        from psd_tools import PSDImage
+
+        from src.image_ops import get_psd_layer_foreground, get_psd_layer_stack
+
+        psd = PSDImage.open(self.REAL_TEMPLATE)
+        top_level = [l.name.strip().lower() for l in psd if (l.name or "").strip()]
+        has_shape = any(
+            child.kind == "shape"
+            for layer in psd
+            if layer.is_group()
+            for child in layer
+        )
+        if not has_shape:
+            self.skipTest("template has no vector shape layer to exercise this")
+
+        self.assertIsNotNone(
+            get_psd_layer_foreground(self.REAL_TEMPLATE, "background"),
+            "no foreground to restore -- a replaced background will wipe every "
+            "other layer (is aggdraw installed?)",
+        )
+        stack = get_psd_layer_stack(self.REAL_TEMPLATE)
+        self.assertIsNotNone(stack)
+        self.assertEqual(
+            [name.strip().lower() for name, _img in stack],
+            top_level,
+            "every top-level layer must survive isolation, groups included",
+        )
+
     def test_build_layered_psd_rejects_empty_layer_list(self):
         with self.assertRaises(ValueError):
             build_layered_psd([], (100, 100))
