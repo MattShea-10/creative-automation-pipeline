@@ -3717,8 +3717,18 @@ class ContentPsdQuickModeTest(unittest.TestCase):
             cursor = match.end()
         wrapper = page[start:cursor]
 
-        for name in ("upload_ai_prompt", "upload_ai_provider", "upload_ai_background_style"):
+        for name in ("upload_ai_prompt", "upload_ai_background_style"):
             self.assertIn('name="%s"' % name, wrapper)
+        # The provider is deliberately NOT in here any more. It sits
+        # directly under the generator's own checkbox, above "Keep this
+        # image": which service is being used decides what the switches
+        # below it can even offer, so it has to be read and set first.
+        self.assertNotIn('name="upload_ai_provider"', wrapper)
+        self.assertLess(
+            page.index('name="upload_ai_provider"'),
+            page.index('name="upload_ai_keep"'),
+            "the provider choice belongs above the keep switch",
+        )
         # The checkbox itself must stay outside, or ticking it would
         # disable the only control that can untick it.
         self.assertNotIn('name="upload_ai_keep"', wrapper)
@@ -5367,6 +5377,26 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200, "full ad mode should not need a hero image")
         self.assertIn(b"Full ad mode", r.data)
+
+    def test_the_typography_switches_live_in_one_ideogram_only_block(self):
+        # Pollinations has no typography worth the name, so both switches
+        # that ask for it are hidden together when it is selected. The
+        # script finds them by this attribute, and the provider select
+        # has to sit above them to be worth reading first.
+        page = self.client.get("/").data.decode()
+        self.assertIn('data-role="ideogram-only"', page)
+        block_at = page.index('data-role="ideogram-only"')
+        for name in ("upload_ai_full_ad", "upload_ai_allow_text"):
+            self.assertGreater(
+                page.index(f'name="{name}"'),
+                block_at,
+                f"{name} must sit inside the Ideogram-only block",
+            )
+        self.assertLess(
+            page.index('name="upload_ai_provider"'),
+            block_at,
+            "the provider choice has to come before the switches it governs",
+        )
 
     def test_full_ad_mode_replaces_the_template_instead_of_layering_over_it(self):
         # The whole point: the model has already drawn a headline, so the

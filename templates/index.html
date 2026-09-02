@@ -321,6 +321,15 @@
             it becomes the backdrop on every size saved in <code>default_templates/</code>, the 728x480
             included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
           </div>
+          <div class="inline-controls" style="margin-top: 0.5rem;">
+              <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Provider</span>
+                <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
+                  <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
+                  <option value="ideogram" {% if prefill.get('upload_ai_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
+                </select>
+              </label>
+            </div>
           <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
             <div class="checkbox-row" style="margin-top: 0;">
               <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
@@ -342,6 +351,10 @@
             <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
             <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
             <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
+            {# Only Ideogram is worth handing a laid-out ad or live type to;
+               Pollinations has no typography to speak of, so these switches are
+               hidden rather than offered and disappointed. #}
+            <div data-role="ideogram-only">
             <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
               <span>Generate the whole ad <span style="font-weight: 400; color: var(--muted);">(headline, hero and CTA, from your campaign brief)</span></span>
@@ -381,14 +394,6 @@
               campaign artwork doesn't want it stripped out of the hero image beside it. Expect words in
               the picture, and check they say what you want.
             </div>
-            <div class="inline-controls" style="margin-top: 0.5rem;">
-              <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
-                <span style="white-space: nowrap;">Provider</span>
-                <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
-                  <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
-                  <option value="ideogram" {% if prefill.get('upload_ai_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
-                </select>
-              </label>
             </div>
             <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="hidden" name="upload_ai_background_style_seen" value="1">
@@ -1332,6 +1337,45 @@
             });
           });
         }
+      }
+
+      // What the provider can actually do decides what is on offer.
+      // Pollinations has no typography worth the name, so the two
+      // switches that ask for it are hidden rather than shown and
+      // disappointed -- and unticked on the way out, or a run would
+      // carry a request the provider can't honour. Choosing Ideogram
+      // turns the whole-ad switch on, since that is the reason to pay
+      // for it; it can be turned straight back off.
+      //
+      // The two are mutually exclusive by construction: "lay out the
+      // entire ad" and "put type in the backdrop the template draws
+      // over" are different jobs, and ticking both reads as a request
+      // for both.
+      var providerSelect = root.querySelector('[name="upload_ai_provider"]');
+      var ideogramOnly = root.querySelectorAll('[data-role="ideogram-only"]');
+      var fullAdBox = root.querySelector('[name="upload_ai_full_ad"]');
+      var allowTextBox = root.querySelector('[name="upload_ai_allow_text"]');
+      if (providerSelect && ideogramOnly.length) {
+        var syncProvider = function (userChanged) {
+          var isIdeogram = providerSelect.value === "ideogram";
+          ideogramOnly.forEach(function (el) { el.hidden = !isIdeogram; });
+          if (!isIdeogram) {
+            if (fullAdBox) fullAdBox.checked = false;
+            if (allowTextBox) allowTextBox.checked = false;
+          } else if (userChanged && fullAdBox && !allowTextBox.checked) {
+            fullAdBox.checked = true;
+          }
+        };
+        providerSelect.addEventListener("change", function () { syncProvider(true); });
+        syncProvider(false);
+      }
+      if (fullAdBox && allowTextBox) {
+        fullAdBox.addEventListener("change", function () {
+          if (fullAdBox.checked) allowTextBox.checked = false;
+        });
+        allowTextBox.addEventListener("change", function () {
+          if (allowTextBox.checked) fullAdBox.checked = false;
+        });
       }
 
       // One provider choice, two dropdowns. Upload Creative and Manual
