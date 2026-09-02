@@ -1560,9 +1560,15 @@ def generate():
             # treats it as art direction and letters whatever it likes,
             # or nothing; quoted, it renders those characters -- which is
             # the point of asking a typography model for type at all.
+            # Type AND a picture. Asking only for headline typography
+            # gets a typographic poster back -- words on a field of
+            # colour, nothing behind them -- which is not a campaign
+            # creative. The brief is a hero shot, or failing that a real
+            # photographic scene, with the brand set over it.
             upload_ai_prompt_text = upload_ai_prompt or (
                 f'advertising creative for {product_name or "the product"}, '
                 + (f'the words "{product_name}" set as the headline, ' if product_name else "")
+                + "a hero product image or a photographic background behind the type, "
                 + "bold headline typography, clean layout"
             )
         else:
@@ -2024,6 +2030,7 @@ def generate():
             prompt = ai_hero_prompt or (
                 f'advertising creative for {brand_words or "the product"}, '
                 + (f'the words "{brand_words}" set as the headline, ' if brand_words else "")
+                + "a hero product image or a photographic background behind the type, "
                 + "bold headline typography, clean layout"
             )
         else:

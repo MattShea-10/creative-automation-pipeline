@@ -5264,6 +5264,10 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertTrue(calls)
         self.assertIn('the words "HydroBoost" set as the headline', calls[0])
+        # Type alone comes back as a typographic poster -- words on a
+        # field of colour with nothing behind them, which is not a
+        # campaign creative. The brief has to ask for a picture too.
+        self.assertIn("hero product image or a photographic background", calls[0])
 
     def test_full_ad_mode_replaces_the_template_instead_of_layering_over_it(self):
         # The whole point: the model has already drawn a headline, so the
