@@ -4941,6 +4941,58 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         buf.seek(0)
         return buf
 
+    def test_legal_text_override_applies_like_header_and_description(self):
+        # The legal layer carries the small print a campaign is required
+        # to show, and it changes per campaign more often than the header
+        # does -- so it gets the same override treatment, not a special
+        # case.
+        (w, h), staged_path = self._stage_real_template()
+        from src.image_ops import get_psd_text_layers
+
+        if "legal" not in get_psd_text_layers(staged_path):
+            self.skipTest("staged template has no legal layer")
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_legal_text": "Offer ends 31 Dec. Terms apply.",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"updated layer(s)", r.data)
+        self.assertIn(b"legal", r.data)
+
+    def test_legal_survives_as_live_type_in_the_psd_download(self):
+        # Same guarantee the header and description already have: the
+        # download opens in Photoshop with retypeable small print, not a
+        # picture of it.
+        (w, h), staged_path = self._stage_real_template()
+        from psd_tools import PSDImage
+
+        from src.image_ops import get_psd_text_layers
+
+        if "legal" not in get_psd_text_layers(staged_path):
+            self.skipTest("staged template has no legal layer")
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_legal_text": "Offer ends 31 Dec. Terms apply.",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        psds = [
+            p
+            for p in (webapp.JOBS_DIR / job_id).glob("*.psd")
+            if "source-template" not in p.name
+        ]
+        self.assertTrue(psds, "expected a per-size PSD in the job folder")
+        layers = {l.name: l for l in PSDImage.open(psds[0])}
+        self.assertIn("legal", layers)
+        self.assertEqual(layers["legal"].kind, "type")
+        self.assertEqual(layers["legal"].text, "Offer ends 31 Dec. Terms apply.")
+
     def test_description_and_logo_override_apply_to_saved_default_size(self):
         (w, h), staged_path = self._stage_real_template()
         data = {

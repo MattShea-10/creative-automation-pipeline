@@ -219,6 +219,9 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_description_glow_color", "layer_description_glow_size", "layer_description_glow_opacity",
     "layer_description_align", "layer_description_background_color", "layer_description_background_opacity",
     "layer_description_background_blur",
+    "layer_legal_glow_color", "layer_legal_glow_size", "layer_legal_glow_opacity",
+    "layer_legal_align", "layer_legal_background_color", "layer_legal_background_opacity",
+    "layer_legal_background_blur",
     "layer_cta_text", "layer_cta_font_family", "layer_cta_font_size",
     "layer_cta_button_color", "layer_cta_text_color",
     "layer_cta_glow_color", "layer_cta_glow_size", "layer_cta_glow_opacity",
@@ -235,13 +238,15 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_header_font_family", "layer_header_font_size", "layer_header_text_color",
     "layer_description_text",
     "layer_description_font_family", "layer_description_font_size", "layer_description_text_color",
+    "layer_legal_text",
+    "layer_legal_font_family", "layer_legal_font_size", "layer_legal_text_color",
     "psd_size_1", "psd_size_2", "psd_size_3", "psd_size_4",
 )
 # Layers offered a "hide" checkbox. Deliberately not "background": it
 # sits behind everything and hiding it leaves a hole rather than a
 # cleaner creative -- the way to change a backdrop is to replace it,
 # which the tool already does in three other places.
-HIDEABLE_LAYER_NAMES = ("header", "description", "logo", "cta", "product")
+HIDEABLE_LAYER_NAMES = ("header", "description", "legal", "logo", "cta", "product")
 
 EDIT_CHECKBOX_FIELD_NAMES = (
     "header_no_background", "header_glow",
@@ -250,6 +255,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "cta_above_message",
     "layer_header_use_custom_color",
     "layer_description_use_custom_color",
+    "layer_legal_use_custom_color",
     "brand_color_1_enabled", "brand_color_2_enabled", "brand_color_3_enabled",
     "ai_hero_enabled",
     "upload_ai_enabled",
@@ -259,6 +265,8 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "layer_description_glow",
     "layer_header_background",
     "layer_description_background",
+    "layer_legal_glow",
+    "layer_legal_background",
     "layer_cta_glow",
 ) + tuple(f"layer_{name}_hidden" for name in HIDEABLE_LAYER_NAMES)
 
@@ -1708,6 +1716,44 @@ def generate():
         request.form.get("layer_description_background_blur")
     )
 
+    # The "legal" text layer -- disclaimers, terms, the small print a
+    # campaign is required to carry. Handled exactly like header and
+    # description rather than as a special case: it is a named type layer
+    # in every saved template, it gets swapped per campaign more often
+    # than either of them, and the whole point of the layer-override
+    # feature is that the words in a template are not baked in.
+    #
+    # Defaults differ where the role does. Left-aligned like the
+    # description, and the colour default matches it, but nothing about
+    # this layer wants a glow or a backing band by default -- small print
+    # is meant to be legible and unobtrusive, not decorated.
+    layer_legal_text = (request.form.get("layer_legal_text") or "").strip() or None
+    layer_legal_font_family = (request.form.get("layer_legal_font_family") or "").strip()
+    if layer_legal_font_family not in VALID_FONT_FAMILIES:
+        layer_legal_font_family = ""
+    layer_legal_font_size = _parse_optional_font_size(request.form.get("layer_legal_font_size"))
+    layer_legal_use_custom_color = bool(request.form.get("layer_legal_use_custom_color"))
+    layer_legal_text_color = _parse_hex_color(
+        request.form.get("layer_legal_text_color"), default=(26, 26, 26)
+    )
+    layer_legal_glow = bool(request.form.get("layer_legal_glow"))
+    layer_legal_glow_color = _parse_hex_color(
+        request.form.get("layer_legal_glow_color"), default=(255, 255, 255)
+    )
+    layer_legal_glow_size = _parse_glow_size(request.form.get("layer_legal_glow_size"))
+    layer_legal_glow_opacity = _parse_glow_opacity(request.form.get("layer_legal_glow_opacity"))
+    layer_legal_align = _parse_align(request.form.get("layer_legal_align"), default="left")
+    layer_legal_background = bool(request.form.get("layer_legal_background"))
+    layer_legal_background_color = _parse_hex_color(
+        request.form.get("layer_legal_background_color"), default=(0, 0, 0)
+    )
+    layer_legal_background_opacity = _parse_glow_opacity(
+        request.form.get("layer_legal_background_opacity")
+    )
+    layer_legal_background_blur = _parse_band_blur(
+        request.form.get("layer_legal_background_blur")
+    )
+
     # The CTA layer's own text override. No position field, unlike the
     # hero-image tool's CTA: a template's button sits in the box its
     # designer drew, and that box is what gets filled.
@@ -2597,6 +2643,31 @@ def generate():
                         background_blur=layer_description_background_blur,
                     )
                 if (
+                    layer_legal_text
+                    or layer_legal_glow
+                    or layer_legal_background
+                    or layer_legal_use_custom_color
+                    or layer_legal_font_family
+                    or layer_legal_font_size
+                ):
+                    _apply_text_layer_override(
+                        "legal",
+                        layer_legal_text,
+                        layer_legal_font_family,
+                        layer_legal_font_size,
+                        layer_legal_use_custom_color,
+                        layer_legal_text_color,
+                        glow=layer_legal_glow,
+                        glow_color=layer_legal_glow_color,
+                        glow_size=layer_legal_glow_size,
+                        glow_opacity=layer_legal_glow_opacity,
+                        align=layer_legal_align,
+                        show_background=layer_legal_background,
+                        background_color=layer_legal_background_color,
+                        background_opacity=layer_legal_background_opacity,
+                        background_blur=layer_legal_background_blur,
+                    )
+                if (
                     layer_cta_text
                     and "cta" not in layer_image_overrides
                     and "cta" not in hidden_layer_names
@@ -2686,6 +2757,8 @@ def generate():
                                 live_text_colors["header"] = layer_header_text_color
                             if layer_description_use_custom_color:
                                 live_text_colors["description"] = layer_description_text_color
+                            if layer_legal_use_custom_color:
+                                live_text_colors["legal"] = layer_legal_text_color
                             if live_text_colors:
                                 recoloured = set_type_layer_colors(
                                     job_dir / source_candidate_filename, live_text_colors
@@ -2718,6 +2791,7 @@ def generate():
                             preserve_text={
                                 "description": layer_description_text,
                                 "header": layer_header_text,
+                                "legal": layer_legal_text,
                             },
                             layer_names={},
                         )

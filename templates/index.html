@@ -590,6 +590,107 @@
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
           </fieldset>
+
+
+          {# Unlike header and description, a legal layer is optional -- older
+             templates predate it entirely. Absent, the section is not shown at
+             all rather than shown disabled under a note about a layer being
+             "switched off", which would be describing something that was never
+             there. #}
+          {% set legal_editable = 'legal' in editable_text_layers %}
+          {% if legal_editable %}
+          <fieldset class="layer-text-group" data-layer-controls="legal">
+          <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
+            <label for="layer_legal_text" style="font-weight: 400;">Legal text</label>
+            <input type="text" id="layer_legal_text" name="layer_legal_text" placeholder="e.g. First 500 get free cans" value="{{ prefill.get('layer_legal_text', '') }}">
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_legal_font_family" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Font</span>
+              <select class="font-family-select" id="layer_legal_font_family" name="layer_legal_font_family">
+                <option value="" {% if prefill.get('layer_legal_font_family', '') == '' %}selected{% endif %}>Match PSD</option>
+                <option value="sans" {% if prefill.get('layer_legal_font_family') == 'sans' %}selected{% endif %}>Sans-serif</option>
+                <option value="serif" {% if prefill.get('layer_legal_font_family') == 'serif' %}selected{% endif %}>Serif</option>
+                <option value="mono" {% if prefill.get('layer_legal_font_family') == 'mono' %}selected{% endif %}>Monospace</option>
+                <option value="condensed" {% if prefill.get('layer_legal_font_family') == 'condensed' %}selected{% endif %}>Condensed</option>
+              </select>
+            </label>
+            <label for="layer_legal_font_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Font size (px)</span>
+              <input type="number" class="font-size-input" id="layer_legal_font_size" name="layer_legal_font_size" min="4" max="2000" placeholder="Match PSD" value="{{ prefill.get('layer_legal_font_size', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label for="layer_legal_use_custom_color">
+              <input type="checkbox" id="layer_legal_use_custom_color" name="layer_legal_use_custom_color" value="1" {% if prefill.get('layer_legal_use_custom_color') %}checked{% endif %}>
+              Custom text color
+            </label>
+            <label for="layer_legal_text_color">
+              <input type="color" id="layer_legal_text_color" name="layer_legal_text_color" value="{{ prefill.get('layer_legal_text_color', '#1a1a1a') }}">
+              Text color
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            By default the legal text matches whatever font family, size, and color the PSD's own
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_legal_glow">
+              <input type="checkbox" id="layer_legal_glow" name="layer_legal_glow" value="1" {% if prefill.get('layer_legal_glow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Glow behind legal text</span>
+            </label>
+            <label for="layer_legal_glow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow color</span>
+              <input type="color" id="layer_legal_glow_color" name="layer_legal_glow_color" value="{{ prefill.get('layer_legal_glow_color', '#ffffff') }}">
+            </label>
+            <label for="layer_legal_glow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow size %</span>
+              <input type="number" class="font-size-input" id="layer_legal_glow_size" name="layer_legal_glow_size" min="1" max="100" placeholder="12" value="{{ prefill.get('layer_legal_glow_size', '') }}">
+            </label>
+            <label for="layer_legal_glow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Glow opacity %</span>
+              <input type="number" class="font-size-input" id="layer_legal_glow_opacity" name="layer_legal_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_legal_glow_opacity', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            A soft halo behind the letterforms -- for legal text sitting over a photo, where any flat colour
+            loses somewhere in the frame. The size is a percentage of the font size, so one setting reads the
+            same at every output size.
+          </div>
+          <div class="field" style="margin-top: 0.5rem; margin-bottom: 0.3rem;">
+            <label>Description alignment</label>
+            <div class="radio-row">
+              <label><input type="radio" name="layer_legal_align" value="left" {% if prefill.get('layer_legal_align', 'left') == 'left' %}checked{% endif %}> Left</label>
+              <label><input type="radio" name="layer_legal_align" value="center" {% if prefill.get('layer_legal_align', 'left') == 'center' %}checked{% endif %}> Center</label>
+              <label><input type="radio" name="layer_legal_align" value="right" {% if prefill.get('layer_legal_align', 'left') == 'right' %}checked{% endif %}> Right</label>
+            </div>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_legal_background">
+              <input type="checkbox" id="layer_legal_background" name="layer_legal_background" value="1" {% if prefill.get('layer_legal_background') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Band behind legal text</span>
+            </label>
+            <label for="layer_legal_background_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band color</span>
+              <input type="color" id="layer_legal_background_color" name="layer_legal_background_color" value="{{ prefill.get('layer_legal_background_color', '#000000') }}">
+            </label>
+            <label for="layer_legal_background_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band opacity %</span>
+              <input type="number" class="font-size-input" id="layer_legal_background_opacity" name="layer_legal_background_opacity" min="0" max="100" placeholder="60" value="{{ prefill.get('layer_legal_background_opacity', '') }}">
+            </label>
+            <label for="layer_legal_background_blur" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Band blur %</span>
+              <input type="number" class="font-size-input" id="layer_legal_background_blur" name="layer_legal_background_blur" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_legal_background_blur', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: -0.2rem;">
+            A flat band behind the legal lines -- the blunter answer to the same problem the glow solves, and the
+            same idea as the banners the hero-image tool draws. It spans the layer box's width and only the
+            lines' own height, so it reads as a banner rather than filling the layer.
+          </div>
+            <code>legal</code> text layer was set to in Photoshop (when readable). Set the font/size above
+            to override it, and check "Custom text color" to override the color too -- for every template size.
+          </div>
+          </fieldset>
+          {% endif %}
           <div class="field" data-layer-controls="cta" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_cta_text" style="font-weight: 400;">CTA button text</label>
             <input type="text" id="layer_cta_text" name="layer_cta_text" placeholder="e.g. Claim my spot" value="{{ prefill.get('layer_cta_text', '') }}">
