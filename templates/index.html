@@ -155,6 +155,17 @@
 
     .campaign-card { @apply mb-8; }
     .campaign-brief-box > summary { @apply flex items-center justify-between gap-3; list-style: none; }
+    /* The per-layer sections inside "Update layers across all template
+       sizes". Lighter than the top-level boxes -- they are nested two
+       deep already, and a second heavy border at this level reads as a
+       page full of frames rather than a grouped form. */
+    details.layer-section { @apply border-slate-800 bg-slate-900/30 px-3 py-2 mb-2; }
+    details.layer-section > summary { @apply cursor-pointer font-semibold text-slate-200 list-none; }
+    details.layer-section > summary::-webkit-details-marker { display: none; }
+    details.layer-section > summary .caret {
+      @apply inline-block mr-2 text-slate-500 transition-transform;
+    }
+    details.layer-section[open] > summary .caret { transform: rotate(90deg); }
     .campaign-brief-box > summary::-webkit-details-marker { display: none; }
     .campaign-brief-box > summary .caret {
       @apply inline-block text-slate-400 mr-1;
@@ -395,6 +406,8 @@
             </div>
           </div>
 
+          <details class="layer-section"{% if prefill.get('layer_header_text') %} open{% endif %}>
+          <summary><span class="caret">&#9656;</span>Header text</summary>
           {% set header_editable = 'header' in editable_text_layers %}
           {% if not header_editable %}
             <div class="hint layer-off-note">The <code>header</code> layer is switched off in your saved
@@ -492,7 +505,10 @@
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
           </fieldset>
+          </details>
 
+          <details class="layer-section"{% if prefill.get('layer_description_text') %} open{% endif %}>
+          <summary><span class="caret">&#9656;</span>Description text</summary>
           {% set description_editable = 'description' in editable_text_layers %}
           {% if not description_editable %}
             <div class="hint layer-off-note">The <code>description</code> layer is switched off in your saved
@@ -590,6 +606,7 @@
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
           </fieldset>
+          </details>
 
 
           {# Present but switched off is a different thing from absent. Off,
@@ -600,6 +617,8 @@
           {% set legal_present = 'legal' in present_text_layers %}
           {% set legal_editable = 'legal' in editable_text_layers %}
           {% if legal_present %}
+          <details class="layer-section"{% if prefill.get('layer_legal_text') %} open{% endif %}>
+          <summary><span class="caret">&#9656;</span>Legal text</summary>
           {% if not legal_editable %}
             <div class="hint layer-off-note">The <code>legal</code> layer is switched off in your saved
             templates, so there are no visible words to restyle -- these fields are disabled. Turn the layer
@@ -696,7 +715,11 @@
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
           </fieldset>
+          </details>
           {% endif %}
+
+          <details class="layer-section"{% if prefill.get('layer_cta_text') %} open{% endif %}>
+          <summary><span class="caret">&#9656;</span>CTA button</summary>
           <div class="field" data-layer-controls="cta" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_cta_text" style="font-weight: 400;">CTA button text</label>
             <input type="text" id="layer_cta_text" name="layer_cta_text" placeholder="e.g. Claim my spot" value="{{ prefill.get('layer_cta_text', '') }}">
@@ -747,7 +770,17 @@
             the button's width and is trimmed with an ellipsis rather than allowed to spill. Uploading a CTA
             image below wins over this: that upload is the button.
           </div>
+          </details>
 
+          {% set layer_image_fields = [
+              ('layer_logo_image', 'Logo'),
+              ('layer_cta_image', 'CTA'),
+              ('layer_product_image', 'Product'),
+              ('layer_background_image', 'Background'),
+          ] %}
+          {% set has_layer_images = layer_image_fields | selectattr('0', 'in', prefill_files) | list %}
+          <details class="layer-section"{% if has_layer_images %} open{% endif %}>
+          <summary><span class="caret">&#9656;</span>Layer images <span style="font-weight: 400; color: var(--muted);">(logo, CTA, product, background)</span></summary>
           <div class="inline-controls" style="margin-top: 0.4rem;">
             <label for="layer_logo_image" data-layer-controls="logo" style="font-weight: 400;">
               <span style="white-space: nowrap;">Logo image</span>
@@ -766,13 +799,6 @@
               <input type="file" id="layer_background_image" name="layer_background_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
             </label>
           </div>
-          {% set layer_image_fields = [
-              ('layer_logo_image', 'Logo'),
-              ('layer_cta_image', 'CTA'),
-              ('layer_product_image', 'Product'),
-              ('layer_background_image', 'Background'),
-          ] %}
-          {% set has_layer_images = layer_image_fields | selectattr('0', 'in', prefill_files) | list %}
           {% if has_layer_images %}
             <div class="layer-image-cache" data-prefill-hint>
               <div class="hint" style="margin-top: 0;">
@@ -798,6 +824,7 @@
               </div>
             </div>
           {% endif %}
+          </details>
         </div>
           <div class="field" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a; margin-bottom: 0;">
             <label><span class="psd-badge">PSD</span> Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
@@ -1547,6 +1574,12 @@
         // Manual Creative starts collapsed on a fresh card; Upload
         // Creative doesn't, since it holds the hero image field and the
         // artwork generator -- the two things a new campaign starts from.
+        // Per-layer sections start collapsed on a fresh card whatever the
+        // card it was cloned from had open -- a new campaign starts from
+        // the compact form, not from someone else's expanded one.
+        clone.querySelectorAll("details.layer-section").forEach(function (d) {
+          d.open = false;
+        });
         clone.querySelectorAll("details.manual-creative-box").forEach(function (d) {
           d.removeAttribute("open");
         });

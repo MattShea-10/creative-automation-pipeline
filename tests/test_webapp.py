@@ -4941,6 +4941,33 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         buf.seek(0)
         return buf
 
+    def test_layer_sections_collapse_and_open_when_they_hold_something(self):
+        # The layer-override block grew to five full control sets and had
+        # become a single unbroken scroll. Each is its own disclosure now,
+        # closed by default -- but a section holding a carried-forward
+        # value has to open itself, or an edit would look like it had lost
+        # the text.
+        page = self.client.get("/").data.decode()
+        self.assertGreaterEqual(page.count('class="layer-section"'), 4)
+        for summary in ("Header text", "Description text", "CTA button", "Layer images"):
+            self.assertIn(summary, page)
+        # Nothing prefilled: every section closed.
+        self.assertNotIn('class="layer-section" open', page)
+
+    def test_a_prefilled_layer_section_comes_back_open(self):
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "layer_description_text": "Carried forward words",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        page = self.client.get(f"/edit/{job_id}").data.decode()
+        self.assertIn("Carried forward words", page)
+        self.assertIn('class="layer-section" open', page)
+
     def test_legal_controls_are_offered_whenever_the_layer_exists(self):
         # Switched off is not the same as absent: the layer can be turned
         # back on in Photoshop, so its controls show greyed with an
