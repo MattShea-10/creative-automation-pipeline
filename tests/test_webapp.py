@@ -5385,6 +5385,11 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         page = self.client.get("/").data.decode()
         self.assertIn('data-role="custom-hero-section"', page)
         section_at = page.index('data-role="custom-hero-section"')
+        # A checkbox, not a disclosure caret: it is one half of a choice
+        # with the AI generator, and the two switches close each other.
+        self.assertIn('name="upload_custom_hero_enabled"', page)
+        self.assertIn('data-role="custom-hero-toggle"', page)
+        self.assertIn('data-role="custom-hero-body"', page)
         self.assertGreater(page.index('id="upload_hero_image"'), section_at)
         self.assertGreater(page.index('id="layer_overrides_section"'), section_at)
         # The layer guidance belongs under the input it applies to.
@@ -5392,6 +5397,26 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             page.index("Update layers across all template sizes"),
             page.index('id="upload_hero_image"'),
         )
+
+    def test_the_custom_hero_toggle_survives_an_edit(self):
+        # Its state has to come back, or an edit reopens with the section
+        # shut and the file that IS still in play out of sight.
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "upload_custom_hero_enabled": "1",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        page = self.client.get(f"/edit/{job_id}").data.decode()
+        toggle = re.search(
+            r'<input type="checkbox" id="upload_custom_hero_enabled".*?>', page, re.S
+        )
+        self.assertIsNotNone(toggle)
+        self.assertIn("checked", toggle.group(0))
 
     def test_hide_layers_sits_below_both_ways_of_supplying_artwork(self):
         # Hiding is about what the templates DRAW, not where the picture

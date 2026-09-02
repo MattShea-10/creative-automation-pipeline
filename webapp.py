@@ -261,6 +261,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "layer_legal_use_custom_color",
     "brand_color_1_enabled", "brand_color_2_enabled", "brand_color_3_enabled",
     "ai_hero_enabled",
+    "upload_custom_hero_enabled",
     "upload_ai_enabled",
     "upload_ai_keep",
     "upload_ai_allow_text",

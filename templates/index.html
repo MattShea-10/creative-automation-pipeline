@@ -39,12 +39,8 @@
        layers yourself), against the AI generator's yellow. Its own rule
        rather than the class, since this one is a nested .layer-section
        and inherits that sizing. */
-    details.layer-section[data-role="custom-hero-section"] {
-      @apply border-emerald-600 bg-emerald-950/40;
-    }
-    details.layer-section[data-role="custom-hero-section"] > summary {
-      @apply text-emerald-200;
-    }
+    .custom-hero-box { @apply border-emerald-600 bg-emerald-950/40; }
+    .custom-hero-box > .checkbox-row { @apply font-semibold text-emerald-200; }
     .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .manual-creative-box > summary { @apply uppercase tracking-wide; }
     .manual-creative-box.is-disabled { @apply opacity-50 border-slate-700 bg-slate-800/30; }
@@ -326,8 +322,14 @@
            layers the templates draw over it. Folded together because they are
            one job -- and because the AI route below has its own fold, so
            leaving this one open made the two read as unequal. #}
-        <details class="layer-section" data-role="custom-hero-section">
-        <summary><span class="caret">&#9656;</span>Upload custom Hero Image</summary>
+        <div class="layer-section custom-hero-box" data-role="custom-hero-section">
+        <div class="checkbox-row" style="margin: 0;">
+          <input type="checkbox" id="upload_custom_hero_enabled" name="upload_custom_hero_enabled" value="1"
+                 data-role="custom-hero-toggle"
+                 {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
+          <span>Upload custom Hero Image</span>
+        </div>
+        <div data-role="custom-hero-body">
         <label for="upload_hero_image" style="margin-top: 0.6rem; display: block;">Hero image file</label>
         <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
         {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
@@ -446,7 +448,8 @@
             to override it, and check "Custom text color" to override the color too -- for every template size.
           </div>
           </fieldset>
-          </details>
+          </div>
+        </div>
 
           <details class="layer-section" data-layer-section="description"{% if prefill.get('layer_description_text') %} open{% endif %}>
           <summary><span class="caret">&#9656;</span>Description text</summary>
@@ -1372,6 +1375,30 @@
         }
       }
 
+      // The two ways of supplying artwork are one choice, so their
+      // switches behave like one: ticking either opens its own section
+      // and closes the other. Not radio buttons -- unticking both is a
+      // legitimate state (a batch driven entirely by a content PSD needs
+      // neither), and a radio group has no way back out of itself.
+      var customHeroToggle = root.querySelector('[data-role="custom-hero-toggle"]');
+      var customHeroBody = root.querySelector('[data-role="custom-hero-body"]');
+      if (customHeroToggle && customHeroBody) {
+        var syncCustomHero = function () {
+          customHeroBody.hidden = !customHeroToggle.checked;
+        };
+        customHeroToggle.addEventListener("change", function () {
+          if (customHeroToggle.checked) {
+            var aiBox = root.querySelector('[name="upload_ai_enabled"]');
+            if (aiBox && aiBox.checked) {
+              aiBox.checked = false;
+              aiBox.dispatchEvent(new Event("change"));
+            }
+          }
+          syncCustomHero();
+        });
+        syncCustomHero();
+      }
+
       // The generator's own controls stay folded away until it is
       // switched on. Hidden rather than dimmed: unticked, not one of
       // them does anything, and a dozen greyed controls sitting open is
@@ -1387,7 +1414,13 @@
         var syncAiBody = function () {
           aiBody.hidden = !aiEnabled.checked;
         };
-        aiEnabled.addEventListener("change", syncAiBody);
+        aiEnabled.addEventListener("change", function () {
+          if (aiEnabled.checked && customHeroToggle && customHeroToggle.checked) {
+            customHeroToggle.checked = false;
+            if (customHeroBody) customHeroBody.hidden = true;
+          }
+          syncAiBody();
+        });
         syncAiBody();
       }
 
