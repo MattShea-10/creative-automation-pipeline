@@ -5378,6 +5378,32 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, "full ad mode should not need a hero image")
         self.assertIn(b"Full ad mode", r.data)
 
+    def test_the_layer_sections_are_actually_inside_the_fold(self):
+        # A stray </details> left over from when this box was a
+        # disclosure closed the fold early, so the sections it was meant
+        # to hide sat outside it and stayed on screen with the route
+        # switched off. Ordering assertions can't see that -- this walks
+        # the markup.
+        # The legal section only renders when a saved template has that
+        # layer, so stage a real one before reading the page.
+        self._stage_real_template()
+        page = self.client.get("/").data.decode()
+        start = page.index('<div data-role="custom-hero-body"')
+        cursor, depth = page.index(">", start) + 1, 1
+        while depth:
+            match = re.compile(r"<(/?)div\b").search(page, cursor)
+            depth += -1 if match.group(1) else 1
+            cursor = page.index(">", match.end()) + 1
+        fold = page[start:cursor]
+
+        for name in ("header", "description", "legal", "cta"):
+            self.assertIn(f'data-layer-section="{name}"', fold)
+        self.assertIn("Layer images", fold)
+        # ...and the controls that must stay visible are not in it.
+        self.assertNotIn('id="upload_hero_image"', fold)
+        self.assertNotIn(">Hide layers<", fold)
+        self.assertNotIn("Upload AI Image", fold)
+
     def test_the_hand_built_route_is_one_folded_section(self):
         # Supplying your own picture and editing the layers drawn over it
         # are one job, so they fold together -- and the AI route has its
