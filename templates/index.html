@@ -663,7 +663,7 @@
           <fieldset class="layer-text-group" data-layer-controls="legal"{% if not legal_editable %} disabled{% endif %}>
           <div class="field" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_legal_text" style="font-weight: 400;">Legal text</label>
-            <input type="text" id="layer_legal_text" name="layer_legal_text" placeholder="e.g. First 500 get free cans" value="{{ prefill.get('layer_legal_text', '') }}">
+            <input type="text" id="layer_legal_text" name="layer_legal_text" placeholder="e.g. Offer ends 31 Dec. Terms apply." value="{{ prefill.get('layer_legal_text', '') }}">
           </div>
           <div class="inline-controls" style="margin-top: 0.4rem;">
             <label for="layer_legal_font_family" style="font-weight: 400;">
@@ -717,7 +717,7 @@
             same at every output size.
           </div>
           <div class="field" style="margin-top: 0.5rem; margin-bottom: 0.3rem;">
-            <label>Description alignment</label>
+            <label>Legal alignment</label>
             <div class="radio-row">
               <label><input type="radio" name="layer_legal_align" value="left" {% if prefill.get('layer_legal_align', 'left') == 'left' %}checked{% endif %}> Left</label>
               <label><input type="radio" name="layer_legal_align" value="center" {% if prefill.get('layer_legal_align', 'left') == 'center' %}checked{% endif %}> Center</label>
