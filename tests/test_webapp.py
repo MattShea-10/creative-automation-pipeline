@@ -2300,6 +2300,7 @@ class PaidProviderTest(unittest.TestCase):
             "HydroBoost", "Stay charged", "First 500 get free cans",
             "Claim my spot", "runners 25-34", "UK",
         )
+        self.assertIn('the product name "HydroBoost" set as type', prompt)
         self.assertIn('reading exactly "First 500 get free cans"', prompt)
         self.assertIn('reading exactly "Claim my spot"', prompt)
         self.assertIn("HydroBoost", prompt)
@@ -5179,6 +5180,90 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 f"{name} is already off in the template -- wiping its box only "
                 "damages whatever shares it",
             )
+
+    def test_allow_text_reaches_the_hero_generator_too(self):
+        # One setting for the run, like the provider. A run that wants
+        # lettering in the campaign artwork doesn't want it stripped out
+        # of the hero image standing in the same creative -- and the
+        # switch only lives in Upload Creative, so the other generator
+        # has to read the same flag.
+        import webapp
+
+        calls = []
+
+        class _Provider:
+            name = "stub"
+            supports_negative_prompt = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                from PIL import Image as _Image
+
+                calls.append(negative_prompt)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = webapp.get_provider
+        webapp.get_provider = lambda name: _Provider()
+        try:
+            data = {
+                "product_name": "HydroBoost",
+                "market": "UK",
+                "audience": "runners",
+                "campaign_message": "Stay charged",
+                "ai_hero_enabled": "1",
+                "upload_ai_allow_text": "1",
+                "sizes": ["300x250"],
+                "header": "",
+                "description": "",
+            }
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        finally:
+            webapp.get_provider = original
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(calls, "the hero generator should have been called")
+        self.assertTrue(
+            all(n is None for n in calls),
+            f"no no-text negative prompt may be sent: {calls}",
+        )
+
+    def test_the_auto_prompt_quotes_the_product_name_when_type_is_allowed(self):
+        # Named only as a subject, a model treats the brand as art
+        # direction and letters whatever it likes, or nothing. Quoted, it
+        # renders those characters -- the point of asking a typography
+        # model for type.
+        import webapp
+
+        calls = []
+
+        class _Provider:
+            name = "stub"
+            supports_negative_prompt = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                from PIL import Image as _Image
+
+                calls.append(prompt)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = webapp.get_provider
+        webapp.get_provider = lambda name: _Provider()
+        try:
+            data = {
+                "product_name": "HydroBoost",
+                "market": "UK",
+                "audience": "runners",
+                "campaign_message": "Stay charged",
+                "ai_hero_enabled": "1",
+                "upload_ai_allow_text": "1",
+                "sizes": ["300x250"],
+                "header": "",
+                "description": "",
+            }
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        finally:
+            webapp.get_provider = original
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(calls)
+        self.assertIn('the words "HydroBoost" set as the headline', calls[0])
 
     def test_full_ad_mode_replaces_the_template_instead_of_layering_over_it(self):
         # The whole point: the model has already drawn a headline, so the

@@ -356,7 +356,7 @@
             </div>
             <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="checkbox" id="upload_ai_allow_text" name="upload_ai_allow_text" value="1" {% if prefill.get('upload_ai_allow_text') %}checked{% endif %}>
-              <span>Let the model set type <span style="font-weight: 400; color: var(--muted);">(logo, headline, a laid-out creative)</span></span>
+              <span>Let the model set type <span style="font-weight: 400; color: var(--muted);">(logo, headline, a laid-out creative -- applies to both generators)</span></span>
             </div>
             <div class="hint" style="margin-top: 0.2rem;">
               Off, the image is a backdrop: no-text is asked for, the result is checked for lettering, a
@@ -366,7 +366,10 @@
               <strong>It lifts the ban; it doesn't place an order.</strong> A prompt like "marathon
               runners" still describes a photograph and still comes back as one -- ask for the words you
               want, in quotes: <em>poster reading "First 500 get free cans"</em>. Leave the prompt blank
-              and one is built for you. Expect words in the picture, and check they say what you want.
+              and one is built for you. Like the provider, this is one choice for the whole run: the
+              Manual Creative hero generator below honours it too, since a run that wants lettering in the
+              campaign artwork doesn't want it stripped out of the hero image beside it. Expect words in
+              the picture, and check they say what you want.
             </div>
             <div class="inline-controls" style="margin-top: 0.5rem;">
               <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">

@@ -394,6 +394,8 @@ def _build_full_ad_prompt(
     if product_name:
         parts.append(f"for {product_name}")
     lines = []
+    if product_name:
+        lines.append(f'the product name "{product_name}" set as type')
     if header_text:
         lines.append(f'a large headline reading exactly "{header_text}"')
     elif campaign_message:
@@ -1553,9 +1555,15 @@ def generate():
             # "unbranded" is the whole point of the default auto-prompt
             # and the opposite of what this run is for, so it doesn't
             # appear here.
+            # The product name goes in QUOTED, as the words to set. Named
+            # only as a subject ("creative for Hydro Boost") a model
+            # treats it as art direction and letters whatever it likes,
+            # or nothing; quoted, it renders those characters -- which is
+            # the point of asking a typography model for type at all.
             upload_ai_prompt_text = upload_ai_prompt or (
-                f"advertising creative for {product_name or 'the product'}, "
-                "bold headline typography, clean layout"
+                f'advertising creative for {product_name or "the product"}, '
+                + (f'the words "{product_name}" set as the headline, ' if product_name else "")
+                + "bold headline typography, clean layout"
             )
         else:
             upload_ai_prompt_text = upload_ai_prompt or (
@@ -2011,14 +2019,31 @@ def generate():
     # into uploads/ as hero_path so nothing downstream needs to treat it
     # any differently, including the Edit page's carry-forward.
     if not hero_provided and ai_hero_enabled and any((w, h) not in size_templates for w, h in sizes):
-        prompt = ai_hero_prompt or (
-            f"professional studio product photo of {product_name or headline or 'the product'}, "
-            "clean background"
-        )
+        if upload_ai_allow_text:
+            brand_words = product_name or headline
+            prompt = ai_hero_prompt or (
+                f'advertising creative for {brand_words or "the product"}, '
+                + (f'the words "{brand_words}" set as the headline, ' if brand_words else "")
+                + "bold headline typography, clean layout"
+            )
+        else:
+            prompt = ai_hero_prompt or (
+                f"professional studio product photo of {product_name or headline or 'the product'}, "
+                "clean background"
+            )
         try:
             hero_width, hero_height = _generation_size(sizes, (1024, 1024))
+            # One setting across both generators, the same way the
+            # provider is one choice for both: the switch says whether
+            # THIS RUN wants lettering, and a run that wants it in the
+            # campaign artwork does not want it stripped out of the hero
+            # image standing in the same creative.
             generated_image, prompt, hero_attempts, hero_text = _generate_text_free(
-                get_provider(ai_hero_provider), prompt, hero_width, hero_height
+                get_provider(ai_hero_provider),
+                prompt,
+                hero_width,
+                hero_height,
+                allow_text=upload_ai_allow_text,
             )
             note = (
                 f"Hero image generated with AI ({ai_hero_provider}) at "
@@ -2030,6 +2055,11 @@ def generate():
                     f"{'s' if hero_attempts > 2 else ''} because the first result had text in it."
                 )
             background_notes.append(note)
+            if upload_ai_allow_text:
+                background_notes.append(
+                    "Hero image: text was allowed, so no no-text instruction was sent and "
+                    "nothing was checked or painted out."
+                )
             if hero_text.found_text:
                 generated_image, cleaned_note, cleaned_warning = _clean_text_out(
                     generated_image, hero_text, "hero image", hero_attempts
