@@ -1360,6 +1360,36 @@ def get_psd_layer_boxes(psd_path: Union[str, Path]) -> dict:
     return boxes
 
 
+def get_psd_visible_layers(psd_path: Union[str, Path]) -> set:
+    """Lowercased names of the top-level layers a PSD actually draws --
+    the ones switched ON in Photoshop.
+
+    Used to tell "hide this layer" from "this layer is already hidden".
+    They are not the same instruction: hiding wipes the layer's whole box
+    back to the backdrop, and a box routinely overlaps its neighbours (a
+    header banner drawn across the logo, a legal line running under the
+    CTA). Wiping the box of a layer that was never drawn removes the
+    neighbours and nothing else.
+
+    Returns an empty set if psd-tools isn't installed or the file can't
+    be read -- callers should treat that as "can't tell" and fall back to
+    their previous behaviour.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return set()
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return set()
+    return {
+        (layer.name or "").strip().lower()
+        for layer in psd
+        if (layer.name or "").strip() and layer.visible
+    }
+
+
 def get_psd_layer_stack(psd_path: Union[str, Path]) -> Optional[List[Tuple[str, Image.Image]]]:
     """Return every top-level layer in `psd_path` as its own canvas-sized
     RGBA image (transparent everywhere except where that one layer

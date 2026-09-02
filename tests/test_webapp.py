@@ -5146,6 +5146,40 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # The creative is still produced either way.
         self.assertIn("/download/", page)
 
+    def test_hiding_a_layer_the_template_already_hides_is_a_no_op(self):
+        # Hiding wipes a layer's whole box back to the backdrop, and
+        # boxes overlap: the header banner is drawn across the logo, the
+        # legal line runs under the CTA. Wiping the box of a layer that
+        # was never drawn took the top off the logo and the label out of
+        # the button, for no gain -- there was nothing there to remove.
+        from src.image_ops import get_psd_visible_layers
+
+        (w, h), staged_path = self._stage_real_template()
+        already_off = [
+            name
+            for name in ("header", "legal")
+            if name not in get_psd_visible_layers(staged_path)
+        ]
+        if not already_off:
+            self.skipTest("staged template has no switched-off layer to exercise this")
+
+        data = {
+            "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
+            "header": "",
+            "description": "",
+        }
+        for name in already_off:
+            data[f"layer_{name}_hidden"] = "1"
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        for name in already_off:
+            self.assertNotIn(
+                f"{name} (hidden)".encode(),
+                r.data,
+                f"{name} is already off in the template -- wiping its box only "
+                "damages whatever shares it",
+            )
+
     def test_full_ad_mode_replaces_the_template_instead_of_layering_over_it(self):
         # The whole point: the model has already drawn a headline, so the
         # template must not draw a second one on top of it.

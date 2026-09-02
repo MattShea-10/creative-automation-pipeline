@@ -77,6 +77,7 @@ from src.image_ops import (
     get_psd_layer_boxes,
     get_psd_layer_foreground,
     get_psd_layer_stack,
+    get_psd_visible_layers,
     get_psd_layer_text_style,
     map_box_through_fit,
     open_as_rgb,
@@ -2559,10 +2560,24 @@ def generate():
                 # goes, not just the layer's own pixels within it, which
                 # is the same "replace, don't overprint" reasoning the
                 # text overrides use.
+                # A layer the template already switches off needs no
+                # hiding, and wiping its box does real damage: boxes
+                # overlap, so clearing an unused header's banner takes
+                # the top off the logo underneath it, and clearing an
+                # unused legal line erases the label out of the CTA
+                # sitting in the same strip. Nothing was drawn there to
+                # remove.
+                visible_in_template = (
+                    get_psd_visible_layers(psd_path_for_size)
+                    if psd_path_for_size is not None
+                    else set()
+                )
                 for layer_name in sorted(hidden_layer_names):
                     hidden_box = layer_boxes.get(layer_name)
                     if hidden_box is None:
                         # This size's template simply has no such layer.
+                        continue
+                    if visible_in_template and layer_name not in visible_in_template:
                         continue
                     _clean_layer_box(hidden_box, layer_name, full_box=True)
                     applied_layers.append(f"{layer_name} (hidden)")

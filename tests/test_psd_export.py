@@ -272,28 +272,29 @@ class PsdExportTest(unittest.TestCase):
         self.assertEqual(after["logo"].kind, "pixel")
 
     @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
-    def test_preserving_type_skips_a_name_the_template_has_no_type_layer_for(self):
-        # tester-160x600.psd has no header at all. Asking for one must
-        # quietly preserve just the description rather than failing.
-        small = Path(__file__).resolve().parent.parent / "default_templates" / "tester-160x600.psd"
-        if not small.is_file():
-            self.skipTest("needs the 160x600 template")
-        template = PSDImage.open(small)
+    def test_preserving_type_skips_a_name_that_is_not_a_type_layer(self):
+        # "logo" is a pixel layer in every template -- asking to preserve
+        # it as live text has to be quietly ignored rather than dropping
+        # the layer or failing the export, so a caller can name the whole
+        # set without checking each template first.
+        template = PSDImage.open(self.REAL_TEMPLATE)
         size = (template.width, template.height)
-        layers = [(l.name, Image.new("RGBA", size, (5, 5, 5, 255))) for l in template]
-        dest = self.tmp_dir / "no-header.psd"
+        names = [l.name for l in template]
+        self.assertIn("logo", [n.lower() for n in names])
+        layers = [(n, Image.new("RGBA", size, (5, 5, 5, 255))) for n in names]
+        dest = self.tmp_dir / "skips-non-type.psd"
+
         kept = save_layered_psd_preserving_type(
             layers, size, dest,
-            template_path=small,
-            preserve_text={"description": "Still works", "header": "Ignored"},
+            template_path=self.REAL_TEMPLATE,
+            preserve_text={"description": "Still works", "logo": "Ignored"},
             layer_names={},
         )
         self.assertEqual(kept, ["description"])
-        after = {l.name: l for l in PSDImage.open(dest)}
+        after = {l.name.lower(): l for l in PSDImage.open(dest)}
         self.assertEqual(after["description"].text, "Still works")
-        self.assertNotIn("header", after)
+        self.assertEqual(after["logo"].kind, "pixel", "logo must stay ordinary art")
 
-    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
     def test_a_vector_shape_layer_does_not_cost_us_the_other_layers(self):
         # A CTA built as a group holding a rectangle puts a VECTOR SHAPE
         # layer in the template. psd-tools can only draw one with aggdraw
