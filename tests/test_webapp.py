@@ -2241,6 +2241,54 @@ class PaidProviderTest(unittest.TestCase):
     network -- what matters is the size negotiation and that a missing or
     misconfigured key fails with something a person can act on."""
 
+    def _ideogram_seeds(self, calls, **kwargs):
+        """Run generate() `calls` times against a stubbed transport and
+        return the seed sent each time."""
+        from unittest import mock
+
+        from src.providers.ideogram_provider import IdeogramProvider
+
+        provider = IdeogramProvider(api_token="k", **kwargs)
+        seeds = []
+
+        class _Resp:
+            status_code = 200
+            text = ""
+            content = b""
+
+            def json(self):
+                return {"data": [{"url": "http://example.invalid/i.png"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None, files=None):
+            if json is not None:
+                seeds.append(json.get("seed"))
+            return _Resp()
+
+        with mock.patch("requests.post", fake_post), mock.patch("requests.get", fake_post):
+            for _ in range(calls):
+                try:
+                    provider.generate("a backdrop", 1024, 1024)
+                except Exception:
+                    # The stub never returns real image bytes; only the
+                    # request that went out matters here.
+                    pass
+        return seeds
+
+    def test_ideogram_sends_a_fresh_seed_every_request(self):
+        # Without an explicit seed the service picks, and a re-run of an
+        # unchanged prompt came back looking like the image it was meant
+        # to replace -- which reads as a generator that has stopped
+        # working. Pollinations already sends a new seed per request;
+        # this is the same guarantee for the paid provider.
+        seeds = self._ideogram_seeds(3)
+        self.assertEqual(len(seeds), 3)
+        self.assertTrue(all(isinstance(s, int) for s in seeds), seeds)
+        self.assertEqual(len(set(seeds)), 3, f"seeds must not repeat: {seeds}")
+
+    def test_ideogram_seed_can_be_pinned_to_reproduce_an_image(self):
+        seeds = self._ideogram_seeds(2, seed=4242)
+        self.assertEqual(seeds, [4242, 4242])
+
     def test_ideogram_snaps_a_request_to_an_aspect_it_renders(self):
         # Ideogram takes a named ratio rather than pixels.
         from src.providers.ideogram_provider import _closest_aspect

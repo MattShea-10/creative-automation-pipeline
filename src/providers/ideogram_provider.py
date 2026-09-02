@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import io
 import os
+import random
 import re
 
 import requests
@@ -26,6 +27,9 @@ from .base import ImageProvider, ImageProviderError
 
 API_BASE = "https://api.ideogram.ai"
 DEFAULT_MODEL = "ideogram-v3"
+
+# Ideogram's own accepted range for an explicit seed.
+SEED_MIN, SEED_MAX = 0, 2147483647
 
 # The model is a path segment, so it has to look like one.
 MODEL_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9._-]{0,31}$")
@@ -57,8 +61,17 @@ class IdeogramProvider(ImageProvider):
     name = "ideogram"
     supports_negative_prompt = True
 
-    def __init__(self, api_token: str = None, model: str = None, timeout: int = 120):
+    def __init__(
+        self,
+        api_token: str = None,
+        model: str = None,
+        timeout: int = 120,
+        seed: int = None,
+    ):
         self.api_token = api_token or os.environ.get("IDEOGRAM_API_KEY")
+        # Left as None, every request gets a fresh seed -- see generate().
+        # Set it to pin one image and get it back on a re-run.
+        self.seed = seed
         # "ideogram-v3" or "ideogram-v4" -- the model is part of the path
         # on this API rather than a body field.
         #
@@ -98,11 +111,19 @@ class IdeogramProvider(ImageProvider):
     ) -> Image.Image:
         url = f"{API_BASE}/v1/{self.model}/generate"
         headers = {"Api-Key": self.api_token}
+        # A NEW seed per request, the same way the Pollinations provider
+        # does it. Sending none leaves the choice to the service, and a
+        # re-run of an unchanged prompt then comes back looking like the
+        # image it was meant to replace -- which reads as a generator
+        # that has stopped working rather than one that was never asked
+        # to vary. Pin `seed` on the provider to reproduce a specific
+        # image instead.
         fields = {
             "prompt": prompt,
             "aspect_ratio": _closest_aspect(width, height),
             "rendering_speed": "QUALITY",
             "num_images": 1,
+            "seed": self.seed if self.seed is not None else random.randint(SEED_MIN, SEED_MAX),
         }
         if negative_prompt:
             fields["negative_prompt"] = negative_prompt
