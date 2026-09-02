@@ -5378,6 +5378,30 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, "full ad mode should not need a hero image")
         self.assertIn(b"Full ad mode", r.data)
 
+    def test_the_generator_controls_live_under_its_own_checkbox(self):
+        # Folded away until the generator is switched on. The script
+        # finds the group by this attribute, and every control it governs
+        # has to be inside it or it will sit visible with nothing to do.
+        page = self.client.get("/").data.decode()
+        self.assertIn('data-role="upload-ai-body"', page)
+        body_at = page.index('data-role="upload-ai-body"')
+        # The checkbox itself stays outside -- folding it away would
+        # leave no way to unfold it.
+        self.assertLess(page.index('name="upload_ai_enabled"'), body_at)
+        for name in (
+            "upload_ai_provider",
+            "upload_ai_keep",
+            "upload_ai_prompt",
+            "upload_ai_full_ad",
+            "upload_ai_allow_text",
+            "upload_ai_background_style",
+        ):
+            self.assertGreater(
+                page.index(f'name="{name}"'),
+                body_at,
+                f"{name} should fold away with the rest of the generator",
+            )
+
     def test_the_typography_switches_live_in_one_ideogram_only_block(self):
         # Pollinations has no typography worth the name, so both switches
         # that ask for it are hidden together when it is selected. The

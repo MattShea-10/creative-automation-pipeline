@@ -321,6 +321,11 @@
             it becomes the backdrop on every size saved in <code>default_templates/</code>, the 728x480
             included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
           </div>
+          {# Everything the generator needs lives under its own checkbox and
+             stays out of sight until it is ticked. Unticked, none of it does
+             anything, and a dozen controls dimmed-but-present is most of what
+             makes this form long. #}
+          <div data-role="upload-ai-body">
           <div class="inline-controls" style="margin-top: 0.5rem;">
               <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
                 <span style="white-space: nowrap;">Provider</span>
@@ -419,6 +424,7 @@
               one thing that stops it -- and it stops the generation happening at all, rather than throwing
               the result away. If the provider fails, the offline placeholder is used and a warning says why.
             </div>
+          </div>
           </div>
         </div>
 
@@ -1337,6 +1343,25 @@
             });
           });
         }
+      }
+
+      // The generator's own controls stay folded away until it is
+      // switched on. Hidden rather than dimmed: unticked, not one of
+      // them does anything, and a dozen greyed controls sitting open is
+      // most of what makes this form long to read.
+      //
+      // hidden, not display:none in a class -- the fields still post
+      // while folded, which is what keeps a prompt and a provider choice
+      // waiting where the user left them instead of being wiped by a run
+      // that had the generator off.
+      var aiBody = root.querySelector('[data-role="upload-ai-body"]');
+      var aiEnabled = root.querySelector('[name="upload_ai_enabled"]');
+      if (aiBody && aiEnabled) {
+        var syncAiBody = function () {
+          aiBody.hidden = !aiEnabled.checked;
+        };
+        aiEnabled.addEventListener("change", syncAiBody);
+        syncAiBody();
       }
 
       // What the provider can actually do decides what is on offer.
