@@ -1456,7 +1456,12 @@ def generate():
                 "AI provider %r failed for campaign artwork: %s", upload_ai_provider, exc
             )
             upload_ai_image = MockImageProvider().generate(upload_ai_prompt_text)
-            background_notes_pending = (
+            # A warning, not a note. This was filed under "Details", which
+            # is collapsed -- so the single most consequential thing that
+            # can happen to a run (your artwork is a labelled placeholder,
+            # not the image you paid for) sat folded away while the
+            # placeholder itself was the most visible thing on the page.
+            background_warnings_pending.append(
                 f"Campaign artwork: the '{upload_ai_provider}' AI provider failed ({exc}) -- used the "
                 f"offline placeholder generator instead. Prompt: \"{upload_ai_prompt_text}\"."
             )
@@ -2845,6 +2850,27 @@ def generate():
         session_state["slots"] = slots
         session_index_path.write_text(json.dumps(session_state, indent=2))
     except OSError:
+        pass
+
+    # The notes and warnings exist only on the rendered page, which means
+    # a provider failure -- the single most useful thing to know about a
+    # run -- is gone the moment the tab is closed, and diagnosing one
+    # depends on somebody transcribing red text from a screenshot. Write
+    # them next to the job's own output instead.
+    try:
+        (job_dir / "run_report.json").write_text(
+            json.dumps(
+                {
+                    "job_id": job_id,
+                    "generated_at": _datetime.datetime.now().isoformat(timespec="seconds"),
+                    "notes": background_notes,
+                    "warnings": background_warnings,
+                },
+                indent=2,
+            )
+        )
+    except OSError:
+        # Never fail a finished batch over its own logging.
         pass
 
     return render_template(

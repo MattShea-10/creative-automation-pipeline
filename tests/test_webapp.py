@@ -3802,6 +3802,39 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertNotIn("pollinations", seen, seen)
         self.assertIn("ideogram", seen)
 
+    def test_a_provider_failure_is_recorded_next_to_the_job(self):
+        # The notes and warnings used to exist only on the rendered page,
+        # so the most useful fact about a run -- which provider failed
+        # and why -- was gone once the tab closed, and diagnosing one
+        # meant transcribing red text off a screenshot.
+        import json
+
+        self._write_template_with_a_background_layer("rep-300x250.psd", (300, 250))
+        old_key = os.environ.pop("IDEOGRAM_API_KEY", None)
+        try:
+            r = self.client.post(
+                "/generate",
+                data={
+                    "upload_ai_enabled": "1",
+                    "upload_ai_provider": "ideogram",
+                    "upload_ai_prompt": "runners",
+                    "header": "",
+                    "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        finally:
+            if old_key is not None:
+                os.environ["IDEOGRAM_API_KEY"] = old_key
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        report = json.loads((Path(self.tmp_dir) / job_id / "run_report.json").read_text())
+        blob = " ".join(report["warnings"])
+        self.assertIn("ideogram", blob)
+        self.assertIn("IDEOGRAM_API_KEY", blob)
+        # A warning, not a note: "Details" is collapsed, and a run whose
+        # artwork is a labelled placeholder must not report that quietly.
+        self.assertNotIn("provider failed", " ".join(report["notes"]))
+
     def test_upload_ai_fills_each_templates_background_layer(self):
         # The generated artwork reaches the templates as a background
         # override, which is what leaves each template's own logo,
