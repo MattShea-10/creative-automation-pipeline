@@ -39,16 +39,13 @@
        layers yourself), against the AI generator's yellow. Its own rule
        rather than the class, since this one is a nested .layer-section
        and inherits that sizing. */
-    /* The switch's whole scope is green -- box, nested sections and the
-       guidance inside them -- so what it governs is bounded by colour
-       rather than by counting borders. */
-    .custom-hero-box { @apply border-emerald-600; background: #052e1b; }
-    .custom-hero-box .layer-section {
-      @apply border-emerald-800;
-      background: #06371f;
-    }
-    .custom-hero-box .hint { @apply text-emerald-100/70; }
-    .custom-hero-box summary { @apply text-emerald-200; }
+    /* Outlined, not filled -- the same treatment as .ai-hero-callout with
+       its yellow: the border marks the switch's scope and the inside stays
+       the panel's own dark grey, so the controls read the way they do
+       everywhere else on the form. Filling it green tinted every nested
+       section and every line of hint text along with it. */
+    .custom-hero-box { @apply border border-emerald-600 rounded-md; background: #0f172a; }
+    .custom-hero-box .layer-section { @apply border-slate-800 bg-slate-900/30; }
     .manual-creative-box { @apply border-emerald-600 bg-emerald-950/40; }
     .manual-creative-box > summary { @apply uppercase tracking-wide; }
     .manual-creative-box.is-disabled { @apply opacity-50 border-slate-700 bg-slate-800/30; }
