@@ -304,7 +304,16 @@
          boxes that already have their own, and its heading named a
          section whose contents announce themselves. #}
       <div class="upload-creative-box">
-        <label for="upload_hero_image">Campaign hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp)</span></label>
+        {# The guidance for the whole panel, folded behind its own switch.
+           It is worth reading once and worth nothing on the twentieth run,
+           and it was the first thing between the top of the box and the
+           controls. Unticked by default: someone who needs it goes looking,
+           and everyone else gets the form. #}
+        <div class="checkbox-row" style="margin: 0;">
+          <input type="checkbox" id="upload_creative_help" data-role="upload-creative-help-toggle">
+          <label for="upload_creative_help" style="margin: 0; font-weight: 600;">Campaign hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp) -- how this works</span></label>
+        </div>
+        <div data-role="upload-creative-help" hidden>
         <div class="hint">
           <strong>This campaign needs artwork from one of two places: a hero image you upload here, or an
           AI-generated one below.</strong> Either way you supply a single picture, not a design -- the layout
@@ -318,6 +327,7 @@
           generator below is switched off; with it on, a freshly generated image wins. The "Output
           sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
           batch is whatever's in <code>default_templates/</code>.
+        </div>
         </div>
         {# The hand-built route: supply the picture yourself, then edit the
            layers the templates draw over it. Folded together because they are
@@ -1378,6 +1388,17 @@
             });
           });
         }
+      }
+
+      // Panel guidance, folded behind its own switch. No name -- it is a
+      // reading aid, not a setting, and posting it would put a field in
+      // form_state that means nothing to a run.
+      var helpToggle = root.querySelector('[data-role="upload-creative-help-toggle"]');
+      var helpBody = root.querySelector('[data-role="upload-creative-help"]');
+      if (helpToggle && helpBody) {
+        var syncHelp = function () { helpBody.hidden = !helpToggle.checked; };
+        helpToggle.addEventListener("change", syncHelp);
+        syncHelp();
       }
 
       // The two ways of supplying artwork are one choice, so their
