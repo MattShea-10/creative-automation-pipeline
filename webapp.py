@@ -1473,6 +1473,12 @@ def generate():
     # exactly where it was designed.
     upload_ai_image = None
     upload_ai_path = None
+    # What the provider actually handed back, before the shortfall was
+    # made up. Kept so the render loop can say which SIZES are softened
+    # by it -- the enlargement is real for a size above this and a
+    # non-event for one below, and one run-wide warning can't tell them
+    # apart.
+    upload_ai_source_size = None
     # Both are raised before background_notes/background_warnings exist,
     # so they wait here and are flushed onto those lists below.
     background_notes_pending = None
@@ -1623,15 +1629,19 @@ def generate():
                 # 1920x1920 for a requested 1920x1920" and reads as a
                 # warning about nothing.
                 returned_width, returned_height = upload_ai_image.width, upload_ai_image.height
+                upload_ai_source_size = (returned_width, returned_height)
                 upload_ai_image = upscale_to_cover(
                     upload_ai_image, (upload_ai_width, upload_ai_height)
                 )
-                background_warnings_pending.append(
-                    f"The '{upload_ai_provider}' provider returned "
-                    f"{returned_width}x{returned_height} for a requested "
-                    f"{upload_ai_width}x{upload_ai_height} -- sizes larger than that are upscaled "
-                    "from it, so they'll look softer. Try a provider without that cap, or supply "
-                    "the artwork yourself."
+                # Recorded once, as a note, so the run report still says
+                # what the provider gave. The warning proper is raised
+                # per size below, against the sizes it actually costs
+                # something -- run-wide, it read as "this whole batch is
+                # soft" on a batch whose smaller half was untouched.
+                background_notes_pending = (background_notes_pending or "") + (
+                    f" The '{upload_ai_provider}' provider capped this at "
+                    f"{returned_width}x{returned_height} against a requested "
+                    f"{upload_ai_width}x{upload_ai_height}."
                 )
         except ImageProviderError as exc:
             # Same resilience as the hero generator: a flaky free API
@@ -2191,6 +2201,20 @@ def generate():
 
     creatives = []
     for width, height in sizes:
+        # Only the sizes that genuinely enlarge past what came back. A
+        # 160x600 cut from a 1024x1024 source loses nothing; a 1920x1080
+        # is stretched to nearly twice the width it was drawn at, and
+        # that is the one worth flagging.
+        if upload_ai_source_size and (
+            width > upload_ai_source_size[0] or height > upload_ai_source_size[1]
+        ):
+            background_warnings.append(
+                f"{size_label(width, height)}: enlarged from the "
+                f"{upload_ai_source_size[0]}x{upload_ai_source_size[1]} the "
+                f"'{upload_ai_provider}' provider returned, so this size will look softer. "
+                "It still renders -- try a provider without that cap, or supply the artwork "
+                "yourself, if it matters for this size."
+            )
         background_image = size_templates.get((width, height), hero_image)
         is_template_size = (width, height) in size_templates
         # Only set for the render_creative() path below -- a PSD template

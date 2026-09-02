@@ -5097,6 +5097,55 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             "legal must offer exactly the edit properties the header does",
         )
 
+    def test_a_capped_provider_warns_only_about_the_sizes_it_softens(self):
+        # One run-wide warning read as "this whole batch is soft" on a
+        # batch whose smaller half was cut from the source untouched. The
+        # sizes at or under what came back lose nothing and say nothing.
+        from PIL import Image as _Image
+
+        import webapp
+
+        class _CappedProvider:
+            name = "capped"
+            supports_negative_prompt = False
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                # Ignores the requested size, like Ideogram's 1024 cap.
+                return _Image.new("RGB", (1024, 1024), (40, 60, 90))
+
+        original = webapp.get_provider
+        webapp.get_provider = lambda name: _CappedProvider()
+        try:
+            # The generation size comes from the SAVED templates, so one
+            # has to be staged for the request to exceed the provider's
+            # cap at all.
+            (tw, th), _staged = self._stage_real_template()
+            if max(tw, th) <= 1024:
+                self.skipTest("staged template is not larger than the stubbed cap")
+            data = {
+                "hero_image": (self._sample_image_bytes(size=(400, 400)), "hero.png"),
+                "product_name": "HydroBoost",
+                "market": "UK",
+                "audience": "runners",
+                "campaign_message": "Stay charged",
+                "upload_ai_enabled": "1",
+                "upload_ai_provider": "mock",
+                "sizes": [f"{tw}x{th}", "160x600"],
+                "header": "",
+                "description": "",
+            }
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        finally:
+            webapp.get_provider = original
+        self.assertEqual(r.status_code, 200)
+        page = r.data.decode()
+        # The size that genuinely enlarges is named...
+        self.assertIn(f"{tw}x{th}: enlarged from the 1024x1024", page)
+        # ...and the one that fits inside the source is not.
+        self.assertNotIn("160x600: enlarged from", page)
+        # The creative is still produced either way.
+        self.assertIn("/download/", page)
+
     def test_full_ad_mode_replaces_the_template_instead_of_layering_over_it(self):
         # The whole point: the model has already drawn a headline, so the
         # template must not draw a second one on top of it.
