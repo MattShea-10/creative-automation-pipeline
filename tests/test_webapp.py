@@ -5373,6 +5373,48 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 self.assertEqual(r.status_code, 200)
                 self.assertIn(b"/download/", r.data)
 
+    def test_a_cta_label_change_keeps_the_designed_button(self):
+        # The CTA is a group -- a rounded rectangle with its label on
+        # top. Changing three words used to paint over the whole group
+        # and draw a generic pill in its place, throwing away the button
+        # that was actually designed.
+        from src.image_ops import get_psd_group_text_box
+
+        (w, h), staged_path = self._stage_real_template()
+        if get_psd_group_text_box(staged_path, "cta") is None:
+            self.skipTest("staged template's CTA is not a group with a label")
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "layer_cta_text": "Claim my spot",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"updated layer(s)", r.data)
+        self.assertIn(b"cta", r.data)
+
+    def test_a_cta_label_alone_is_enough_to_redraw_the_layer(self):
+        # The gate into the whole layer-override block listed the header
+        # and description text and nothing else, so a run whose only
+        # instruction was a CTA label skipped it and rendered the
+        # template untouched. It went unnoticed because the AI generator
+        # puts a background override in the same dict, which held the
+        # gate open for every run that used it.
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "layer_cta_text": "Claim my spot",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertIn(b"updated layer(s) -- cta", r.data)
+
     def test_the_custom_route_renders_the_saved_templates_without_a_file(self):
         # Ticking the route is itself a statement that this batch comes
         # from the saved templates. They are a complete design already --

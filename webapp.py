@@ -76,6 +76,8 @@ from src.image_ops import (
     get_psd_layer_background,
     get_psd_layer_boxes,
     get_psd_layer_foreground,
+    _reconstruct_box_background,
+    get_psd_group_text_box,
     get_psd_layer_stack,
     get_psd_visible_layers,
     get_psd_layer_text_style,
@@ -2458,9 +2460,41 @@ def generate():
             # per size, since every template size has its own layout).
             # A size whose PSD doesn't have a given named layer just skips
             # that one override rather than erroring the whole request.
+            # Every override that can redraw something has to be able to
+            # get in here. This gate listed the header and description
+            # text and nothing else, so a run whose only instruction was
+            # a CTA label -- or legal copy, or a colour, or an outline --
+            # skipped the whole block and rendered the template
+            # untouched. It went unnoticed because the AI generator puts
+            # a background override in layer_image_overrides, which held
+            # the gate open for every run that used it.
             if (
                 layer_header_text
                 or layer_description_text
+                or layer_legal_text
+                or layer_cta_text
+                or layer_header_use_custom_color
+                or layer_description_use_custom_color
+                or layer_legal_use_custom_color
+                or layer_header_glow
+                or layer_description_glow
+                or layer_legal_glow
+                or layer_cta_glow
+                or layer_header_background
+                or layer_description_background
+                or layer_legal_background
+                or layer_header_font_family
+                or layer_description_font_family
+                or layer_legal_font_family
+                or layer_cta_font_family
+                or layer_header_font_size
+                or layer_description_font_size
+                or layer_legal_font_size
+                or layer_cta_font_size
+                or layer_header_stroke_size
+                or layer_description_stroke_size
+                or layer_legal_stroke_size
+                or layer_cta_stroke_size
                 or layer_image_overrides
                 or hidden_layer_names
             ) and (width, height) in size_template_paths:
@@ -2780,6 +2814,8 @@ def generate():
                     background_blur=0,
                     stroke_size=0,
                     stroke_color=(0, 0, 0),
+                    box_override=None,
+                    clean=True,
                 ):
                     # Shared by every text-layer override (description,
                     # header, ...) -- reads that named layer's own PSD
@@ -2796,7 +2832,11 @@ def generate():
                         # rendering exactly what was asked to disappear
                         # -- on top of a box already wiped clean for it.
                         return
-                    box = layer_boxes.get(layer_key)
+                    # box_override lets a caller point this at something
+                    # other than the named layer's own box -- the CTA
+                    # group's label sits inside the group's box, not at
+                    # it.
+                    box = box_override or layer_boxes.get(layer_key)
                     if box is None:
                         return
                     if not text:
@@ -2824,7 +2864,8 @@ def generate():
                     # box rather than printing over it -- see
                     # _clean_layer_box() for why a text layer needs this
                     # and an image layer doesn't.
-                    _clean_layer_box(box, layer_key, full_box=True)
+                    if clean:
+                        _clean_layer_box(box, layer_key, full_box=True)
                     psd_text_style = (
                         get_psd_layer_text_style(psd_path_for_size, layer_key)
                         if psd_path_for_size is not None
@@ -3044,7 +3085,64 @@ def generate():
                     # that upload IS the button, and drawing one over it
                     # would bury what the user just supplied.
                     cta_box = layer_boxes.get("cta")
-                    if cta_box is not None:
+                    # A CTA built as a group -- the designer's rounded
+                    # rectangle with its label on top -- has a text layer
+                    # of its own, and that is the thing being changed.
+                    # Rewriting just the label keeps the button that was
+                    # actually designed; painting the whole box and
+                    # drawing a generic pill throws it away to change
+                    # three words. Falls back to the pill when the CTA is
+                    # a flat layer with no label inside it.
+                    cta_label_box = (
+                        get_psd_group_text_box(psd_path_for_size, "cta")
+                        if psd_path_for_size is not None
+                        else None
+                    )
+                    if cta_label_box is not None and cta_box is not None:
+                        cta_label_box = map_box_through_fit(
+                            cta_label_box, psd_canvas_size, (width, height), fit_mode
+                        ) if psd_canvas_size else cta_label_box
+                        # Erase the old label against the button it sits
+                        # on, not against the template's backdrop:
+                        # _clean_layer_box() restores what was behind the
+                        # whole GROUP, which punches a hole the colour of
+                        # the page through the middle of the button.
+                        # Sampling just outside the word's own box gives
+                        # the button's own colour.
+                        final_image.paste(
+                            _reconstruct_box_background(final_image, cta_label_box),
+                            cta_label_box[:2],
+                        )
+                        # ...and the new words go across the button, not
+                        # into the box the old ones happened to occupy.
+                        # "Click" is four characters; a replacement fitted
+                        # to its footprint comes out microscopic.
+                        pad_x = int((cta_box[2] - cta_box[0]) * 0.08)
+                        pad_y = int((cta_box[3] - cta_box[1]) * 0.18)
+                        cta_label_box = (
+                            cta_box[0] + pad_x,
+                            cta_box[1] + pad_y,
+                            cta_box[2] - pad_x,
+                            cta_box[3] - pad_y,
+                        )
+                        _apply_text_layer_override(
+                            "cta",
+                            layer_cta_text,
+                            layer_cta_font_family,
+                            layer_cta_font_size,
+                            True,
+                            layer_cta_text_color,
+                            glow=layer_cta_glow,
+                            glow_color=layer_cta_glow_color,
+                            glow_size=layer_cta_glow_size,
+                            glow_opacity=layer_cta_glow_opacity,
+                            align="center",
+                            stroke_size=layer_cta_stroke_size,
+                            stroke_color=layer_cta_stroke_color,
+                            box_override=cta_label_box,
+                            clean=False,
+                        )
+                    elif cta_box is not None:
                         _clean_layer_box(cta_box, "cta", full_box=True)
                         cta_kwargs = dict(
                             button_color=layer_cta_button_color,

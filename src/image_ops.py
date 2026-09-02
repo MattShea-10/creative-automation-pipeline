@@ -1360,6 +1360,44 @@ def get_psd_layer_boxes(psd_path: Union[str, Path]) -> dict:
     return boxes
 
 
+def get_psd_group_text_box(psd_path: Union[str, Path], group_name: str):
+    """The bounding box of the first type layer INSIDE the named group,
+    or None.
+
+    A CTA built as a group -- a rounded rectangle with its label sitting
+    on top -- is one layer to everything that reads top-level boxes, so
+    replacing the CTA meant painting over the designer's button and
+    drawing a generic pill in its place. The label's own box is what
+    makes it possible to change the words and keep the button.
+
+    Returns None when psd-tools isn't installed, the file can't be read,
+    the group isn't there, it isn't a group, or it holds no type layer --
+    every one of which is a caller's cue to fall back to the whole-box
+    behaviour.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return None
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return None
+    wanted = group_name.strip().lower()
+    for layer in psd:
+        if (layer.name or "").strip().lower() != wanted:
+            continue
+        if not layer.is_group():
+            return None
+        for child in layer:
+            if getattr(child, "kind", None) == "type":
+                box = child.bbox
+                if box and box[2] > box[0] and box[3] > box[1]:
+                    return tuple(box)
+        return None
+    return None
+
+
 def get_psd_visible_layers(psd_path: Union[str, Path]) -> set:
     """Lowercased names of the top-level layers a PSD actually draws --
     the ones switched ON in Photoshop.

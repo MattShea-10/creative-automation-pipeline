@@ -1497,6 +1497,25 @@
         syncAiBody();
       }
 
+      // The campaign message and the description layer are the same
+      // sentence in almost every brief -- the message IS the line the
+      // template prints -- so typing it twice is the common case. The
+      // description field mirrors the message until somebody edits it,
+      // and stops the moment they do: this fills a blank, it does not
+      // overwrite an answer.
+      var messageField = root.querySelector('[name="campaign_message"]');
+      var descriptionField = root.querySelector('[name="layer_description_text"]');
+      if (messageField && descriptionField) {
+        var mirroring = !descriptionField.value || descriptionField.value === messageField.value;
+        descriptionField.addEventListener("input", function () {
+          mirroring = false;
+        });
+        messageField.addEventListener("input", function () {
+          if (mirroring) descriptionField.value = messageField.value;
+        });
+        if (mirroring && !descriptionField.value) descriptionField.value = messageField.value;
+      }
+
       // What the provider can actually do decides what is on offer.
       // Pollinations has no typography worth the name, so the two
       // switches that ask for it are hidden rather than shown and
