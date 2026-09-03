@@ -776,21 +776,29 @@
             </label>
           </div>
             <div class="inline-controls" style="margin-top: 0.4rem;">
+              <label for="layer_cta_text_stroke_size" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Text stroke size</span>
+                <input type="number" class="font-size-input" id="layer_cta_text_stroke_size" name="layer_cta_text_stroke_size" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_cta_text_stroke_size', '') }}">
+              </label>
+              <label for="layer_cta_text_stroke_color" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Text stroke color</span>
+                <input type="color" id="layer_cta_text_stroke_color" name="layer_cta_text_stroke_color" value="{{ prefill.get('layer_cta_text_stroke_color', '#000000') }}">
+              </label>
               <label for="layer_cta_radius" style="font-weight: 400;">
                 <span style="white-space: nowrap;">Corner radius %</span>
                 <input type="number" class="font-size-input" id="layer_cta_radius" name="layer_cta_radius" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_cta_radius', '') }}">
               </label>
               <label for="layer_cta_stroke_size" style="font-weight: 400;">
-                <span style="white-space: nowrap;">Stroke size</span>
+                <span style="white-space: nowrap;">Button stroke size</span>
                 <input type="number" class="font-size-input" id="layer_cta_stroke_size" name="layer_cta_stroke_size" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_cta_stroke_size', '') }}">
               </label>
               <label for="layer_cta_stroke_color" style="font-weight: 400;">
-                <span style="white-space: nowrap;">Stroke color</span>
+                <span style="white-space: nowrap;">Button stroke color</span>
                 <input type="color" id="layer_cta_stroke_color" name="layer_cta_stroke_color" value="{{ prefill.get('layer_cta_stroke_color', '#000000') }}">
               </label>
             </div>
             <div class="hint" style="margin-top: 0.2rem;">
-              A stroke round the button letterforms, as a percentage of the type size rather than a
+              Two strokes: one round the button's edge as a percentage of its height, one round the label's letterforms as a percentage of the type size -- rather than a
               pixel width -- the same setting has to read the same on a 160x600 and a 1920x1080. 0 means
               none. Useful where a glow is too soft to separate text from a busy photo behind it.
             </div>

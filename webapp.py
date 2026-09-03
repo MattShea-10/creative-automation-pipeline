@@ -77,6 +77,7 @@ from src.image_ops import (
     get_psd_layer_boxes,
     get_psd_layer_foreground,
     _reconstruct_box_background,
+    get_psd_group_text,
     get_psd_group_text_box,
     get_psd_layer_stack,
     get_psd_visible_layers,
@@ -229,6 +230,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_description_stroke_size", "layer_description_stroke_color",
     "layer_legal_stroke_size", "layer_legal_stroke_color",
     "layer_cta_stroke_size", "layer_cta_stroke_color", "layer_cta_radius",
+    "layer_cta_text_stroke_size", "layer_cta_text_stroke_color",
     "layer_legal_align", "layer_legal_background_color", "layer_legal_background_opacity",
     "layer_legal_background_blur",
     "layer_cta_text", "layer_cta_font_family", "layer_cta_font_size",
@@ -2033,6 +2035,15 @@ def generate():
     layer_cta_glow_size = _parse_glow_size(request.form.get("layer_cta_glow_size"))
     layer_cta_glow_opacity = _parse_glow_opacity(request.form.get("layer_cta_glow_opacity"))
     layer_cta_stroke_size = _parse_stroke_size(request.form.get("layer_cta_stroke_size"))
+    # The label's own stroke, separate from the button's. One traces the
+    # shape's edge and the other the letterforms -- the same number means
+    # two different things, so they cannot share a field.
+    layer_cta_text_stroke_size = _parse_stroke_size(
+        request.form.get("layer_cta_text_stroke_size")
+    )
+    layer_cta_text_stroke_color = _parse_hex_color(
+        request.form.get("layer_cta_text_stroke_color"), default=(0, 0, 0)
+    )
     # None, not 0: 0 is a real answer (square corners), so "not set" has
     # to be something else or the button could never keep its pill.
     layer_cta_radius = request.form.get("layer_cta_radius")
@@ -3087,8 +3098,24 @@ def generate():
                         stroke_size=layer_legal_stroke_size,
                         stroke_color=layer_legal_stroke_color,
                     )
+                # Any CTA setting is a reason to redraw the button, not
+                # just new words. Someone who picks a colour, a corner
+                # radius or a stroke and leaves the label alone means
+                # "this button, like that" -- gating the whole block
+                # behind the text field made every one of those controls
+                # do nothing until something was typed into a field they
+                # have no relationship with.
                 if (
-                    layer_cta_text
+                    (
+                        layer_cta_text
+                        or layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT
+                        or layer_cta_glow
+                        or layer_cta_stroke_size
+                        or layer_cta_text_stroke_size
+                        or layer_cta_radius is not None
+                        or layer_cta_font_family
+                        or layer_cta_font_size
+                    )
                     and "cta" not in layer_image_overrides
                     and "cta" not in hidden_layer_names
                 ):
@@ -3163,16 +3190,26 @@ def generate():
                             cta_box[2] - pad_x,
                             cta_box[3] - pad_y,
                         )
+                        # The group's own label when none was typed --
+                        # redrawing the rectangle covers it, so it has to
+                        # go back. get_psd_text_layers() can't see it:
+                        # the words are on a layer inside the group.
+                        cta_label_text = layer_cta_text or get_psd_group_text(
+                            psd_path_for_size, "cta"
+                        )
                         _apply_text_layer_override(
                             "cta",
-                            layer_cta_text,
+                            cta_label_text,
                             layer_cta_font_family,
                             layer_cta_font_size,
                             True,
                             layer_cta_text_color,
-                            # Glow and stroke belong to the button, not
-                            # to the words on it -- haloing both leaves
-                            # the label wearing the shape's styling.
+                            # The glow belongs to the button, not to the
+                            # words on it -- haloing both leaves the
+                            # label wearing the shape's styling. The
+                            # label's stroke is its own field.
+                            stroke_size=layer_cta_text_stroke_size,
+                            stroke_color=layer_cta_text_stroke_color,
                             align="center",
                             box_override=cta_label_box,
                             clean=False,
@@ -3188,8 +3225,10 @@ def generate():
                             glow_color=layer_cta_glow_color,
                             glow_size=layer_cta_glow_size,
                             glow_opacity=layer_cta_glow_opacity,
-                            stroke_size=layer_cta_stroke_size,
-                            stroke_color=layer_cta_stroke_color,
+                            stroke_size=layer_cta_text_stroke_size,
+                            stroke_color=layer_cta_text_stroke_color,
+                            border_size=layer_cta_stroke_size,
+                            border_color=layer_cta_stroke_color,
                             corner_radius=layer_cta_radius,
                         )
                         final_image = apply_layer_cta_override(

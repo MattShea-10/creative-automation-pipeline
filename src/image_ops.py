@@ -1360,6 +1360,37 @@ def get_psd_layer_boxes(psd_path: Union[str, Path]) -> dict:
     return boxes
 
 
+def get_psd_group_text(psd_path: Union[str, Path], group_name: str):
+    """The words on the type layer inside the named group, or None.
+
+    get_psd_text_layers() reads top-level layers, so a CTA built as a
+    group -- rectangle plus label -- looks textless to it. Restyling the
+    button has to redraw the label over the new shape, and this is where
+    the words come from when the user changed a colour without retyping
+    them.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return None
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return None
+    wanted = group_name.strip().lower()
+    for layer in psd:
+        if (layer.name or "").strip().lower() != wanted or not layer.is_group():
+            continue
+        for child in layer:
+            if getattr(child, "kind", None) == "type":
+                try:
+                    text = (child.text or "").replace("\r", " ").strip()
+                except Exception:
+                    return None
+                return text or None
+    return None
+
+
 def get_psd_group_text_box(psd_path: Union[str, Path], group_name: str):
     """The bounding box of the first type layer INSIDE the named group,
     or None.
