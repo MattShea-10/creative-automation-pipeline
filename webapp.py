@@ -3239,6 +3239,20 @@ def generate():
                             box_override=cta_label_box,
                             clean=False,
                         )
+                        # _apply_text_layer_override() left the patch as
+                        # the label's glyphs alone, so the PSD download
+                        # got the words with no button under them -- the
+                        # one thing the whole CTA section is for. Take
+                        # the patch from the finished canvas instead:
+                        # whatever is in that box IS the button, however
+                        # it was arrived at (restyled pill, or the
+                        # designer's own shape left alone with new words
+                        # on it). Opaque over the backdrop it was cleaned
+                        # to, which composites identically and can't drift
+                        # from the render the way a re-derived patch can.
+                        cta_patch = Image.new("RGBA", final_image.size, (0, 0, 0, 0))
+                        cta_patch.paste(final_image.crop(cta_box).convert("RGBA"), cta_box[:2])
+                        export_layer_patches["cta"] = cta_patch
                     elif cta_box is not None:
                         _clean_layer_box(cta_box, "cta", full_box=True)
                         cta_kwargs = dict(
@@ -3461,23 +3475,30 @@ def generate():
                         # holds as flattened art (the CTA, in every
                         # default_templates PSD today) can't come back as
                         # text and is simply left as pixels.
-                        kept_live = save_layered_psd_preserving_type(
+                        # Every layer as this render drew it. It used to
+                        # inherit the template's live type layers here
+                        # instead, which quietly threw away the styling
+                        # that makes the creative look like itself: the
+                        # green fill, the glow, the size the words were
+                        # actually laid out at. Worse, Photoshop shows a
+                        # type layer from its cached raster until you
+                        # click into it, so a layer whose string had been
+                        # rewritten still READ as the template's old copy
+                        # -- a download that looked, in every way a person
+                        # can see, as though nothing had been applied.
+                        #
+                        # So the two downloads now each do one job
+                        # properly: this one is the creative, layered, and
+                        # matches the preview exactly; the source PSD
+                        # beside it is the editable one, with the same
+                        # copy in live type layers and the CTA still a
+                        # live group.
+                        save_layered_psd(
                             export_layers,
                             (width, height),
                             job_dir / psd_candidate_filename,
-                            template_path=psd_path_for_size,
-                            preserve_text={
-                                "description": layer_description_text,
-                                "header": layer_header_text,
-                                "legal": layer_legal_text,
-                            },
                             layer_names={},
                         )
-                        if kept_live:
-                            background_notes.append(
-                                f"{size_label(width, height)}: PSD download keeps live, "
-                                "editable text -- " + ", ".join(kept_live) + "."
-                            )
                         psd_filename = psd_candidate_filename
                     except Exception:
                         pass

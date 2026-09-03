@@ -5625,6 +5625,54 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # Downloads can be matched back to the run that made it.
         self.assertIn(job_id[:6], page)
 
+    def test_the_layered_psd_download_looks_like_the_preview(self):
+        # The whole promise of the layered download: open it and see the
+        # creative from the results grid. It used to inherit the
+        # template's live type layers instead, which threw away the
+        # colour, glow and sizing the render had applied -- and since
+        # Photoshop draws a type layer from its cached raster until you
+        # click into it, even a rewritten string still showed the
+        # template's old words. Between that and a CTA patch that had the
+        # label without the button under it, the file looked untouched.
+        from psd_tools import PSDImage
+
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Drive the summer",
+            "upload_custom_hero_enabled": "1",
+            "layer_description_text": "Drive the summer",
+            "layer_description_use_custom_color": "1",
+            "layer_description_text_color": "#33ff66",
+            "layer_cta_text": "claim my prize",
+            "layer_cta_button_color": "#f2760c",
+            "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        job = webapp.JOBS_DIR / job_id
+
+        rendered = Image.open(job / f"HydroBoost_campaign1_{w}x{h}.png").convert("RGB")
+        psd = PSDImage.open(job / f"HydroBoost_campaign1_{w}x{h}.psd")
+        # force=True composites the LAYERS rather than handing back the
+        # snapshot cached in the file -- this has to be true of what
+        # Photoshop draws, not just of the preview.
+        layered = psd.composite(force=True).convert("RGB").resize(rendered.size)
+
+        total = sum(
+            abs(a - b)
+            for pa, pb in zip(rendered.getdata(), layered.getdata())
+            for a, b in zip(pa, pb)
+        )
+        mean = total / (rendered.width * rendered.height * 3)
+        self.assertLess(mean, 8, "the layered PSD doesn't match the render")
+
+        # No layer left as live type: those are what carried the
+        # template's styling and its stale raster into the file.
+        self.assertNotIn(
+            "type", [l.kind for l in psd], "the layered download must be pixels"
+        )
+
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to
         # pixels except the text layers inherited from the template) and
@@ -5958,10 +6006,17 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertIn(b"updated layer(s)", r.data)
         self.assertIn(b"legal", r.data)
 
-    def test_legal_survives_as_live_type_in_the_psd_download(self):
-        # Same guarantee the header and description already have: the
-        # download opens in Photoshop with retypeable small print, not a
-        # picture of it.
+    def test_legal_survives_as_live_type_in_the_source_psd_download(self):
+        # Same guarantee the header and description have: retypeable
+        # small print. It lives in the SOURCE psd now, not the layered
+        # one. Inheriting the template's type layers into the layered
+        # download threw away the styling the render had just applied,
+        # and Photoshop shows a type layer from its cached raster until
+        # you click into it -- so a rewritten string still read as the
+        # template's old copy, and the file looked, in every way a
+        # person can see, as though nothing had been applied. The two
+        # downloads each do one job now: layered matches the preview,
+        # source is the editable one.
         (w, h), staged_path = self._stage_real_template()
         from psd_tools import PSDImage
 
@@ -5981,13 +6036,15 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         psds = [
             p
             for p in (webapp.JOBS_DIR / job_id).glob("*.psd")
-            if "source-template" not in p.name
+            if "source-template" in p.name
         ]
-        self.assertTrue(psds, "expected a per-size PSD in the job folder")
+        self.assertTrue(psds, "expected a source-template PSD in the job folder")
         layers = {l.name: l for l in PSDImage.open(psds[0])}
         self.assertIn("legal", layers)
         self.assertEqual(layers["legal"].kind, "type")
-        self.assertEqual(layers["legal"].text, "Offer ends 31 Dec. Terms apply.")
+        self.assertEqual(
+            layers["legal"].text.rstrip("\x00"), "Offer ends 31 Dec. Terms apply."
+        )
 
     def test_description_and_logo_override_apply_to_saved_default_size(self):
         (w, h), staged_path = self._stage_real_template()
