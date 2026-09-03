@@ -380,6 +380,27 @@
           batch is whatever's in <code>default_templates/</code>.
         </div>
         <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
+          {# Everything in this section normally edits a COPY of each
+             template -- which is why retyping a description has never
+             changed anything in default_templates/. Ticking this writes
+             the words back into the saved templates themselves, so the
+             change sticks for every future run. Off by default: it
+             rewrites files the user made by hand, and no results page
+             can undo that. #}
+          <div style="display: flex; align-items: flex-start; gap: 0.6rem; margin: 0 0 0.8rem 0;">
+            <input type="checkbox" id="update_saved_templates" name="update_saved_templates" value="1"
+                   style="width: auto; flex: 0 0 auto; margin: 0.2rem 0 0 0;"
+                   {% if prefill.get('update_saved_templates') %}checked{% endif %}>
+            <label for="update_saved_templates" style="font-weight: 400; margin: 0;">
+              Also save this copy into the templates themselves
+              <span class="hint" style="display: block; margin-top: 0.15rem;">
+                Writes the header, description, legal and CTA words back into the PSDs in
+                <code>default_templates/</code>, as live type layers, so every future run starts from them.
+                The version each file replaces is kept in <code>_template_backups/</code>. Leave this off and
+                the templates are untouched -- only this run's downloads carry the new copy.
+              </span>
+            </label>
+          </div>
           <div class="hint" style="margin-top: 0;">
             <strong>Update layers across all template sizes</strong> -- fill any of these in and, on every
             template-covered size whose PSD has a matching named layer (<code>header</code>,

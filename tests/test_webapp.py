@@ -97,12 +97,18 @@ class WebAppSmokeTest(unittest.TestCase):
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
         self.tmp_default_templates_dir = tempfile.mkdtemp()
         webapp.DEFAULT_TEMPLATES_DIR = Path(self.tmp_default_templates_dir)
+        # "Also save this copy into the templates themselves" writes a
+        # backup of each template it replaces. Pointed at the temp dir so
+        # a test run never leaves files in the real project.
+        self._orig_template_backups_dir = webapp.TEMPLATE_BACKUPS_DIR
+        webapp.TEMPLATE_BACKUPS_DIR = Path(self.tmp_dir) / "template-backups"
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
         webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
+        webapp.TEMPLATE_BACKUPS_DIR = self._orig_template_backups_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
 
     def _sample_image_bytes(self, size=(400, 300), color=(20, 100, 200)):
@@ -1627,12 +1633,18 @@ class PsdTemplateSectionTest(unittest.TestCase):
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
         self.tmp_default_templates_dir = tempfile.mkdtemp()
         webapp.DEFAULT_TEMPLATES_DIR = Path(self.tmp_default_templates_dir)
+        # "Also save this copy into the templates themselves" writes a
+        # backup of each template it replaces. Pointed at the temp dir so
+        # a test run never leaves files in the real project.
+        self._orig_template_backups_dir = webapp.TEMPLATE_BACKUPS_DIR
+        webapp.TEMPLATE_BACKUPS_DIR = Path(self.tmp_dir) / "template-backups"
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
         webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
+        webapp.TEMPLATE_BACKUPS_DIR = self._orig_template_backups_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
 
     def _sample_image_bytes(self, size=(400, 300), color=(20, 100, 200)):
@@ -1978,12 +1990,18 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
         self.tmp_default_templates_dir = tempfile.mkdtemp()
         webapp.DEFAULT_TEMPLATES_DIR = Path(self.tmp_default_templates_dir)
+        # "Also save this copy into the templates themselves" writes a
+        # backup of each template it replaces. Pointed at the temp dir so
+        # a test run never leaves files in the real project.
+        self._orig_template_backups_dir = webapp.TEMPLATE_BACKUPS_DIR
+        webapp.TEMPLATE_BACKUPS_DIR = Path(self.tmp_dir) / "template-backups"
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
         webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
+        webapp.TEMPLATE_BACKUPS_DIR = self._orig_template_backups_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
 
     def _write_default_template(self, filename, data: bytes) -> Path:
@@ -3014,12 +3032,18 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
         self.tmp_default_templates_dir = tempfile.mkdtemp()
         webapp.DEFAULT_TEMPLATES_DIR = Path(self.tmp_default_templates_dir)
+        # "Also save this copy into the templates themselves" writes a
+        # backup of each template it replaces. Pointed at the temp dir so
+        # a test run never leaves files in the real project.
+        self._orig_template_backups_dir = webapp.TEMPLATE_BACKUPS_DIR
+        webapp.TEMPLATE_BACKUPS_DIR = Path(self.tmp_dir) / "template-backups"
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
         webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
+        webapp.TEMPLATE_BACKUPS_DIR = self._orig_template_backups_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
 
     def _write_default_template(self, filename, data: bytes) -> Path:
@@ -5001,12 +5025,18 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self._orig_default_templates_dir = webapp.DEFAULT_TEMPLATES_DIR
         self.tmp_default_templates_dir = tempfile.mkdtemp()
         webapp.DEFAULT_TEMPLATES_DIR = Path(self.tmp_default_templates_dir)
+        # "Also save this copy into the templates themselves" writes a
+        # backup of each template it replaces. Pointed at the temp dir so
+        # a test run never leaves files in the real project.
+        self._orig_template_backups_dir = webapp.TEMPLATE_BACKUPS_DIR
+        webapp.TEMPLATE_BACKUPS_DIR = Path(self.tmp_dir) / "template-backups"
 
     def tearDown(self):
         webapp.JOBS_DIR = self._orig_jobs_dir
         webapp.DOWNLOADS_DIR = self._orig_downloads_dir
         shutil.rmtree(self.tmp_dir, ignore_errors=True)
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
+        webapp.TEMPLATE_BACKUPS_DIR = self._orig_template_backups_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
 
     def _find_real_layered_template(self):
@@ -5772,6 +5802,61 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(kept.kind, "type")
         self.assertFalse(kept.visible)
         self.assertEqual(kept.text.rstrip("\x00"), "Drive the summer")
+
+    def test_the_saved_template_is_only_rewritten_when_asked(self):
+        # Every override in this section edits a COPY of each template,
+        # which is why retyping a description never changed anything in
+        # default_templates/. Correct as a default -- a template is a
+        # design meant to outlive one campaign -- but not what someone
+        # wants when the placeholder copy is simply wrong.
+        from psd_tools import PSDImage
+
+        (w, h), staged_path = self._stage_real_template()
+        original = [
+            l.text.rstrip("\x00")
+            for l in PSDImage.open(staged_path)
+            if l.kind == "type" and l.name.strip().lower() == "description"
+        ]
+        if not original:
+            self.skipTest("staged template has no description type layer")
+
+        brief = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "layer_description_text": "Permanent new copy",
+            "header": "", "description": "",
+        }
+
+        def description_of(path):
+            return [
+                l.text.rstrip("\x00")
+                for l in PSDImage.open(path)
+                if l.kind == "type" and l.name.strip().lower() == "description"
+            ]
+
+        # Unticked: the template is left exactly as it was.
+        self.client.post("/generate", data=dict(brief), content_type="multipart/form-data")
+        self.assertEqual(
+            description_of(staged_path), original, "the template was rewritten unasked"
+        )
+
+        # Ticked: the words go in, as live type so the next run can
+        # still override them, and the replaced version is kept.
+        asked = dict(brief)
+        asked["update_saved_templates"] = "1"
+        r = self.client.post("/generate", data=asked, content_type="multipart/form-data")
+        self.assertEqual(description_of(staged_path), ["Permanent new copy"])
+        layer = [
+            l for l in PSDImage.open(staged_path)
+            if l.name.strip().lower() == "description"
+        ][0]
+        self.assertEqual(layer.kind, "type", "the template must stay retypeable")
+        self.assertIn(b"saved template", r.data)
+        self.assertTrue(
+            any(webapp.TEMPLATE_BACKUPS_DIR.glob(f"{staged_path.stem}.*.psd")),
+            "no backup of the version that was replaced",
+        )
 
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to

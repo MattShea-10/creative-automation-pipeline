@@ -138,6 +138,11 @@ DOWNLOADS_DIR = BASE_DIR / "downloads"
 
 DEFAULT_TEMPLATES_DIR = BASE_DIR / "default_templates"
 DEFAULT_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+# Where a saved template goes before this app writes over it. Editing
+# the templates is the one action here that changes a file the user made
+# by hand, and it cannot be undone from the results page -- so the
+# version being replaced is kept, timestamped, every time.
+TEMPLATE_BACKUPS_DIR = BASE_DIR / "_template_backups"
 
 # Logos need alpha transparency to composite cleanly -- keep that upload
 # restricted to formats that actually carry it, unlike the hero image
@@ -272,6 +277,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "message_no_background", "message_glow",
     "cta_glow",
     "cta_above_message",
+    "update_saved_templates",
     "layer_header_use_custom_color",
     "layer_description_use_custom_color",
     "layer_legal_use_custom_color",
@@ -1230,6 +1236,13 @@ def generate():
     # replaces their background layer, and the layer overrides in that
     # same section are reason enough to run without one.
     upload_custom_hero_enabled = bool(request.form.get("upload_custom_hero_enabled"))
+    # Write this run's copy back into the saved templates themselves, not
+    # just into its own downloads. Off by default and deliberately so:
+    # a template is a design meant to be reused, and folding one
+    # campaign's words into it means every later campaign starts from
+    # them. Ticked, it is the fastest way to make a change stick --
+    # retype once, and every future run begins with the new copy.
+    update_saved_templates = bool(request.form.get("update_saved_templates"))
     upload_ai_full_ad = bool(request.form.get("upload_ai_full_ad"))
     # The headline for a generated ad, kept separate from
     # layer_header_text on purpose. That one is an override for the
@@ -3616,6 +3629,79 @@ def generate():
                             set_flattened_preview(
                                 job_dir / source_candidate_filename, final_image
                             )
+
+                            # ...and, if asked, back into the saved
+                            # template itself. Everything above edits a
+                            # COPY: the template is read, copied into the
+                            # job folder, and the copy is what gets the
+                            # new words -- which is why retyping a
+                            # description has never changed anything in
+                            # default_templates/. That is the right
+                            # default (a template is a design meant to
+                            # outlive one campaign) but it is not what
+                            # someone wants when the placeholder copy is
+                            # simply wrong and should stay fixed.
+                            #
+                            # Only the words, and only as live type: a
+                            # template whose text had been flattened to
+                            # pixels could never be retyped again, which
+                            # would make the next run's override
+                            # impossible. Only templates in
+                            # default_templates/ -- never a PSD uploaded
+                            # for one request, which the user does not
+                            # think of as a saved design.
+                            if (
+                                update_saved_templates
+                                and psd_path_for_size is not None
+                                and psd_path_for_size.parent == DEFAULT_TEMPLATES_DIR
+                            ):
+                                template_updates = {
+                                    "header": layer_header_text,
+                                    "description": layer_description_text,
+                                    "legal": layer_legal_text,
+                                    "cta": layer_cta_text,
+                                }
+                                if any(template_updates.values()):
+                                    try:
+                                        TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+                                        import datetime as _dt
+                                        stamp = _dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+                                        backup = (
+                                            TEMPLATE_BACKUPS_DIR
+                                            / f"{psd_path_for_size.stem}.{stamp}{psd_path_for_size.suffix}"
+                                        )
+                                        if not backup.exists():
+                                            shutil.copy(psd_path_for_size, backup)
+                                        retyped_template = set_type_layer_text(
+                                            psd_path_for_size, template_updates
+                                        )
+                                        # The styling too, on the same
+                                        # terms as the live-text
+                                        # download: colour inside the
+                                        # type layer, glow and stroke as
+                                        # real layer effects. A template
+                                        # that kept the new words in the
+                                        # template's old colours would
+                                        # still need every run to restate
+                                        # the styling, which is most of
+                                        # what makes retyping tedious.
+                                        if live_text_colors:
+                                            set_type_layer_colors(
+                                                psd_path_for_size, live_text_colors
+                                            )
+                                        if live_text_effects:
+                                            set_type_layer_effects(
+                                                psd_path_for_size, live_text_effects
+                                            )
+                                    except Exception:  # noqa: BLE001
+                                        retyped_template = []
+                                    if retyped_template:
+                                        background_notes.append(
+                                            f"{size_label(width, height)}: saved template "
+                                            f"{psd_path_for_size.name} updated -- "
+                                            + ", ".join(retyped_template)
+                                            + f". The version it replaced is in _template_backups/{backup.name}."
+                                        )
                         psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
                         # Inherit the template's live text layers instead
                         # of baking this size's copy into pixels like
