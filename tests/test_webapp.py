@@ -2328,6 +2328,35 @@ class PaidProviderTest(unittest.TestCase):
         self.assertTrue(all(isinstance(s, int) for s in seeds), seeds)
         self.assertEqual(len(set(seeds)), 3, f"seeds must not repeat: {seeds}")
 
+    def test_a_401_from_ideogram_quotes_the_reason_and_the_key_in_use(self):
+        # "Invalid API key" and "API key is inactive" are different fixes
+        # (a regenerated key vs. billing not yet set up), and which key
+        # the server actually loaded is the first thing to check when the
+        # .env was edited after it started. All of that was being replaced
+        # by one fixed guess.
+        from unittest import mock
+
+        from src.providers.base import ImageProviderError
+        from src.providers.ideogram_provider import IdeogramProvider
+
+        provider = IdeogramProvider(api_token="abcd-not-a-real-key")
+
+        class Rejected:
+            status_code = 401
+            text = '{"detail": "Invalid API key"}'
+
+        with mock.patch(
+            "src.providers.ideogram_provider.requests.post", return_value=Rejected()
+        ):
+            with self.assertRaises(ImageProviderError) as caught:
+                provider.generate("a poster")
+        message = str(caught.exception)
+        self.assertIn("Invalid API key", message)
+        self.assertIn("starts 'abcd'", message)
+        self.assertIn("restart the server", message)
+        # Never the whole key.
+        self.assertNotIn("abcd-not-a-real-key", message)
+
     def test_ideogram_seed_can_be_pinned_to_reproduce_an_image(self):
         seeds = self._ideogram_seeds(2, seed=4242)
         self.assertEqual(seeds, [4242, 4242])

@@ -144,11 +144,23 @@ class IdeogramProvider(ImageProvider):
             raise ImageProviderError(f"Ideogram request failed: {exc}") from exc
 
         if resp.status_code == 401:
+            # Ideogram says WHY in the body -- "Invalid API key" and "API
+            # key is inactive" are different fixes (a regenerated key vs.
+            # billing not yet set up) -- so it is quoted rather than
+            # replaced with a guess.
+            reason = (resp.text or "").strip()[:200]
+            key_hint = (
+                f"the key in use starts {self.api_token[:4]!r} and is {len(self.api_token)} "
+                "characters"
+            )
             raise ImageProviderError(
-                "Ideogram rejected the key (401). Check IDEOGRAM_API_KEY, and that a payment "
-                "method and prepaid balance are set up at https://developer.ideogram.ai -- a "
-                "key stays inactive until both exist, and an ideogram.ai subscription does not "
-                "count towards it."
+                "Ideogram rejected the key (401)"
+                + (f": {reason}" if reason else "")
+                + f". {key_hint}. If the key was regenerated at https://developer.ideogram.ai "
+                "the old one stops working immediately -- paste the new one into .env and "
+                "restart the server (a .env edit is not picked up by the auto-reloader). A "
+                "brand-new key also stays inactive until a payment method and a prepaid "
+                "balance exist there; an ideogram.ai subscription does not count towards it."
             )
         if resp.status_code == 402:
             raise ImageProviderError(
