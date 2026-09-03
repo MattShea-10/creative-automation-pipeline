@@ -2876,7 +2876,19 @@ def generate():
                         continue
                     if visible_in_template and layer_name not in visible_in_template:
                         continue
-                    _clean_layer_box(hidden_box, layer_name, full_box=True)
+                    # NOT full_box. That wipes the whole box back to the
+                    # bare backdrop, and boxes overlap: the product shot
+                    # in the 720x480 template sits across the top-left
+                    # corner of the CTA, so hiding the product took that
+                    # corner of the button with it and the label went on
+                    # a button missing its left third. Hiding a layer
+                    # means "draw everything except this" -- which is
+                    # what the plain path does: the PSD recomposited
+                    # with just this layer off (or, once the background
+                    # has been replaced, the other layers restored from
+                    # the original through a mask that leaves this one
+                    # out). Its neighbours keep every pixel they had.
+                    _clean_layer_box(hidden_box, layer_name)
                     applied_layers.append(f"{layer_name} (hidden)")
 
                 def _apply_text_layer_override(

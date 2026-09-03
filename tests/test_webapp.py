@@ -5942,6 +5942,84 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         )
         self.assertLess(total / (w * h * 3), 2, "the second run differs from the first")
 
+    def test_hiding_a_layer_leaves_its_overlapping_neighbours_whole(self):
+        # Hiding wiped the layer's whole box back to the backdrop, and
+        # boxes overlap -- the product shot sits across a corner of the
+        # CTA in the 720x480 template -- so hiding the product took that
+        # corner of the button with it and the label went on a button
+        # missing its left third. Hiding means "draw everything except
+        # this"; the neighbours keep every pixel they had.
+        from src.image_ops import get_psd_layer_boxes, get_psd_canvas_size
+
+        # Whichever of the project's real templates actually has the
+        # two boxes overlapping -- that is the whole case.
+        # The template with the LARGEST overlap: a one-pixel sliver of
+        # overlap, which a designer's boxes can easily have, is all
+        # anti-aliasing and proves nothing either way.
+        best = None
+        for real_path in sorted(self.REAL_TEMPLATES_DIR.glob("*.psd")):
+            boxes = get_psd_layer_boxes(real_path)
+            cta, product = boxes.get("cta"), boxes.get("product")
+            if cta is None or product is None:
+                continue
+            candidate = (
+                max(cta[0], product[0]), max(cta[1], product[1]),
+                min(cta[2], product[2]), min(cta[3], product[3]),
+            )
+            ow, oh = candidate[2] - candidate[0], candidate[3] - candidate[1]
+            if ow < 12 or oh < 12:
+                continue
+            if best is None or ow * oh > best[0]:
+                best = (ow * oh, real_path, candidate)
+        if best is None:
+            self.skipTest("no real template has its cta and product boxes overlapping")
+        _area, real_path, overlap = best
+        w, h = get_psd_canvas_size(real_path) or Image.open(real_path).size
+        staged_path = webapp.DEFAULT_TEMPLATES_DIR / f"staged-{w}x{h}.psd"
+        staged_path.write_bytes(real_path.read_bytes())
+
+        brief = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "header": "", "description": "",
+        }
+
+        def render(extra):
+            data = dict(brief)
+            data.update(extra)
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+            return Image.open(
+                webapp.JOBS_DIR / job_id / f"HydroBoost_campaign1_{w}x{h}.png"
+            ).convert("RGB")
+
+        # Both with and without a replaced background: the two go
+        # through different code, and both used to wipe.
+        def hero():
+            # A fresh stream each time: the test client closes it after
+            # one post.
+            return (self._sample_image_bytes(size=(w, h), color=(200, 220, 255)), "hero.png")
+
+        for with_hero in (False, True):
+            base = {"upload_hero_image": hero()} if with_hero else {}
+            untouched = render(dict(base))
+            base = {"upload_hero_image": hero()} if with_hero else {}
+            base["layer_product_hidden"] = "1"
+            hidden = render(base)
+            extra = {"with_hero": with_hero}
+            # Inside the overlap, the button should look exactly as it
+            # did with the product visible -- the product doesn't cover
+            # the button there, the button covers the product.
+            before = untouched.crop(overlap)
+            after = hidden.crop(overlap)
+            diff = sum(
+                abs(a - b)
+                for pa, pb in zip(before.getdata(), after.getdata())
+                for a, b in zip(pa, pb)
+            ) / (before.width * before.height * 3)
+            self.assertLess(diff, 6, f"hiding the product changed the CTA under it ({extra.keys()})")
+
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to
         # pixels except the text layers inherited from the template) and
