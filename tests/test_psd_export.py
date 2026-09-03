@@ -31,7 +31,7 @@ from src.psd_export import (
     set_flattened_preview,
     set_type_layer_effects,
     set_type_layer_raster,
-    replace_type_layers_with_pixels,
+    pair_type_layers_with_pixels,
 )
 
 
@@ -536,11 +536,12 @@ class PsdExportTest(unittest.TestCase):
         patch = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
         ImageDraw.Draw(patch).rectangle([100, 400, 700, 600], fill=(51, 255, 102, 255))
         self.assertEqual(
-            replace_type_layers_with_pixels(dest, {"description": patch}), ["description"]
+            pair_type_layers_with_pixels(dest, {"description": patch}, prefer="pixels"),
+            ["description"],
         )
 
         after = {l.name: l for l in PSDImage.open(dest)}
-        # The words are pixels now, under the layer's own name...
+        # prefer="pixels": the drawn words take the plain name and show...
         self.assertIn("description", after)
         drawn = after["description"]
         self.assertEqual(drawn.kind, "pixel")
@@ -556,6 +557,35 @@ class PsdExportTest(unittest.TestCase):
         self.assertEqual(kept.kind, "type")
         self.assertFalse(kept.visible)
         self.assertEqual(kept.text.rstrip("\x00"), "Drive the summer")
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_preferring_text_keeps_the_type_layer_showing(self):
+        # The editable download's whole reason to exist: the type layer
+        # is what shows, with the renderer's own pixels hidden beside it
+        # in case a given Photoshop declines to recompose the text.
+        from PIL import ImageDraw
+
+        dest = self.tmp_dir / "prefer-text.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        set_type_layer_text(dest, {"description": "Drive the summer"})
+
+        psd = PSDImage.open(dest)
+        patch = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        ImageDraw.Draw(patch).rectangle([100, 400, 700, 600], fill=(51, 255, 102, 255))
+        self.assertEqual(
+            pair_type_layers_with_pixels(dest, {"description": patch}, prefer="text"),
+            ["description"],
+        )
+
+        after = {l.name: l for l in PSDImage.open(dest)}
+        live = after["description"]
+        self.assertEqual(live.kind, "type", "the editable layer must be the visible one")
+        self.assertTrue(live.visible)
+        self.assertEqual(live.text.rstrip("\x00"), "Drive the summer")
+
+        fallback = after["description (rendered)"]
+        self.assertEqual(fallback.kind, "pixel")
+        self.assertFalse(fallback.visible)
 
     @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
     def test_a_group_label_is_replaced_inside_its_group(self):
@@ -577,7 +607,7 @@ class PsdExportTest(unittest.TestCase):
         psd = PSDImage.open(dest)
         patch = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
         ImageDraw.Draw(patch).rectangle([430, 990, 620, 1020], fill=(255, 255, 255, 255))
-        replaced = replace_type_layers_with_pixels(dest, {"cta": patch})
+        replaced = pair_type_layers_with_pixels(dest, {"cta": patch}, prefer="pixels")
         self.assertTrue(replaced)
 
         group = [
@@ -588,11 +618,11 @@ class PsdExportTest(unittest.TestCase):
         self.assertEqual(kinds.get(replaced[0]), "pixel", "the words left the group")
         self.assertEqual(kinds.get(f"{replaced[0]} (editable text)"), "type")
 
-    def test_replace_type_layers_with_pixels_on_an_unreadable_file_is_a_no_op(self):
+    def test_pair_type_layers_with_pixels_on_an_unreadable_file_is_a_no_op(self):
         junk = self.tmp_dir / "not-a-pixel.psd"
         junk.write_bytes(b"nope")
         self.assertEqual(
-            replace_type_layers_with_pixels(
+            pair_type_layers_with_pixels(
                 junk, {"description": Image.new("RGBA", (8, 8))}
             ),
             [],

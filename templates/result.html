@@ -198,7 +198,7 @@
               <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}" title="This creative, as layers -- it opens looking exactly like the preview above, with the background, logo, product, text and CTA each on their own layer. Everything is pixels, so nothing shifts when it opens; for retypeable text use the source PSD below.">Download layered PSD</a>
             {% endif %}
             {% if c.source_psd_filename %}
-              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.source_psd_filename) }}" title="This creative with its text still editable: the words are drawn as pixels so the file opens looking right, and each one has a hidden '(editable text)' type layer beside it holding the same copy -- turn it on and hide the drawn one to retype. The CTA is still a live group whose button carries your fill and stroke as shape properties.">Download live-text PSD (editable)</a>
+              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.source_psd_filename) }}" title="This creative with every text layer live: header, description, legal and the CTA label are all editable type layers carrying this run's copy, colour and effects. The renderer's own pixels sit hidden beside each as '(rendered)', in case your Photoshop shows a type layer's cached picture instead of recomposing it. The CTA is a live group whose button carries your fill, stroke and corner radius as shape properties.">Download live-text PSD (editable)</a>
             {% endif %}
           </div>
         </div>

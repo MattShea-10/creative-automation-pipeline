@@ -235,7 +235,7 @@ def replace_pixel_layers(psd_path, images: dict) -> list:
     return replaced
 
 
-def replace_type_layers_with_pixels(psd_path, images: dict) -> list:
+def pair_type_layers_with_pixels(psd_path, images: dict, prefer: str = "text") -> list:
     """Put the rendered words in as pixels, and keep the editable text
     beside them switched off.
 
@@ -243,22 +243,28 @@ def replace_type_layers_with_pixels(psd_path, images: dict) -> list:
     RGBA image at the PSD's own size -- the words as the renderer drew
     them, colour, glow and all.
 
-    The last resort, and the only one that cannot be argued with. A type
-    layer holds its text, a cached picture of that text, and a set of
-    engine data Photoshop lays out from; this module writes all three,
-    and psd-tools reads all three back correctly -- yet a file can still
-    open showing the words it started with, because when Photoshop
-    recomposes a type layer is Photoshop's decision, not the file's. A
-    pixel layer has no such argument in it: it is the picture, and the
-    picture is what opens.
+    Both versions of every text layer end up in the file, and `prefer`
+    decides which one is switched on:
 
-    So the words go in as pixels under the layer's own name, and the
-    original type layer stays in the file, renamed "<name> (editable
-    text)" and switched off. Turn it on and the live, retypeable version
-    is right there, holding the same copy; leave it alone and the file
-    looks like the creative. Nothing is lost either way.
+        "text"    the live type layer keeps the plain name and shows;
+                  the drawn words sit beside it as "<name> (rendered)",
+                  hidden. Editable on open, at the cost of trusting
+                  Photoshop to recompose the layer from its text.
+        "pixels"  the drawn words take the plain name and show; the type
+                  layer becomes "<name> (editable text)", hidden.
+                  Guaranteed to look right, one click from editable.
 
-    Returns the names of the layers replaced.
+    Why the choice exists at all: a type layer holds its text, a cached
+    picture of that text, and the engine data Photoshop lays out from.
+    This module writes all three and psd-tools reads all three back
+    correctly -- and a file can still open showing the words it started
+    with, because when Photoshop recomposes a type layer is Photoshop's
+    decision, not the file's. Pixels have no such argument in them. So
+    neither answer is right for everyone, and both are in the file
+    either way: whichever is hidden is one click from being the one you
+    see.
+
+    Returns the names of the layers paired.
     """
     try:
         from psd_tools import PSDImage
@@ -291,15 +297,24 @@ def replace_type_layers_with_pixels(psd_path, images: dict) -> list:
                 continue
 
             drawn_name = target.name
-            # Renamed BEFORE the pixel layer goes in, so the two never
-            # share a name -- _named_type_layers() would otherwise find
-            # the wrong one on the next pass.
-            target.name = f"{drawn_name} (editable text)"
-            target.visible = False
+            # One of the pair keeps the plain name and is the one that
+            # shows; the other is suffixed and switched off. Renamed
+            # BEFORE the new layer goes in, so the two never share a
+            # name -- _named_type_layers() would otherwise find the
+            # wrong one on the next pass.
+            live_wins = prefer != "pixels"
+            if live_wins:
+                target.visible = True
+                pixel_name = f"{drawn_name} (rendered)"
+            else:
+                target.name = f"{drawn_name} (editable text)"
+                target.visible = False
+                pixel_name = drawn_name
 
             pixels = PixelLayer.frompil(
-                cropped, psd, name=drawn_name, top=top, left=left
+                cropped, psd, name=pixel_name, top=top, left=left
             )
+            pixels.visible = not live_wins
             # frompil appends to the document; it belongs directly above
             # the text it stands in for, inside whatever group that is.
             if pixels in list(psd):

@@ -5734,7 +5734,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             "type", [l.kind for l in psd], "the layered download must be pixels"
         )
 
-    def test_the_live_text_psd_shows_this_run_on_open(self):
+    def test_the_live_text_psd_keeps_its_text_editable(self):
         # It said the right words and showed the wrong ones. A type
         # layer carries a picture of how its text last looked and that
         # is what opens; the logo beside it updated instantly because a
@@ -5782,26 +5782,26 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         if "description" not in by_name:
             self.skipTest("staged template has no description layer")
 
-        # The words are pixels, in this run's colour rather than the
-        # template's black placeholder -- a pixel layer is the picture,
-        # so there is nothing for Photoshop to decide about.
-        drawn = by_name["description"]
+        # This is the editable download, so the type layer is the one
+        # that shows, carrying this run's copy.
+        live = by_name["description"]
+        self.assertEqual(live.kind, "type", "the editable layer must be the visible one")
+        self.assertTrue(live.visible)
+        self.assertEqual(live.text.rstrip("\x00"), "Drive the summer")
+
+        # ...with the renderer's own pixels hidden beside it, in this
+        # run's colour rather than the template's black placeholder, for
+        # when a Photoshop declines to recompose the text.
+        self.assertIn("description (rendered)", by_name)
+        drawn = by_name["description (rendered)"]
         self.assertEqual(drawn.kind, "pixel")
-        self.assertTrue(drawn.visible)
+        self.assertFalse(drawn.visible)
         raster = drawn.topil().convert("RGBA")
         greens = [
             px for px in raster.getdata()
             if px[3] > 200 and px[1] > 180 and px[0] < 140 and px[2] < 160
         ]
         self.assertTrue(greens, "the drawn words aren't this run's")
-
-        # ...and the editable text is kept beside it, switched off,
-        # holding the same copy.
-        self.assertIn("description (editable text)", by_name)
-        kept = by_name["description (editable text)"]
-        self.assertEqual(kept.kind, "type")
-        self.assertFalse(kept.visible)
-        self.assertEqual(kept.text.rstrip("\x00"), "Drive the summer")
 
     def test_the_saved_template_is_only_rewritten_when_asked(self):
         # Every override in this section edits a COPY of each template,
@@ -6229,16 +6229,17 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # the retypeable version is kept beside them, switched off,
         # holding the same copy. Which of the two names is present
         # depends on whether this run drew that layer at all.
-        editable = layers.get("legal (editable text)") or layers.get("legal")
+        editable = layers.get("legal")
         self.assertIsNotNone(editable, "no legal layer in the source PSD")
-        self.assertEqual(editable.kind, "type")
+        self.assertEqual(editable.kind, "type", "the legal copy must stay retypeable")
         self.assertEqual(
             editable.text.rstrip("\x00"), "Offer ends 31 Dec. Terms apply."
         )
-        if "legal (editable text)" in layers:
-            self.assertFalse(layers["legal (editable text)"].visible)
-            self.assertEqual(layers["legal"].kind, "pixel")
-            self.assertTrue(layers["legal"].visible)
+        # A rendered twin may sit beside it, hidden, when this run drew
+        # that layer at all.
+        if "legal (rendered)" in layers:
+            self.assertEqual(layers["legal (rendered)"].kind, "pixel")
+            self.assertFalse(layers["legal (rendered)"].visible)
 
     def test_description_and_logo_override_apply_to_saved_default_size(self):
         (w, h), staged_path = self._stage_real_template()
