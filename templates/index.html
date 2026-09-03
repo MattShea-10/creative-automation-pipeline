@@ -334,9 +334,32 @@
                  {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
           <div style="flex: 1 1 auto; min-width: 0;">
             <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
+            {# A file input reads "No file chosen" whatever the server is
+               holding: its value is read-only to scripts, so the name of
+               a file carried forward from the last run cannot be written
+               back into the control. The image itself is not lost -- it
+               is in the job's form_state and _carry_forward_upload()
+               re-attaches it -- so what was missing was only the sight of
+               it. This chip is that: the same thumbnail-and-name card the
+               layer images use, directly under the input so it reads as
+               the control's own value, with an (x) that actually drops
+               the file (upload_hero_image_clear) rather than a line of
+               prose saying one is there. #}
+            {% if prefill_files.get('upload_hero_image') %}
+              <div class="layer-image-cached" data-role="layer-cached-upload_hero_image" data-prefill-hint style="margin-top: 0.4rem;">
+                {% if edit_job_id %}
+                  <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get('upload_hero_image')) }}" alt="Custom hero image">
+                {% endif %}
+                <div class="layer-image-cached-meta">
+                  <strong>Kept from your last run</strong>
+                  <span class="layer-image-cached-name" title="{{ prefill_files.get('upload_hero_image') }}">{{ prefill_files.get('upload_hero_image') }}</span>
+                </div>
+                <button type="button" class="clear-btn" data-role="layer-clear-btn-upload_hero_image" title="Drop this hero image">&times;</button>
+                <input type="hidden" name="upload_hero_image_clear" value="">
+              </div>
+            {% endif %}
           </div>
         </div>
-        {% if prefill_files.get('upload_hero_image') %}<div class="hint" style="margin-top: 0.3rem;" data-prefill-hint>Currently: <strong>{{ prefill_files.get('upload_hero_image') }}</strong> -- choose a new file to replace it, or leave blank to keep it.</div>{% endif %}
         {# The file field stays visible with the checkbox -- it is the one
            control this route always needs. Everything under it is layer
            editing, which only matters once you have committed to building
@@ -1465,6 +1488,19 @@
       // and closes the other. Not radio buttons -- unticking both is a
       // legitimate state (a batch driven entirely by a content PSD needs
       // neither), and a radio group has no way back out of itself.
+      // Picking a new file replaces the kept one server-side, so the
+      // chip saying what is being kept stops being true the moment the
+      // input has a choice of its own in it. Hidden rather than removed:
+      // clearing the picker (a browser can do that on a re-open) puts
+      // the kept file back in play, and so should its label.
+      var heroFileInput = root.querySelector('[name="upload_hero_image"]');
+      var heroKeptChip = root.querySelector('[data-role="layer-cached-upload_hero_image"]');
+      if (heroFileInput && heroKeptChip) {
+        heroFileInput.addEventListener("change", function () {
+          heroKeptChip.hidden = !!heroFileInput.value;
+        });
+      }
+
       var customHeroToggle = root.querySelector('[data-role="custom-hero-toggle"]');
       var customHeroBody = root.querySelector('[data-role="custom-hero-body"]');
       if (customHeroToggle && customHeroBody) {

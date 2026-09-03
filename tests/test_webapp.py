@@ -6,6 +6,7 @@ description -> sized creatives + zip" flow a person would drive by hand.
 """
 
 import io
+import json
 import os
 import re
 import shutil
@@ -5480,6 +5481,80 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertIn(b"updated layer(s) -- cta", r.data)
+
+    def test_a_kept_hero_image_shows_its_filename_on_the_input(self):
+        # A file input always reads "No file chosen" -- its value is
+        # read-only to scripts, so the name of a carried-forward file
+        # cannot be put back into the control itself. The file was never
+        # lost (it is in the job's form_state, and _carry_forward_upload
+        # re-attaches it); only the sight of it was, and a run that looks
+        # like it has no hero image invites re-picking one every time.
+        self._stage_real_template()
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "upload_hero_image": (self._sample_image_bytes(), "seaside_hero.png"),
+            "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        page = self.client.get(f"/edit/{job_id}").data.decode()
+
+        chip = re.search(
+            r'<div class="layer-image-cached" data-role="layer-cached-upload_hero_image".*?</div>\s*</div>',
+            page,
+            re.S,
+        )
+        self.assertIsNotNone(chip, "no kept-file chip on the hero input")
+        chip = chip.group(0)
+        self.assertIn("seaside_hero.png", chip, "the chip doesn't name the kept file")
+        # ...and it is part of the hero control, not a note somewhere
+        # else on the page: it has to sit after that input and before
+        # anything else that takes a file.
+        hero_input = page.index('id="upload_hero_image"')
+        self.assertGreater(page.index(chip), hero_input)
+        self.assertLess(page.index(chip), page.index('name="layer_logo_image"'))
+        # The (x) needs something to post, or dropping it is cosmetic.
+        self.assertIn('name="upload_hero_image_clear"', chip)
+
+    def test_the_kept_hero_image_can_be_dropped(self):
+        # The chip's (x) sets this flag; without it "left blank" means
+        # "keep what's there" and there is no way back to no hero image
+        # short of picking a different one.
+        self._stage_real_template()
+        first = self.client.post(
+            "/generate",
+            data={
+                "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+                "campaign_message": "Stay charged",
+                "upload_custom_hero_enabled": "1",
+                "upload_hero_image": (self._sample_image_bytes(), "seaside_hero.png"),
+                "header": "", "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        job_id = re.search(rb"/download/([0-9a-f]+)", first.data).group(1).decode()
+        second = self.client.post(
+            "/generate",
+            data={
+                "edit_job_id": job_id,
+                "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+                "campaign_message": "Stay charged",
+                "upload_custom_hero_enabled": "1",
+                "upload_hero_image_clear": "1",
+                "header": "", "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(second.status_code, 200)
+        next_job = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
+        state = json.loads(
+            (webapp.JOBS_DIR / next_job / "form_state.json").read_text()
+        )
+        self.assertNotIn("upload_hero_image", state.get("files") or {})
+        page = self.client.get(f"/edit/{next_job}").data.decode()
+        self.assertNotIn("seaside_hero.png", page)
 
     def test_the_custom_route_renders_the_saved_templates_without_a_file(self):
         # Ticking the route is itself a statement that this batch comes
