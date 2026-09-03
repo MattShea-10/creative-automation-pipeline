@@ -235,6 +235,89 @@ def replace_pixel_layers(psd_path, images: dict) -> list:
     return replaced
 
 
+def replace_type_layers_with_pixels(psd_path, images: dict) -> list:
+    """Put the rendered words in as pixels, and keep the editable text
+    beside them switched off.
+
+    `images` maps a lowercased layer (or group) name to a full-canvas
+    RGBA image at the PSD's own size -- the words as the renderer drew
+    them, colour, glow and all.
+
+    The last resort, and the only one that cannot be argued with. A type
+    layer holds its text, a cached picture of that text, and a set of
+    engine data Photoshop lays out from; this module writes all three,
+    and psd-tools reads all three back correctly -- yet a file can still
+    open showing the words it started with, because when Photoshop
+    recomposes a type layer is Photoshop's decision, not the file's. A
+    pixel layer has no such argument in it: it is the picture, and the
+    picture is what opens.
+
+    So the words go in as pixels under the layer's own name, and the
+    original type layer stays in the file, renamed "<name> (editable
+    text)" and switched off. Turn it on and the live, retypeable version
+    is right there, holding the same copy; leave it alone and the file
+    looks like the creative. Nothing is lost either way.
+
+    Returns the names of the layers replaced.
+    """
+    try:
+        from psd_tools import PSDImage
+        from psd_tools.api.layers import PixelLayer
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+
+    canvas = (psd.width, psd.height)
+    replaced = []
+    for name, image in (images or {}).items():
+        key = name.strip().lower()
+        # Resolved per layer rather than once up front: every insertion
+        # renumbers the container, so the map would go stale.
+        target = _named_type_layers(psd).get(key)
+        if target is None or image is None:
+            continue
+        try:
+            parent = target._parent or psd
+            index = list(parent).index(target)
+
+            rgba = image if image.mode == "RGBA" else image.convert("RGBA")
+            if rgba.size != canvas:
+                rgba = rgba.resize(canvas, Image.LANCZOS)
+            cropped, left, top = _tight_bbox_crop(rgba)
+            if cropped.width < 1 or cropped.height < 1:
+                continue
+
+            drawn_name = target.name
+            # Renamed BEFORE the pixel layer goes in, so the two never
+            # share a name -- _named_type_layers() would otherwise find
+            # the wrong one on the next pass.
+            target.name = f"{drawn_name} (editable text)"
+            target.visible = False
+
+            pixels = PixelLayer.frompil(
+                cropped, psd, name=drawn_name, top=top, left=left
+            )
+            # frompil appends to the document; it belongs directly above
+            # the text it stands in for, inside whatever group that is.
+            if pixels in list(psd):
+                psd.remove(pixels)
+            parent.insert(index + 1, pixels)
+        except Exception:  # noqa: BLE001
+            continue
+        replaced.append(drawn_name)
+
+    if not replaced:
+        return []
+    try:
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return replaced
+
+
 def set_type_layer_raster(psd_path, images: dict) -> list:
     """Replace the cached picture Photoshop shows for a live type layer,
     without touching the text itself.

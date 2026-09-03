@@ -31,6 +31,7 @@ from src.psd_export import (
     set_flattened_preview,
     set_type_layer_effects,
     set_type_layer_raster,
+    replace_type_layers_with_pixels,
 )
 
 
@@ -452,6 +453,86 @@ class PsdExportTest(unittest.TestCase):
         junk.write_bytes(b"nope")
         self.assertEqual(
             set_type_layer_raster(junk, {"description": Image.new("RGBA", (8, 8))}), []
+        )
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_words_go_in_as_pixels_with_the_editable_text_kept_beside_them(self):
+        # A type layer holds its string, a cached picture of that string,
+        # and the engine data Photoshop lays out from. All three are
+        # written correctly and psd-tools reads all three back -- and the
+        # file still opened showing the template's copy, because when
+        # Photoshop recomposes a type layer is Photoshop's decision, not
+        # the file's. A pixel layer has no such argument in it.
+        from PIL import ImageDraw
+
+        dest = self.tmp_dir / "as-pixels.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        set_type_layer_text(dest, {"description": "Drive the summer"})
+
+        psd = PSDImage.open(dest)
+        patch = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        ImageDraw.Draw(patch).rectangle([100, 400, 700, 600], fill=(51, 255, 102, 255))
+        self.assertEqual(
+            replace_type_layers_with_pixels(dest, {"description": patch}), ["description"]
+        )
+
+        after = {l.name: l for l in PSDImage.open(dest)}
+        # The words are pixels now, under the layer's own name...
+        self.assertIn("description", after)
+        drawn = after["description"]
+        self.assertEqual(drawn.kind, "pixel")
+        self.assertTrue(drawn.visible)
+        raster = drawn.topil().convert("RGBA")
+        self.assertEqual(
+            raster.getpixel((raster.width // 2, raster.height // 2)), (51, 255, 102, 255)
+        )
+        # ...and the editable text is still in the file, holding the same
+        # copy, one click from being turned back on.
+        self.assertIn("description (editable text)", after)
+        kept = after["description (editable text)"]
+        self.assertEqual(kept.kind, "type")
+        self.assertFalse(kept.visible)
+        self.assertEqual(kept.text.rstrip("\x00"), "Drive the summer")
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_group_label_is_replaced_inside_its_group(self):
+        # The CTA's words are a child of the group. A pixel layer left at
+        # the document's top level would sit above everything instead of
+        # on the button.
+        from PIL import ImageDraw
+
+        dest = self.tmp_dir / "group-pixels.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+
+        groups = [
+            l for l in PSDImage.open(dest)
+            if l.is_group() and l.name.strip().lower() == "cta"
+        ]
+        if not groups:
+            self.skipTest("this template's CTA is not a group")
+
+        psd = PSDImage.open(dest)
+        patch = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        ImageDraw.Draw(patch).rectangle([430, 990, 620, 1020], fill=(255, 255, 255, 255))
+        replaced = replace_type_layers_with_pixels(dest, {"cta": patch})
+        self.assertTrue(replaced)
+
+        group = [
+            l for l in PSDImage.open(dest)
+            if l.is_group() and l.name.strip().lower() == "cta"
+        ][0]
+        kinds = {l.name: l.kind for l in group}
+        self.assertEqual(kinds.get(replaced[0]), "pixel", "the words left the group")
+        self.assertEqual(kinds.get(f"{replaced[0]} (editable text)"), "type")
+
+    def test_replace_type_layers_with_pixels_on_an_unreadable_file_is_a_no_op(self):
+        junk = self.tmp_dir / "not-a-pixel.psd"
+        junk.write_bytes(b"nope")
+        self.assertEqual(
+            replace_type_layers_with_pixels(
+                junk, {"description": Image.new("RGBA", (8, 8))}
+            ),
+            [],
         )
 
     def test_set_type_layer_text_on_an_unreadable_file_is_a_no_op(self):

@@ -55,6 +55,7 @@ from src.psd_export import (
     set_flattened_preview,
     set_shape_layer_style,
     set_type_layer_effects,
+    replace_type_layers_with_pixels,
     set_type_layer_raster,
     set_type_layer_text,
     set_type_layer_colors,
@@ -3574,18 +3575,26 @@ def generate():
                             # quick-look, because those read the cached
                             # composite the template shipped with rather
                             # than redrawing the layers.
-                            # The picture Photoshop shows for each type
-                            # layer. A type layer carries a rasterized
-                            # copy of how its words last looked, and that
-                            # is what is on screen when the file opens --
-                            # so replacing the string left the layer
-                            # SAYING the new copy while still SHOWING the
-                            # template's. Next to a logo that updated
-                            # instantly (a pixel layer is nothing but its
-                            # picture) it read as the text override
-                            # simply not working. The words stay live:
-                            # only the cached picture is rebuilt, from
-                            # the same patch the render drew.
+                            # The words as pixels, with the editable
+                            # text kept beside them switched off.
+                            #
+                            # A type layer holds its string, a cached
+                            # picture of that string, and the engine data
+                            # Photoshop lays out from. All three are
+                            # written above and psd-tools reads all three
+                            # back correctly -- and the file still opened
+                            # showing the template's copy, because when
+                            # Photoshop recomposes a type layer is
+                            # Photoshop's decision, not the file's. A
+                            # pixel layer has no such argument in it.
+                            #
+                            # So the drawn words go in under the layer's
+                            # own name and the type layer stays as
+                            # "<name> (editable text)", hidden, holding
+                            # the same copy: the file opens looking like
+                            # the creative, and retypeable text is one
+                            # click away rather than a promise that
+                            # didn't survive contact with Photoshop.
                             live_text_rasters = {}
                             for key in ("header", "description", "legal"):
                                 patch = export_layer_patches.get(key)
@@ -3594,15 +3603,14 @@ def generate():
                             if cta_label_patch is not None:
                                 live_text_rasters["cta"] = cta_label_patch
                             if live_text_rasters:
-                                redrawn = set_type_layer_raster(
+                                redrawn = replace_type_layers_with_pixels(
                                     job_dir / source_candidate_filename, live_text_rasters
                                 )
                                 if redrawn:
                                     background_notes.append(
-                                        f"{size_label(width, height)}: live-text PSD's type layers "
-                                        "now show this run's words on open -- "
-                                        + ", ".join(redrawn)
-                                        + " (still editable)."
+                                        f"{size_label(width, height)}: live-text PSD shows this run's "
+                                        "words -- " + ", ".join(redrawn)
+                                        + " (the editable type layer is kept beside each, switched off)."
                                     )
 
                             set_flattened_preview(
