@@ -29,6 +29,7 @@ from src.psd_export import (
     set_shape_layer_style,
     replace_pixel_layers,
     set_flattened_preview,
+    set_type_layer_effects,
 )
 
 
@@ -322,6 +323,85 @@ class PsdExportTest(unittest.TestCase):
         junk = self.tmp_dir / "not-a-preview.psd"
         junk.write_bytes(b"nope")
         self.assertFalse(set_flattened_preview(junk, Image.new("RGB", (4, 4))))
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_glow_and_stroke_become_real_layer_effects(self):
+        # Colour and weight are text styling and live inside the type
+        # layer; a glow is not styling at all in Photoshop but a layer
+        # EFFECT hanging off the layer. So live text the renderer had
+        # drawn with a green halo arrived in the editable download as
+        # flat green words, and the file stopped looking like the
+        # creative it came from.
+        dest = self.tmp_dir / "effects.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+
+        styled = set_type_layer_effects(
+            dest,
+            {
+                "description": {
+                    "glow": {"color": (51, 255, 102), "radius": 12, "opacity": 90},
+                    "stroke": {"color": (0, 0, 0), "size": 3},
+                }
+            },
+        )
+        self.assertEqual(styled, ["description"])
+
+        layer = [l for l in PSDImage.open(dest) if l.name == "description"][0]
+        self.assertEqual(layer.kind, "type", "effects must not rasterize the layer")
+        kinds = {type(e).__name__ for e in layer.effects}
+        self.assertIn("OuterGlow", kinds)
+        self.assertIn("Stroke", kinds)
+        glow = next(e for e in layer.effects if type(e).__name__ == "OuterGlow")
+        self.assertTrue(glow.enabled)
+        self.assertEqual(round(glow.opacity), 90)
+        self.assertEqual(
+            [round(float(glow.color[k])) for k in (b"Rd  ", b"Grn ", b"Bl  ")],
+            [51, 255, 102],
+        )
+        self.assertEqual(round(glow.size), 12)
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_an_effect_reaches_a_label_inside_a_group(self):
+        # Same reason set_type_layer_text() needed a walker: the CTA's
+        # words are on a child of the group the form calls "cta".
+        dest = self.tmp_dir / "group-effects.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+
+        def type_layers(node):
+            for layer in node:
+                if layer.kind == "type":
+                    yield layer
+                elif layer.is_group():
+                    yield from type_layers(layer)
+
+        groups = [
+            l for l in PSDImage.open(dest)
+            if l.is_group() and l.name.strip().lower() == "cta"
+        ]
+        if not groups or not list(type_layers(groups[0])):
+            self.skipTest("this template's CTA is not a group with a live label")
+
+        styled = set_type_layer_effects(
+            dest, {"cta": {"stroke": {"color": (0, 0, 0), "size": 2}}}
+        )
+        self.assertTrue(styled, "the group's label was never found")
+        labels = [l for l in type_layers(PSDImage.open(dest)) if l.name in styled]
+        self.assertTrue(any(type(e).__name__ == "Stroke" for e in labels[0].effects))
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_layer_asked_for_no_effects_is_left_alone(self):
+        dest = self.tmp_dir / "no-effects.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        self.assertEqual(set_type_layer_effects(dest, {"description": {}}), [])
+        layer = [l for l in PSDImage.open(dest) if l.name == "description"][0]
+        self.assertFalse(list(layer.effects or []))
+
+    def test_set_type_layer_effects_on_an_unreadable_file_is_a_no_op(self):
+        junk = self.tmp_dir / "not-an-fx.psd"
+        junk.write_bytes(b"nope")
+        self.assertEqual(
+            set_type_layer_effects(junk, {"description": {"glow": {"radius": 4}}}), []
+        )
 
     def test_set_type_layer_text_on_an_unreadable_file_is_a_no_op(self):
         junk = self.tmp_dir / "not-a-text.psd"

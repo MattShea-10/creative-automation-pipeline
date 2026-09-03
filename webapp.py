@@ -54,6 +54,7 @@ from src.psd_export import (
     replace_pixel_layers,
     set_flattened_preview,
     set_shape_layer_style,
+    set_type_layer_effects,
     set_type_layer_text,
     set_type_layer_colors,
 )
@@ -2541,6 +2542,9 @@ def generate():
                 # that export shows exactly the new content on its own
                 # layer instead of a single flattened image.
                 export_layer_patches: dict = {}
+                # layer name -> the font size apply_layer_text_override()
+                # settled on for it this size. See where it is filled.
+                rendered_font_sizes: dict = {}
                 # A pristine copy of this size's template, exactly as it
                 # renders with zero overrides -- i.e. Pillow's own
                 # embedded/flattened PSD composite (the same source used
@@ -3028,6 +3032,17 @@ def generate():
                         stroke_color=stroke_color,
                     )
                     applied_layers.append(layer_key)
+                    # The size the words were ACTUALLY laid out at, which
+                    # is what the renderer measures a glow radius and a
+                    # stroke width against. A percentage is meaningless
+                    # to the live-text PSD without it: a type layer keeps
+                    # its point size in the document's resource defaults
+                    # scaled by the layer's own transform, so there is
+                    # nothing on the layer to take a percentage OF, and
+                    # guessing from the box overshot badly whenever the
+                    # designer's text box was taller than its words.
+                    if text_debug.get("font_size"):
+                        rendered_font_sizes[layer_key] = text_debug["font_size"]
                     background_notes.append(
                         f"{size_label(width, height)}: {layer_key} debug -- "
                         f"read from PSD: {psd_text_style or 'none'} | "
@@ -3471,6 +3486,67 @@ def generate():
                                 live_text_colors["legal"] = layer_legal_text_color
                             if layer_cta_text_color != CTA_TEXT_COLOR_DEFAULT:
                                 live_text_colors["cta"] = layer_cta_text_color
+                            # The glow and the stroke. Colour, size and
+                            # weight are text styling and live inside the
+                            # type layer; a glow is not styling at all in
+                            # Photoshop but a layer EFFECT hanging off
+                            # the layer, so live text the renderer had
+                            # drawn with a green halo arrived here as
+                            # flat green words and the file stopped
+                            # looking like the creative. Written only
+                            # into this file, never the layered one --
+                            # that stays pixels throughout and correct
+                            # whatever a given Photoshop makes of an
+                            # effect authored here.
+                            live_text_effects = {}
+                            for key, on, colour, size, opacity, s_size, s_colour in (
+                                ("header", layer_header_glow, layer_header_glow_color,
+                                 layer_header_glow_size, layer_header_glow_opacity,
+                                 layer_header_stroke_size, layer_header_stroke_color),
+                                ("description", layer_description_glow, layer_description_glow_color,
+                                 layer_description_glow_size, layer_description_glow_opacity,
+                                 layer_description_stroke_size, layer_description_stroke_color),
+                                ("legal", layer_legal_glow, layer_legal_glow_color,
+                                 layer_legal_glow_size, layer_legal_glow_opacity,
+                                 layer_legal_stroke_size, layer_legal_stroke_color),
+                                ("cta", layer_cta_glow, layer_cta_glow_color,
+                                 layer_cta_glow_size, layer_cta_glow_opacity,
+                                 layer_cta_text_stroke_size, layer_cta_text_stroke_color),
+                            ):
+                                spec = {}
+                                # Against the size this layer's words
+                                # were actually drawn at, matching the
+                                # renderer exactly. With no such size --
+                                # a layer this run didn't retype -- the
+                                # percentage has nothing to measure
+                                # against and the effect is skipped
+                                # rather than guessed at.
+                                laid_out_at = rendered_font_sizes.get(key)
+                                if not laid_out_at:
+                                    continue
+                                if on and size and opacity:
+                                    spec["glow"] = {
+                                        "color": colour,
+                                        "radius": max(1.0, laid_out_at * (size / 100.0)),
+                                        "opacity": opacity,
+                                    }
+                                if s_size:
+                                    spec["stroke"] = {
+                                        "color": s_colour,
+                                        "size": max(1.0, laid_out_at * (s_size / 100.0)),
+                                    }
+                                if spec:
+                                    live_text_effects[key] = spec
+                            if live_text_effects:
+                                fx = set_type_layer_effects(
+                                    job_dir / source_candidate_filename, live_text_effects
+                                )
+                                if fx:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: live-text PSD's glow/stroke "
+                                        "applied as Photoshop layer effects -- " + ", ".join(fx) + "."
+                                    )
+
                             if live_text_colors:
                                 recoloured = set_type_layer_colors(
                                     job_dir / source_candidate_filename, live_text_colors

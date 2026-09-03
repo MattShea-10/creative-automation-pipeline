@@ -418,6 +418,154 @@ def set_shape_layer_style(psd_path, styles: dict) -> list:
     return restyled
 
 
+def _rgb_descriptor(rgb):
+    """An RGBC colour descriptor, the shape Photoshop stores colours in
+    inside a layer effect."""
+    from psd_tools.psd.descriptor import Descriptor, Double
+
+    colour = Descriptor(classID=b"RGBC")
+    red, green, blue = rgb
+    colour[b"Rd  "] = Double(float(red))
+    colour[b"Grn "] = Double(float(green))
+    colour[b"Bl  "] = Double(float(blue))
+    return colour
+
+
+def _outer_glow_descriptor(color, radius_px: float, opacity: int):
+    """Photoshop's Outer Glow, as its `OrGl` descriptor.
+
+    Screen blend, soft technique -- the same defaults the fx dialog
+    starts from, which is what makes the result recognisable as "a glow"
+    rather than something odd that happens to have the right colour.
+    """
+    from psd_tools.psd.descriptor import Bool, Descriptor, Enumerated, UnitFloat
+    from psd_tools.terminology import Unit
+
+    glow = Descriptor(classID=b"OrGl")
+    glow[b"enab"] = Bool(True)
+    glow[b"present"] = Bool(True)
+    glow[b"showInDialog"] = Bool(True)
+    glow[b"Md  "] = Enumerated(b"BlnM", b"Scrn")
+    glow[b"Clr "] = _rgb_descriptor(color)
+    glow[b"Opct"] = UnitFloat(float(max(0, min(100, opacity))), Unit.Percent)
+    glow[b"GlwT"] = Enumerated(b"BETE", b"SfBL")
+    glow[b"Ckmt"] = UnitFloat(0.0, Unit.Pixels)
+    glow[b"blur"] = UnitFloat(float(max(1.0, radius_px)), Unit.Pixels)
+    glow[b"Nose"] = UnitFloat(0.0, Unit.Percent)
+    glow[b"ShdN"] = UnitFloat(0.0, Unit.Percent)
+    glow[b"AntA"] = Bool(False)
+    glow[b"Inpr"] = UnitFloat(50.0, Unit.Percent)
+    return glow
+
+
+def _stroke_descriptor(color, size_px: float):
+    """Photoshop's Stroke effect, as its `FrFX` descriptor -- outside the
+    letterforms, solid colour, which is what the renderer draws."""
+    from psd_tools.psd.descriptor import Bool, Descriptor, Enumerated, UnitFloat
+    from psd_tools.terminology import Unit
+
+    stroke = Descriptor(classID=b"FrFX")
+    stroke[b"enab"] = Bool(True)
+    stroke[b"present"] = Bool(True)
+    stroke[b"showInDialog"] = Bool(True)
+    stroke[b"Styl"] = Enumerated(b"FStl", b"OutF")
+    stroke[b"PntT"] = Enumerated(b"FrFl", b"SClr")
+    stroke[b"Md  "] = Enumerated(b"BlnM", b"Nrml")
+    stroke[b"Opct"] = UnitFloat(100.0, Unit.Percent)
+    stroke[b"Sz  "] = UnitFloat(float(max(1.0, size_px)), Unit.Pixels)
+    stroke[b"Clr "] = _rgb_descriptor(color)
+    return stroke
+
+
+def set_type_layer_effects(psd_path, effects: dict) -> list:
+    """Give live type layers a real Photoshop glow and/or stroke.
+
+    `effects` maps a lowercased layer (or group) name to a dict with any
+    of:
+
+        glow    {"color": (r, g, b), "radius": px, "opacity": 0-100}
+        stroke  {"color": (r, g, b), "size": px}
+
+    Both sizes are in document pixels, already resolved by the caller
+    against the font size the renderer actually laid the words out at.
+    They cannot be worked out here: a type layer keeps its point size in
+    the document's resource defaults scaled by the layer's own transform,
+    so there is nothing on the layer to take the form's percentage of,
+    and estimating it from the text box overshoots badly whenever the
+    designer drew a box taller than the words in it.
+
+    A layer named with neither is left alone; passing an empty dict for a
+    layer clears nothing, it simply does nothing.
+
+    Why this exists: colour, size and weight live inside the type layer's
+    own text engine data and can be set there, but a glow is not text
+    styling at all in Photoshop -- it is a layer *effect*, a separate
+    structure (`lfx2`) hanging off the layer. So live text that the
+    renderer had drawn with a green glow arrived in the editable download
+    as flat green words, and the file no longer looked like the creative
+    it came from.
+
+    Written only into the live-text download, never the layered one: the
+    layered file is pixels throughout and already correct, so if a
+    Photoshop version disagrees with anything authored here, the file
+    that always opens right is untouched.
+
+    Returns the names of the layers actually given effects. Best-effort
+    like the rest of this module.
+    """
+    try:
+        from psd_tools import PSDImage
+        from psd_tools.constants import Tag
+        from psd_tools.psd.descriptor import Bool, DescriptorBlock2, UnitFloat
+        from psd_tools.terminology import Unit
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+
+    layers = _named_type_layers(psd)
+    styled = []
+    for name, spec in (effects or {}).items():
+        layer = layers.get(name.strip().lower())
+        if layer is None or not spec:
+            continue
+        glow = spec.get("glow")
+        stroke = spec.get("stroke")
+        if not glow and not stroke:
+            continue
+        try:
+            block = DescriptorBlock2(classID=b"null", version=0, data_version=16)
+            block[b"masterFXSwitch"] = Bool(True)
+            # The effects' own scale. 100% means "the sizes below are in
+            # the document's pixels", which is what the renderer measured
+            # them in.
+            block[b"Scl "] = UnitFloat(100.0, Unit.Percent)
+            if glow:
+                block[b"OrGl"] = _outer_glow_descriptor(
+                    glow.get("color", (255, 255, 255)),
+                    glow.get("radius", 8),
+                    glow.get("opacity", 100),
+                )
+            if stroke:
+                block[b"FrFX"] = _stroke_descriptor(
+                    stroke.get("color", (0, 0, 0)), stroke.get("size", 1)
+                )
+            layer.tagged_blocks.set_data(Tag.OBJECT_BASED_EFFECTS_LAYER_INFO, block)
+        except Exception:  # noqa: BLE001
+            continue
+        styled.append(layer.name)
+
+    if not styled:
+        return []
+    try:
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return styled
+
+
 def set_type_layer_text(psd_path, texts: dict) -> list:
     """Rewrite live Photoshop type layers' copy in the PSD at `psd_path`,
     in place, keeping them editable text.
