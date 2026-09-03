@@ -51,6 +51,117 @@ REUPLOAD_LAYER_NAMES = {
 }
 
 
+def _named_type_layers(node) -> dict:
+    """Map every name a caller could reasonably use for a live type layer
+    in `node` to that layer, groups included.
+
+    Two things make a flat `for layer in psd` scan miss text the rest of
+    the app can see. Type layers nest: a designer's CTA is a group -- a
+    vector rectangle with its label on top -- so the layer holding the
+    words is a child called "Click", not the "cta" the form and the
+    render both address it by. And the app names layers by their ROLE
+    (header, description, legal, cta), which for a group is the group's
+    name, not the label's.
+
+    So both keys point at the same layer: its own name, and -- for the
+    first type layer inside a group -- the group's name. A layer's own
+    name wins if the two ever collide, since that is the more specific
+    of the two.
+
+    Returns {lowercased name: layer}. Order of preference aside, every
+    lookup here is best-effort: a node psd-tools can't walk contributes
+    nothing rather than raising.
+    """
+    found = {}
+
+    def visit(container):
+        for layer in container:
+            name = (layer.name or "").strip().lower()
+            if getattr(layer, "kind", None) == "type":
+                found.setdefault(name, layer)
+                continue
+            if getattr(layer, "is_group", None) and layer.is_group():
+                # The group's own name, claimed by the first type layer
+                # inside it -- registered before descending so a nested
+                # group's label can't take the outer group's name.
+                for child in _first_type_layer(layer):
+                    if name:
+                        found.setdefault(name, child)
+                    break
+                visit(layer)
+
+    try:
+        visit(node)
+    except Exception:  # noqa: BLE001
+        pass
+    return found
+
+
+def _first_type_layer(group):
+    """Yield the type layers inside `group`, outermost first."""
+    try:
+        children = list(group)
+    except Exception:  # noqa: BLE001
+        return
+    for layer in children:
+        if getattr(layer, "kind", None) == "type":
+            yield layer
+    for layer in children:
+        if getattr(layer, "is_group", None) and layer.is_group():
+            for nested in _first_type_layer(layer):
+                yield nested
+
+
+def set_type_layer_text(psd_path, texts: dict) -> list:
+    """Rewrite live Photoshop type layers' copy in the PSD at `psd_path`,
+    in place, keeping them editable text.
+
+    `texts` maps a lowercased layer name to the words that layer should
+    end up saying; a None or empty value leaves that layer alone, so a
+    form field nobody filled in keeps the template's own copy rather than
+    emptying it.
+
+    This is the counterpart to set_type_layer_colors() for the source
+    template PSD that ships beside every render -- the one file in the
+    download that still has the CTA as a live group and every text layer
+    editable. It was going out as a straight copy of the template, so it
+    read back the template's placeholder copy no matter what had been
+    typed into the form: the exact file someone opens to edit the words
+    was the one file that did not have them.
+
+    Returns the names of the layers actually rewritten -- best-effort,
+    like everything else here: an unreadable file or an unexpectedly
+    shaped type layer returns [] instead of raising.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+
+    layers = _named_type_layers(psd)
+    rewritten = []
+    for name, text in (texts or {}).items():
+        if not text:
+            continue
+        layer = layers.get(name.strip().lower())
+        if layer is None:
+            continue
+        if _rewrite_type_layer_text(layer, text):
+            rewritten.append(layer.name)
+
+    if not rewritten:
+        return []
+    try:
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return rewritten
+
+
 def set_type_layer_colors(psd_path, colors: dict) -> list:
     """Recolour live Photoshop type layers in the PSD at `psd_path`, in
     place, keeping them editable text.
@@ -86,12 +197,16 @@ def set_type_layer_colors(psd_path, colors: dict) -> list:
         return []
 
     wanted = {name.strip().lower(): rgb for name, rgb in colors.items()}
+    # Groups included -- see _named_type_layers(). A CTA's label is a
+    # child of the group the form calls "cta", and a flat scan of the
+    # document's top level never reaches it.
+    layers = _named_type_layers(psd)
     recoloured = []
-    for layer in psd:
-        name = layer.name.strip().lower()
-        if name not in wanted or getattr(layer, "kind", None) != "type":
+    for name, rgb in wanted.items():
+        layer = layers.get(name)
+        if layer is None:
             continue
-        red, green, blue = wanted[name]
+        red, green, blue = rgb
         try:
             runs = layer.engine_dict["StyleRun"]["RunArray"]
         except Exception:

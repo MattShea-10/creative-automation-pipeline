@@ -186,10 +186,10 @@
             <button type="button" class="size size-zoom" data-role="zoom" data-label="{{ c.label }}" title="View {{ c.label }} larger">{{ c.label }}</button>
             <div class="name">{{ c.ratio }}{% if c.name != c.ratio %} -- {{ c.name }}{% endif %}</div>
             {% if c.psd_filename %}
-              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}">Download PSD</a>
+              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}" title="This render, as layers: the artwork exactly as you see it above, with the header, description and legal carried over from the template as live type layers you can retype. The CTA is flattened here -- its button styling is drawn, so use the source PSD below to edit its words.">Download PSD</a>
             {% endif %}
             {% if c.source_psd_filename %}
-              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.source_psd_filename) }}" title="The template this size was built from, unmodified -- its header and description are still live Photoshop type layers you can retype. The rendered PSD above has them as pixel layers instead.">Download source PSD (live text)</a>
+              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.source_psd_filename) }}" title="The template this size was built from, with your copy typed into it -- every text layer is editable and the CTA is still a live group, its shape and its label both intact. Layer images and button styling are not applied here; the rendered PSD above has those.">Download source PSD (live text)</a>
             {% endif %}
           </div>
         </div>

@@ -25,6 +25,7 @@ from src.psd_export import (
     save_layered_psd,
     save_layered_psd_preserving_type,
     set_type_layer_colors,
+    set_type_layer_text,
 )
 
 
@@ -113,6 +114,89 @@ class PsdExportTest(unittest.TestCase):
         fill = layer.engine_dict["StyleRun"]["RunArray"][0]["StyleSheet"]["StyleSheetData"]["FillColor"]
         # [alpha, r, g, b] as 0..1 floats.
         self.assertEqual([round(float(v), 3) for v in fill["Values"]], [1.0, 1.0, 0.0, 0.0])
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_set_type_layer_text_rewrites_the_copy_in_place(self):
+        # The source-template PSD shipped beside every render was a
+        # straight copy of the template, so it opened showing the
+        # template's placeholder words whatever had been typed into the
+        # form -- the one download made to be edited was the one that
+        # didn't have the edits.
+        dest = self.tmp_dir / "retyped.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+
+        rewritten = set_type_layer_text(dest, {"description": "Half price this week"})
+        self.assertEqual(rewritten, ["description"])
+
+        after = PSDImage.open(dest)
+        layer = [l for l in after if l.name == "description"][0]
+        self.assertEqual(layer.kind, "type", "rewriting must not rasterize the layer")
+        self.assertEqual(layer.text.rstrip("\x00"), "Half price this week")
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_set_type_layer_text_reaches_a_label_inside_a_group(self):
+        # A designer's CTA is a group -- a vector rectangle with its
+        # label on top -- so the layer holding the words is a child
+        # called something like "Click", not the "cta" the form and the
+        # render both address it by. A flat scan of the document's top
+        # level never sees it.
+        dest = self.tmp_dir / "group-label.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+
+        def type_layers(node):
+            for layer in node:
+                if layer.kind == "type":
+                    yield layer
+                elif layer.is_group():
+                    yield from type_layers(layer)
+
+        groups = [l for l in PSDImage.open(dest) if l.is_group() and l.name.strip().lower() == "cta"]
+        if not groups or not list(type_layers(groups[0])):
+            self.skipTest("this template's CTA is not a group with a live label")
+
+        rewritten = set_type_layer_text(dest, {"cta": "Shop now"})
+        self.assertTrue(rewritten, "the group's label was never found")
+
+        labels = [l for l in type_layers(PSDImage.open(dest)) if l.name in rewritten]
+        self.assertTrue(labels)
+        self.assertEqual(labels[0].text.rstrip("\x00"), "Shop now")
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_retyped_layers_keep_their_run_lengths_consistent(self):
+        # A style/paragraph run whose character count doesn't match the
+        # string is exactly what makes Photoshop call a file damaged, so
+        # this is the assertion that the download still opens.
+        dest = self.tmp_dir / "runs.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        set_type_layer_text(dest, {"description": "A much, much longer line than before"})
+
+        layer = [l for l in PSDImage.open(dest) if l.name == "description"][0]
+        engine = layer.engine_dict
+        length = len(engine["Editor"]["Text"].value)
+        for key in ("StyleRun", "ParagraphRun"):
+            lengths = [int(v) for v in engine[key]["RunLengthArray"]]
+            self.assertEqual(
+                sum(lengths), length, f"{key} lengths must sum to the string's length"
+            )
+            self.assertEqual(
+                len(lengths), len(engine[key]["RunArray"]), f"{key} array lengths differ"
+            )
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_set_type_layer_text_leaves_blank_fields_alone(self):
+        # Nothing typed means "keep the template's own copy", not
+        # "empty this layer".
+        dest = self.tmp_dir / "blank.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        before = [l for l in PSDImage.open(dest) if l.name == "description"][0].text
+        self.assertEqual(set_type_layer_text(dest, {"description": None, "header": ""}), [])
+        after = [l for l in PSDImage.open(dest) if l.name == "description"][0].text
+        self.assertEqual(after, before)
+
+    def test_set_type_layer_text_on_an_unreadable_file_is_a_no_op(self):
+        junk = self.tmp_dir / "not-a-text.psd"
+        junk.write_bytes(b"nope")
+        self.assertEqual(set_type_layer_text(junk, {"description": "hi"}), [])
 
     @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
     def test_set_type_layer_colors_ignores_layers_it_was_not_asked_about(self):

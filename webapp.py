@@ -51,6 +51,7 @@ from psd_tools import PSDImage
 from src.psd_export import (
     save_layered_psd,
     save_layered_psd_preserving_type,
+    set_type_layer_text,
     set_type_layer_colors,
 )
 from src.compliance import check_profanity, check_trademark_text
@@ -290,6 +291,10 @@ EDIT_CHECKBOX_FIELD_NAMES = (
 # render can ask whether somebody actually chose a colour -- a CTA built
 # as a group is left as its designer drew it unless they did.
 CTA_BUTTON_COLOR_DEFAULT = (0, 87, 184)
+# White, which is also what a CTA label is in every template shipped so
+# far -- so "not this" is the test for whether a colour was actually
+# asked for, the same test the other three text layers use.
+CTA_TEXT_COLOR_DEFAULT = (255, 255, 255)
 
 BRAND_COLOR_MATCH_TOLERANCE = 30
 
@@ -2026,7 +2031,7 @@ def generate():
         request.form.get("layer_cta_button_color"), default=CTA_BUTTON_COLOR_DEFAULT
     )
     layer_cta_text_color = _parse_hex_color(
-        request.form.get("layer_cta_text_color"), default=(255, 255, 255)
+        request.form.get("layer_cta_text_color"), default=CTA_TEXT_COLOR_DEFAULT
     )
     layer_cta_glow = bool(request.form.get("layer_cta_glow"))
     layer_cta_glow_color = _parse_hex_color(
@@ -3307,6 +3312,34 @@ def generate():
                             )
                             shutil.copy(psd_path_for_size, job_dir / source_candidate_filename)
                             source_psd_filename = source_candidate_filename
+                            # Carry the typed copy into the live text.
+                            # This file is a straight copy of the
+                            # template -- the one download that still has
+                            # every text layer editable and the CTA as a
+                            # live group -- so without this it opens
+                            # showing the template's placeholder words no
+                            # matter what was typed into the form: the
+                            # file someone opens *to edit the words* was
+                            # the only one that didn't have them. "cta"
+                            # names the group; the label inside it is
+                            # what actually gets rewritten (see
+                            # _named_type_layers()).
+                            live_text_updates = {
+                                "header": layer_header_text,
+                                "description": layer_description_text,
+                                "legal": layer_legal_text,
+                                "cta": layer_cta_text,
+                            }
+                            if any(live_text_updates.values()):
+                                retyped = set_type_layer_text(
+                                    job_dir / source_candidate_filename, live_text_updates
+                                )
+                                if retyped:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: source PSD's live text updated -- "
+                                        + ", ".join(retyped)
+                                        + "."
+                                    )
                             # Carry a custom text colour into the live
                             # text too. The rendered PSD beside this one
                             # has the colour baked into pixels; here it
@@ -3319,6 +3352,8 @@ def generate():
                                 live_text_colors["description"] = layer_description_text_color
                             if layer_legal_use_custom_color:
                                 live_text_colors["legal"] = layer_legal_text_color
+                            if layer_cta_text_color != CTA_TEXT_COLOR_DEFAULT:
+                                live_text_colors["cta"] = layer_cta_text_color
                             if live_text_colors:
                                 recoloured = set_type_layer_colors(
                                     job_dir / source_candidate_filename, live_text_colors

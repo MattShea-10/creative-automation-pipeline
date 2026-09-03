@@ -2898,12 +2898,31 @@ class LayerCtaOverrideTest(unittest.TestCase):
         for y in range(80, 120):
             self.assertNotEqual(out.getpixel((40, y))[2] > 150, True)
 
-    def test_empty_label_leaves_the_image_alone(self):
+    def test_an_empty_label_restyles_the_button_without_writing_on_it(self):
+        # An empty label is a legitimate request, not a no-op: it is how
+        # the CTA *group* path restyles the designer's button while
+        # leaving the words to the group's own live text layer. So the
+        # pill is drawn and nothing is written across it.
         from src.image_ops import apply_layer_cta_override
 
-        base = self._base()
-        out = apply_layer_cta_override(base, (50, 70, 350, 130), "")
-        self.assertEqual(list(out.convert("RGB").getdata()), list(base.getdata()))
+        box = (50, 70, 350, 130)
+        blank = apply_layer_cta_override(
+            self._base(), box, "", button_color=(200, 0, 0), text_color=(255, 255, 255)
+        ).convert("RGB")
+        labelled = apply_layer_cta_override(
+            self._base(), box, "Go", button_color=(200, 0, 0), text_color=(255, 255, 255)
+        ).convert("RGB")
+
+        # The button itself is there either way...
+        self.assertEqual(blank.getpixel((200, 100)), (200, 0, 0))
+        # ...and the only difference between the two is the writing.
+        self.assertNotEqual(list(blank.getdata()), list(labelled.getdata()))
+        centre = blank.crop((150, 85, 250, 115))
+        self.assertEqual(
+            set(centre.getdata()),
+            {(200, 0, 0)},
+            "an empty label must leave no glyphs on the button",
+        )
 
     def test_button_and_text_colours_are_both_honoured(self):
         from src.image_ops import apply_layer_cta_override
@@ -5481,6 +5500,49 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertIn(b"updated layer(s) -- cta", r.data)
+
+    def test_the_source_psd_download_carries_the_typed_copy(self):
+        # Two PSDs ship per size: the rendered one (every layer baked to
+        # pixels except the text layers inherited from the template) and
+        # the source template, which is the only file that still has the
+        # CTA as a live group and every text layer editable. That second
+        # one was a straight copy, so it opened showing the template's
+        # placeholder words -- the file you open *to edit the words* was
+        # the one without them.
+        from psd_tools import PSDImage
+
+        (w, h), staged_path = self._stage_real_template()
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "layer_header_text": "Header from the form",
+            "layer_description_text": "Description from the form",
+            "layer_cta_text": "Shop now",
+            "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        source = (
+            webapp.JOBS_DIR
+            / job_id
+            / f"HydroBoost_campaign1_{w}x{h}_source-template.psd"
+        )
+        self.assertTrue(source.is_file(), "no source-template PSD was written")
+
+        def type_layers(node):
+            for layer in node:
+                if layer.kind == "type":
+                    yield layer
+                elif layer.is_group():
+                    yield from type_layers(layer)
+
+        words = {l.text.rstrip("\x00") for l in type_layers(PSDImage.open(source))}
+        self.assertIn("Header from the form", words)
+        self.assertIn("Description from the form", words)
+        # The CTA's words live on a layer inside the group, which is
+        # the whole reason a flat scan missed them.
+        self.assertIn("Shop now", words)
 
     def test_a_kept_hero_image_shows_its_filename_on_the_input(self):
         # A file input always reads "No file chosen" -- its value is
