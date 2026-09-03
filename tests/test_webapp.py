@@ -5396,6 +5396,72 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertIn(b"updated layer(s)", r.data)
         self.assertIn(b"cta", r.data)
 
+    def test_restyling_the_cta_leaves_no_trace_of_the_designed_rectangle(self):
+        # Only the label's own box was wiped before the replacement
+        # button was drawn, so the designer's rectangle survived
+        # wherever the new one didn't cover it. A pill drawn over a
+        # square-cornered rectangle leaves four wedges of the original
+        # colour at the corners -- blue showing round an orange button.
+        # Restyling replaces the shape, so the whole group's box goes
+        # back to the backdrop first.
+        from src.image_ops import get_psd_group_text_box, get_psd_layer_boxes
+
+        (w, h), staged_path = self._stage_real_template()
+        if get_psd_group_text_box(staged_path, "cta") is None:
+            self.skipTest("staged template's CTA is not a group with a label")
+        cta_box = get_psd_layer_boxes(staged_path).get("cta")
+        if cta_box is None:
+            self.skipTest("staged template has no cta layer box")
+
+        brief = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "header": "", "description": "",
+        }
+
+        def render(extra):
+            data = dict(brief)
+            data.update(extra)
+            r = self.client.post(
+                "/generate", data=data, content_type="multipart/form-data"
+            )
+            job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+            path = webapp.JOBS_DIR / job_id / f"HydroBoost_campaign1_{w}x{h}.png"
+            self.assertTrue(path.is_file(), f"no render at {path}")
+            return Image.open(path).convert("RGB")
+
+        def tally(image):
+            counts = {}
+            for px in image.crop(cta_box).getdata():
+                counts[px] = counts.get(px, 0) + 1
+            return counts
+
+        # The button as designed, to learn what colour it actually is:
+        # the commonest thing inside the group's own box.
+        designed_colour, designed_count = max(
+            tally(render({})).items(), key=lambda kv: kv[1]
+        )
+        if designed_count < 500:
+            self.skipTest("no solid shape inside the staged template's CTA box")
+
+        # ...and the same button restyled to a colour nothing else in
+        # the template wears. No radius given, so it is drawn as a full
+        # pill -- the case that leaves the original's square corners
+        # showing if they were not cleared first.
+        after = render({"layer_cta_button_color": "#f2760c"})
+        survivors = sum(
+            count
+            for colour, count in tally(after).items()
+            if all(abs(a - b) <= 12 for a, b in zip(colour, designed_colour))
+        )
+        self.assertLess(
+            survivors,
+            max(100, designed_count * 0.01),
+            f"the designed CTA shape {designed_colour} still covers "
+            f"{survivors} px of the box after a restyle",
+        )
+
     def test_a_cta_label_alone_is_enough_to_redraw_the_layer(self):
         # The gate into the whole layer-override block listed the header
         # and description text and nothing else, so a run whose only

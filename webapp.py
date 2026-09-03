@@ -3140,30 +3140,47 @@ def generate():
                         cta_label_box = map_box_through_fit(
                             cta_label_box, psd_canvas_size, (width, height), fit_mode
                         ) if psd_canvas_size else cta_label_box
-                        # Erase the old label against the button it sits
-                        # on, not against the template's backdrop:
-                        # _clean_layer_box() restores what was behind the
-                        # whole GROUP, which punches a hole the colour of
-                        # the page through the middle of the button.
-                        # Sampling just outside the word's own box gives
-                        # the button's own colour.
-                        final_image.paste(
-                            _reconstruct_box_background(final_image, cta_label_box),
-                            cta_label_box[:2],
-                        )
-                        # The rectangle itself, when the CTA settings say
-                        # to restyle it. Left alone the designer's button
-                        # is kept as drawn; give it a colour, a glow or a
-                        # stroke and it is redrawn with them, the label
-                        # going back on top afterwards. Drawn through the
-                        # same pill routine the flat-layer path uses, with
-                        # no text, so there is one implementation of what
-                        # a button looks like.
-                        if (
+                        # Is the shape itself being restyled, or only the
+                        # words on it? The two need opposite treatment of
+                        # what is already on the canvas.
+                        restyling_button = bool(
                             layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT
                             or layer_cta_glow
                             or layer_cta_stroke_size
-                        ):
+                            or layer_cta_radius is not None
+                        )
+                        if restyling_button:
+                            # The designer's rectangle is being replaced,
+                            # so it has to go first. Anything less leaves
+                            # it showing around the new button wherever
+                            # that is smaller or rounder -- a blue frame
+                            # around an orange pill. full_box=True puts
+                            # back what was BEHIND the whole group, giving
+                            # the redraw a clean plate.
+                            _clean_layer_box(cta_box, "cta", full_box=True)
+                        else:
+                            # Only the label changes, so the button stays
+                            # exactly as drawn and just the old word is
+                            # erased -- against the button it sits on, not
+                            # against the template's backdrop.
+                            # _clean_layer_box() would restore what was
+                            # behind the whole GROUP, punching a hole the
+                            # colour of the page through the middle of the
+                            # button. Sampling just outside the word's own
+                            # box gives the button's own colour.
+                            final_image.paste(
+                                _reconstruct_box_background(final_image, cta_label_box),
+                                cta_label_box[:2],
+                            )
+                        # The rectangle itself, when the CTA settings say
+                        # to restyle it. Left alone the designer's button
+                        # is kept as drawn; give it a colour, a glow, a
+                        # stroke or a corner radius and it is redrawn with
+                        # them, the label going back on top afterwards.
+                        # Drawn through the same pill routine the
+                        # flat-layer path uses, with no text, so there is
+                        # one implementation of what a button looks like.
+                        if restyling_button:
                             final_image = apply_layer_cta_override(
                                 final_image,
                                 cta_box,
