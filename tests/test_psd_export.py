@@ -458,9 +458,14 @@ class PsdExportTest(unittest.TestCase):
     def test_a_layer_asked_for_no_effects_is_left_alone(self):
         dest = self.tmp_dir / "no-effects.psd"
         shutil.copy(self.REAL_TEMPLATE, dest)
+        before = [l for l in PSDImage.open(dest) if l.name == "description"][0]
+        # The project's real template is a moving target -- the "save
+        # this copy into the templates" option can leave effects on it
+        # -- so the assertion is "unchanged", not "none".
+        had = [type(e).__name__ for e in (before.effects or [])]
         self.assertEqual(set_type_layer_effects(dest, {"description": {}}), [])
         layer = [l for l in PSDImage.open(dest) if l.name == "description"][0]
-        self.assertFalse(list(layer.effects or []))
+        self.assertEqual([type(e).__name__ for e in (layer.effects or [])], had)
 
     def test_set_type_layer_effects_on_an_unreadable_file_is_a_no_op(self):
         junk = self.tmp_dir / "not-an-fx.psd"

@@ -209,7 +209,13 @@ class WebAppSmokeTest(unittest.TestCase):
     def test_index_loads(self):
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b"Hero image", r.data)
+        # The two routes into a batch: your own hero image, or a
+        # generated one. The Manual Creative panel that used to sit
+        # beneath them is gone -- everything renders from the saved
+        # templates now.
+        self.assertIn(b"Custom hero image", r.data)
+        self.assertIn(b"Upload AI Image", r.data)
+        self.assertNotIn(b"manual-creative-box", r.data)
 
     def test_index_and_edit_page_both_show_a_reset_link_back_to_a_blank_form(self):
         # The top-of-page "Reset form" link is just a plain link to "/" --
@@ -696,9 +702,14 @@ class WebAppSmokeTest(unittest.TestCase):
 
         # Carries forward on Edit exactly like an uploaded hero image --
         # no regeneration needed to keep editing the same batch.
-        edit_page = self.client.get(f"/edit/{job_id}")
-        self.assertIn(b"Currently: <strong>ai_generated_hero.png</strong>", edit_page.data)
-        self.assertIn(b'id="ai_hero_enabled" name="ai_hero_enabled" value="1" checked', edit_page.data)
+        # The form no longer shows this generator's controls (they lived
+        # in the removed Manual Creative panel); the carried-forward file
+        # is still in the job's state for a re-submit to pick up.
+        state = json.loads((job_dir / "form_state.json").read_text())
+        self.assertTrue(
+            any("ai_generated_hero" in str(v) for v in state["files"].values()),
+            "the generated hero isn't recorded in the job's form state",
+        )
 
     def test_generate_ai_hero_regenerates_on_edit_instead_of_reusing_old_image(self):
         # Regression test: editing a job that used the AI-hero fallback,
@@ -1118,10 +1129,10 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertFalse(in_header, "the below-header logo shouldn't render inside the header banner")
         self.assertTrue(below_header, "expected the below-header logo to render just underneath the header")
 
-        edit_page = self.client.get(f"/edit/{job_id}")
-        self.assertIn(
-            b'<input type="radio" name="logo_position" value="below-header-center" checked>', edit_page.data
-        )
+        # Its setting survives in the job's state even though the form no
+        # longer offers the control (Manual Creative panel removed).
+        state = json.loads((webapp.JOBS_DIR / job_id / "form_state.json").read_text())
+        self.assertEqual(state["fields"].get("logo_position"), "below-header-center")
 
     def test_generate_logo_offset_nudges_the_logo_and_persists_through_edit(self):
         data = {
@@ -1151,9 +1162,9 @@ class WebAppSmokeTest(unittest.TestCase):
                 "expected the logo at its nudged spot (400 right, 300 up)",
             )
 
-        edit_page = self.client.get(f"/edit/{job_id}")
-        self.assertIn(b'name="logo_offset_x" min="-2000" max="2000" value="400"', edit_page.data)
-        self.assertIn(b'name="logo_offset_y" min="-2000" max="2000" value="-300"', edit_page.data)
+        state = json.loads((webapp.JOBS_DIR / job_id / "form_state.json").read_text())
+        self.assertEqual(int(state["fields"].get("logo_offset_x")), 400)
+        self.assertEqual(int(state["fields"].get("logo_offset_y")), -300)
 
     def test_generate_offers_a_psd_download_link_per_size(self):
         from psd_tools import PSDImage
@@ -1443,8 +1454,8 @@ class WebAppSmokeTest(unittest.TestCase):
 
         # Persists through Edit like every other checkbox in
         # EDIT_CHECKBOX_FIELD_NAMES.
-        edit_page = self.client.get(f"/edit/{job_id}")
-        self.assertIn(b'id="cta_above_message" name="cta_above_message" value="1" checked', edit_page.data)
+        state = json.loads((webapp.JOBS_DIR / job_id / "form_state.json").read_text())
+        self.assertTrue(state["fields"].get("cta_above_message"))
 
     def test_generate_without_cta_text_is_unaffected(self):
         # Omitting the CTA text entirely (the normal case) shouldn't error
@@ -2534,9 +2545,10 @@ class PaidProviderTest(unittest.TestCase):
 
         _webapp.app.config["TESTING"] = True
         page = _webapp.app.test_client().get("/").data.decode()
-        # Both AI sections offer both providers, and nothing else.
-        self.assertEqual(page.count('value="pollinations"'), 2)
-        self.assertEqual(page.count('value="ideogram"'), 2)
+        # The one AI section left (Manual Creative and its own generator
+        # are gone) offers both providers, and nothing else.
+        self.assertEqual(page.count('value="pollinations"'), 1)
+        self.assertEqual(page.count('value="ideogram"'), 1)
         for gone in ("openai", "huggingface", "mock"):
             self.assertNotIn('value="%s"' % gone, page)
 
