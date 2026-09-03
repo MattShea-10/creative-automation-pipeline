@@ -3617,6 +3617,20 @@ def generate():
                                     live_text_rasters,
                                     prefer="text",
                                 )
+                                # And the type layer's OWN picture. A type
+                                # layer carries a rasterized copy of how
+                                # its words last looked, and that copy is
+                                # what Photoshop puts on screen -- so a
+                                # layer whose string had been replaced
+                                # still opened reading the template's
+                                # placeholder, in the template's black,
+                                # while every pixel layer beside it
+                                # updated. Replacing that picture with the
+                                # words as this run drew them is what
+                                # makes the string and the screen agree.
+                                set_type_layer_raster(
+                                    job_dir / source_candidate_filename, live_text_rasters
+                                )
                                 if redrawn:
                                     background_notes.append(
                                         f"{size_label(width, height)}: live-text PSD keeps "
@@ -3716,6 +3730,16 @@ def generate():
                                             )
                                             retyped_template = (
                                                 retyped_template + restyled_template
+                                            )
+                                        # The type layers' pictures, or
+                                        # the saved template opens in
+                                        # Photoshop reading its old
+                                        # placeholder copy despite holding
+                                        # the new string -- see the
+                                        # live-text download above.
+                                        if live_text_rasters:
+                                            set_type_layer_raster(
+                                                psd_path_for_size, live_text_rasters
                                             )
                                     except Exception:  # noqa: BLE001
                                         retyped_template = []

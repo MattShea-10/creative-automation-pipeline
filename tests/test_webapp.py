@@ -5788,6 +5788,18 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(live.kind, "type", "the editable layer must be the visible one")
         self.assertTrue(live.visible)
         self.assertEqual(live.text.rstrip("\x00"), "Drive the summer")
+        # ...and its OWN picture is this run's. A type layer carries a
+        # rasterized copy of how its words last looked, and that copy is
+        # what Photoshop puts on screen -- so a layer whose string had
+        # been replaced still opened reading the template's placeholder
+        # in the template's black. The string and the picture have to
+        # agree, or the file lies on open.
+        own = live.topil().convert("RGBA")
+        own_greens = [
+            px for px in own.getdata()
+            if px[3] > 200 and px[1] > 180 and px[0] < 140 and px[2] < 160
+        ]
+        self.assertTrue(own_greens, "the type layer's own picture is still the template's")
 
         # ...with the renderer's own pixels hidden beside it, in this
         # run's colour rather than the template's black placeholder, for
@@ -5819,6 +5831,10 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         ]
         if not original:
             self.skipTest("staged template has no description type layer")
+        original_bbox = [
+            l.bbox for l in PSDImage.open(staged_path)
+            if l.kind == "type" and l.name.strip().lower() == "description"
+        ][0]
 
         brief = {
             "product_name": "HydroBoost", "market": "UK", "audience": "runners",
@@ -5852,6 +5868,11 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             if l.name.strip().lower() == "description"
         ][0]
         self.assertEqual(layer.kind, "type", "the template must stay retypeable")
+        # Its picture moved with its words: the raster's extent is the
+        # new copy's, not the placeholder's.
+        self.assertNotEqual(
+            layer.bbox, original_bbox, "the template's type layer still shows its old words"
+        )
         self.assertIn(b"saved template", r.data)
         self.assertTrue(
             any(webapp.TEMPLATE_BACKUPS_DIR.glob(f"{staged_path.stem}.*.psd")),
