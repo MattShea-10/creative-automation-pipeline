@@ -115,6 +115,15 @@
 <body>
   <div class="wrap">
     <h1>Your creatives are ready{% if campaign_slot %} &mdash; campaign {{ campaign_slot }}{% endif %}</h1>
+    {# Which run this is. Every run writes the same filenames, so a
+       second download of the same size arrives as "... (2).psd" and the
+       older file in Downloads is impossible to tell from the newer one
+       -- which looks exactly like the app ignoring your edits. Every PSD
+       downloaded from this page carries this code in its filename. #}
+    <p class="hint" style="margin-top: -0.4rem;">
+      Run <code>{{ job_id[:6] }}</code> &mdash; every PSD you download from this page ends in
+      <code>_{{ job_id[:6] }}</code>, so you can tell it from an earlier run's copy in your Downloads folder.
+    </p>
     {% if campaign_slot %}
       <p class="hint" style="margin-top: -0.4rem;">
         Every file below is named <code>..._campaign{{ campaign_slot }}_&lt;size&gt;</code> and the zip nests them

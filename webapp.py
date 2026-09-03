@@ -3828,7 +3828,17 @@ def download_psd(job_id, filename):
     file_path = JOBS_DIR / job_id / filename
     if not file_path.is_file():
         abort(404)
-    return send_file(file_path, as_attachment=True, download_name=filename)
+    # Stamped with the run it came from. Every run writes the same
+    # filename (the product and size decide it, and neither changes
+    # between runs), so a second download lands in Downloads as
+    # "... (2).psd" -- macOS renames it silently, the tab in Photoshop
+    # looks near enough identical, and the file being stared at is an
+    # older run's. That is indistinguishable from the app not applying
+    # the edits, which is exactly how it reads. Six characters of the
+    # job id make two downloads impossible to confuse, and match the
+    # run shown on the results page.
+    stamped = f"{file_path.stem}_{job_id[:6]}{file_path.suffix}"
+    return send_file(file_path, as_attachment=True, download_name=stamped)
 
 
 if __name__ == "__main__":

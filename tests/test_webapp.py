@@ -5595,6 +5595,36 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             "the PSD's cached preview doesn't match the render",
         )
 
+    def test_a_downloaded_psd_is_stamped_with_its_run(self):
+        # Every run writes the same filename -- the product and the size
+        # decide it, and neither changes between runs -- so a second
+        # download lands in Downloads as "... (2).psd". macOS renames it
+        # silently, the tab in Photoshop looks near enough identical, and
+        # the file being stared at is an older run's. That is
+        # indistinguishable from the app ignoring the edits.
+        self._stage_real_template()
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        page = r.data.decode()
+        job_id = re.search(r"/download/([0-9a-f]+)", page).group(1)
+        name = re.findall(r"download-psd/%s/([^\"]+\.psd)" % job_id, page)[0]
+
+        got = self.client.get(f"/download-psd/{job_id}/{name}")
+        self.assertEqual(got.status_code, 200)
+        self.assertIn(
+            f"{job_id[:6]}.psd",
+            got.headers.get("Content-Disposition", ""),
+            "the download isn't stamped with its run",
+        )
+        # ...and the page says what that stamp is, so a file in
+        # Downloads can be matched back to the run that made it.
+        self.assertIn(job_id[:6], page)
+
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to
         # pixels except the text layers inherited from the template) and
