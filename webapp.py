@@ -3476,14 +3476,17 @@ def generate():
                             # asked for AND still a shape. Only when
                             # something was actually asked for -- an
                             # untouched CTA keeps the design as drawn.
-                            # (Corner radius is deliberately not carried:
-                            # see set_shape_layer_style().)
                             cta_shape_style = {}
                             if layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT:
                                 cta_shape_style["fill"] = layer_cta_button_color
                             if layer_cta_stroke_size:
                                 cta_shape_style["stroke_width_pct"] = layer_cta_stroke_size
                                 cta_shape_style["stroke_color"] = layer_cta_stroke_color
+                            if layer_cta_radius is not None:
+                                # Rounds the path Photoshop draws from,
+                                # not just the number in the Properties
+                                # panel -- see set_shape_layer_style().
+                                cta_shape_style["corner_radius_pct"] = layer_cta_radius
                             if cta_shape_style:
                                 restyled = set_shape_layer_style(
                                     job_dir / source_candidate_filename,
@@ -3493,8 +3496,7 @@ def generate():
                                     background_notes.append(
                                         f"{size_label(width, height)}: source PSD's CTA shape restyled -- "
                                         + ", ".join(restyled)
-                                        + " (still an editable shape; corner radius is baked into the "
-                                        "rendered PSD only)."
+                                        + " (still an editable shape)."
                                     )
                             # Carry a custom text colour into the live
                             # text too. The rendered PSD beside this one
@@ -3661,7 +3663,18 @@ def generate():
                                     "legal": layer_legal_text,
                                     "cta": layer_cta_text,
                                 }
-                                if any(template_updates.values()):
+                                # Anything at all to carry, not just
+                                # words: restyling the CTA button and
+                                # typing nothing is a perfectly ordinary
+                                # thing to want to make permanent, and
+                                # gating on the text alone silently
+                                # dropped it.
+                                if (
+                                    any(template_updates.values())
+                                    or live_text_colors
+                                    or live_text_effects
+                                    or cta_shape_style
+                                ):
                                     try:
                                         TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
                                         import datetime as _dt
@@ -3692,6 +3705,20 @@ def generate():
                                         if live_text_effects:
                                             set_type_layer_effects(
                                                 psd_path_for_size, live_text_effects
+                                            )
+                                        # ...and the button's own shape.
+                                        # Written to the copy above and
+                                        # not to the template, so a CTA
+                                        # restyled and saved came back
+                                        # the template's blue on the next
+                                        # run -- the one part of the
+                                        # button that didn't stick.
+                                        if cta_shape_style:
+                                            restyled_template = set_shape_layer_style(
+                                                psd_path_for_size, {"cta": cta_shape_style}
+                                            )
+                                            retyped_template = (
+                                                retyped_template + restyled_template
                                             )
                                     except Exception:  # noqa: BLE001
                                         retyped_template = []

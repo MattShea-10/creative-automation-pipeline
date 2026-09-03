@@ -267,6 +267,69 @@ class PsdExportTest(unittest.TestCase):
         self.assertFalse(bool(stroke[b"strokeEnabled"]))
         self.assertEqual(float(stroke[b"strokeStyleLineWidth"]), 0.0)
 
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_corner_radius_rounds_the_path_photoshop_draws_from(self):
+        # Photoshop draws a shape layer from its vector path. The
+        # live-shape radii beside it are only what the Properties panel
+        # reads back, so setting those alone rounds the number in the
+        # panel and nothing on screen -- the corners have to be built as
+        # real bezier knots, and the panel told about them separately or
+        # the two contradict each other.
+        dest = self.tmp_dir / "rounded.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        shape = self._cta_shape(dest)
+        if shape is None:
+            self.skipTest("this template's CTA has no vector shape in it")
+
+        def closed_path(path):
+            vector = self._shape_block(self._cta_shape(path), "VECTOR_MASK_SETTING2")
+            for record in vector.path:
+                if hasattr(record, "is_closed") and record.is_closed():
+                    return record
+            return None
+
+        before = closed_path(dest)
+        self.assertEqual(len(before), 4, "expected a four-cornered rectangle")
+
+        self.assertEqual(
+            set_shape_layer_style(dest, {"cta": {"corner_radius_pct": 100}}),
+            ["Rectangle 1"],
+        )
+
+        # Four corners become eight anchors joined by cubic curves.
+        after = closed_path(dest)
+        self.assertEqual(len(after), 8)
+        curved = [
+            k for k in after
+            if k.preceding != k.anchor or k.leaving != k.anchor
+        ]
+        self.assertEqual(len(curved), 8, "every anchor should carry one handle")
+
+        # ...and the Properties panel agrees: type 2 is a rounded
+        # rectangle, and 100% is half the shape's height.
+        origination = self._shape_block(
+            self._cta_shape(dest), "VECTOR_ORIGINATION_DATA"
+        )
+        entry = origination[b"keyDescriptorList"][0]
+        self.assertEqual(int(entry[b"keyOriginType"]), 2)
+        height = shape.bbox[3] - shape.bbox[1]
+        self.assertAlmostEqual(
+            float(entry[b"keyOriginRRectRadii"][b"topLeft"]), height / 2.0, places=1
+        )
+        # Still a shape, not a picture of one.
+        self.assertEqual(self._cta_shape(dest).kind, "shape")
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_zero_radius_leaves_the_square_corners_alone(self):
+        dest = self.tmp_dir / "square.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        if self._cta_shape(dest) is None:
+            self.skipTest("this template's CTA has no vector shape in it")
+        set_shape_layer_style(dest, {"cta": {"corner_radius_pct": 0}})
+        vector = self._shape_block(self._cta_shape(dest), "VECTOR_MASK_SETTING2")
+        closed = [r for r in vector.path if hasattr(r, "is_closed") and r.is_closed()][0]
+        self.assertEqual(len(closed), 4, "square corners should stay four knots")
+
     def test_set_shape_layer_style_on_an_unreadable_file_is_a_no_op(self):
         junk = self.tmp_dir / "not-a-shape.psd"
         junk.write_bytes(b"nope")

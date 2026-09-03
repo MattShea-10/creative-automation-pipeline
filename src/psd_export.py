@@ -487,6 +487,103 @@ def _write_descriptor_rgb(colour_descriptor, rgb) -> bool:
     return True
 
 
+# Bezier's circle constant: the handle length, as a fraction of the
+# radius, that makes four cubic curves indistinguishable from a circle.
+_KAPPA = 0.5522847498307936
+
+
+def _round_rectangle_path(closed_path, canvas, radius_px: float) -> bool:
+    """Rewrite a 4-knot rectangular path in place as a rounded rectangle.
+
+    Photoshop draws a shape layer from this path. The "live shape" radii
+    that the Properties panel reads sit in a different block entirely and
+    changing only those rounds the number in the panel, not the corners
+    on screen -- so the corners have to be built here, as real bezier
+    knots, and the panel told about them separately.
+
+    Knot coordinates are (y, x) as fractions of the document's height and
+    width. Each corner becomes two anchors joined by one cubic curve,
+    with the straight edges keeping their control points on the anchor.
+
+    Returns False and leaves the path untouched unless it is exactly the
+    four-cornered rectangle this knows how to round.
+    """
+    from psd_tools.psd.vector import ClosedKnotLinked
+
+    if len(closed_path) != 4:
+        return False
+    ys = sorted({round(k.anchor[0], 6) for k in closed_path})
+    xs = sorted({round(k.anchor[1], 6) for k in closed_path})
+    if len(ys) != 2 or len(xs) != 2:
+        return False
+
+    (y0, y1), (x0, x1) = ys, xs
+    height, width = canvas
+    # Never more than half the shorter side, or the corners cross over.
+    span_y, span_x = (y1 - y0) * height, (x1 - x0) * width
+    radius = max(0.0, min(float(radius_px), span_y / 2.0, span_x / 2.0))
+    if radius <= 0.5:
+        return False
+    fy, fx = radius / height, radius / width
+    ky, kx = fy * _KAPPA, fx * _KAPPA
+
+    def knot(anchor, preceding=None, leaving=None):
+        return ClosedKnotLinked(
+            preceding=preceding or anchor, anchor=anchor, leaving=leaving or anchor
+        )
+
+    # Clockwise from the top edge's left end. A corner's two anchors sit
+    # one radius along each edge; their handles point back into the
+    # corner they cut off.
+    knots = [
+        knot((y0, x0 + fx), preceding=(y0, x0 + fx - kx)),
+        knot((y0, x1 - fx), leaving=(y0, x1 - fx + kx)),
+        knot((y0 + fy, x1), preceding=(y0 + fy - ky, x1)),
+        knot((y1 - fy, x1), leaving=(y1 - fy + ky, x1)),
+        knot((y1, x1 - fx), preceding=(y1, x1 - fx + kx)),
+        knot((y1, x0 + fx), leaving=(y1, x0 + fx - kx)),
+        knot((y1 - fy, x0), preceding=(y1 - fy + ky, x0)),
+        knot((y0 + fy, x0), leaving=(y0 + fy - ky, x0)),
+    ]
+    closed_path[:] = knots
+    return True
+
+
+def _tell_the_shape_panel_its_radii(layer, radius_px: float) -> None:
+    """Update the live-shape record so Photoshop's Properties panel
+    agrees with the path just written.
+
+    Left alone it would still describe a square-cornered rectangle, and a
+    live shape whose recorded geometry contradicts its own path is how a
+    file starts opening wrong -- Photoshop is entitled to redraw the path
+    from the record. keyOriginType 2 is "rounded rectangle"; the radii
+    are in document pixels, the same units as keyOriginShapeBBox
+    alongside them.
+    """
+    from psd_tools.psd.descriptor import Descriptor, Double, Integer
+
+    data = _shape_block(layer, "VECTOR_ORIGINATION_DATA")
+    try:
+        entries = data[b"keyDescriptorList"]
+    except Exception:  # noqa: BLE001
+        return
+    for entry in entries:
+        try:
+            entry[b"keyOriginType"] = Integer(2)
+            radii = Descriptor(classID=b"radii")
+            radii[b"unitValueQuadVersion"] = Integer(1)
+            for key in (
+                b"topRight",
+                b"topLeft",
+                b"bottomLeft",
+                b"bottomRight",
+            ):
+                radii[key] = Double(float(radius_px))
+            entry[b"keyOriginRRectRadii"] = radii
+        except Exception:  # noqa: BLE001
+            continue
+
+
 def set_shape_layer_style(psd_path, styles: dict) -> list:
     """Restyle live vector shape layers in the PSD at `psd_path`, in
     place, keeping them editable shapes.
@@ -498,6 +595,9 @@ def set_shape_layer_style(psd_path, styles: dict) -> list:
         stroke_width_pct  percentage of the shape's own height, matching
                           how the renderer sizes a CTA border, so one
                           setting reads the same at 160x600 and 1080x1080
+        corner_radius_pct percentage of half the shape's height, so 0 is
+                          square, 100 a full pill -- the renderer's own
+                          scale
 
     A stroke_width_pct of 0 switches the stroke off; anything above it
     turns the stroke on, since asking for a width is asking to see one.
@@ -508,13 +608,12 @@ def set_shape_layer_style(psd_path, styles: dict) -> list:
     button whose colour and outline can still be changed by clicking it
     -- not a picture of one.
 
-    Not included: corner radius, which is a different kind of change.
-    Photoshop draws the shape from its vector path, and the live-shape
-    radii sitting beside it are only what the properties panel reads
-    back; rounding the corners for real means rewriting the path's bezier
-    knots, and writing a path that disagrees with its own live-shape data
-    is how a file starts opening wrong. The rendered PSD beside this one
-    has the radius baked in correctly.
+    The corner radius rewrites the path's bezier knots, because that is
+    what Photoshop actually draws from -- the live-shape radii beside it
+    are only what the Properties panel reads back, and setting those
+    alone rounds the number in the panel and nothing on screen. Both are
+    written, so the two agree; only a plain four-cornered rectangle can
+    be rounded this way, and anything else is left as it is.
 
     Returns the names of the layers actually restyled. Best-effort, like
     everything else here: an unreadable file, a name that isn't a shape,
@@ -552,6 +651,28 @@ def set_shape_layer_style(psd_path, styles: dict) -> list:
                 colour = None
             if colour is not None and _write_descriptor_rgb(colour, fill):
                 touched = True
+
+        radius_pct = spec.get("corner_radius_pct")
+        if radius_pct is not None:
+            try:
+                top, bottom = layer.bbox[1], layer.bbox[3]
+                height = max(0, bottom - top)
+                # The renderer's rule: a percentage of half the height,
+                # so 100 is a pill and 0 square corners.
+                radius_px = (height / 2.0) * (max(0, min(100, radius_pct)) / 100.0)
+                vector = _shape_block(layer, "VECTOR_MASK_SETTING2")
+                closed = None
+                for record in (vector.path if vector is not None else []):
+                    if hasattr(record, "is_closed") and record.is_closed():
+                        closed = record
+                        break
+                if closed is not None and _round_rectangle_path(
+                    closed, (psd.height, psd.width), radius_px
+                ):
+                    _tell_the_shape_panel_its_radii(layer, radius_px)
+                    touched = True
+            except Exception:  # noqa: BLE001
+                pass
 
         stroke = _shape_block(layer, "VECTOR_STROKE_DATA")
         if stroke is not None:
