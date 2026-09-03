@@ -30,6 +30,7 @@ from src.psd_export import (
     replace_pixel_layers,
     set_flattened_preview,
     set_type_layer_effects,
+    set_type_layer_raster,
 )
 
 
@@ -401,6 +402,56 @@ class PsdExportTest(unittest.TestCase):
         junk.write_bytes(b"nope")
         self.assertEqual(
             set_type_layer_effects(junk, {"description": {"glow": {"radius": 4}}}), []
+        )
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_type_layer_shows_the_new_words_and_stays_editable(self):
+        # A type layer carries a rasterized copy of how its words last
+        # looked, and that is what Photoshop puts on screen when the file
+        # opens. Rewriting the string left the layer SAYING the new copy
+        # while still SHOWING the template's -- and next to a logo that
+        # updated instantly, because a pixel layer is nothing but its
+        # picture, that read as the text override simply not working.
+        from PIL import ImageDraw
+
+        dest = self.tmp_dir / "raster.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        set_type_layer_text(dest, {"description": "Drive the summer"})
+
+        psd = PSDImage.open(dest)
+        patch = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        ImageDraw.Draw(patch).rectangle([100, 400, 700, 600], fill=(51, 255, 102, 255))
+        self.assertEqual(set_type_layer_raster(dest, {"description": patch}), ["description"])
+
+        layer = [l for l in PSDImage.open(dest) if l.name == "description"][0]
+        # Still live text, still saying the new words...
+        self.assertEqual(layer.kind, "type", "the layer must stay editable text")
+        self.assertEqual(layer.text.rstrip("\x00"), "Drive the summer")
+        # ...and now showing them.
+        self.assertEqual(layer.bbox, (100, 400, 701, 601))
+        raster = layer.topil().convert("RGBA")
+        self.assertEqual(
+            raster.getpixel((raster.width // 2, raster.height // 2)), (51, 255, 102, 255)
+        )
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_replacing_a_raster_keeps_the_rest_of_the_document(self):
+        from PIL import ImageDraw
+
+        dest = self.tmp_dir / "raster-stack.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        before = [(l.name, l.kind) for l in PSDImage.open(dest)]
+        psd = PSDImage.open(dest)
+        patch = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        ImageDraw.Draw(patch).rectangle([10, 10, 200, 90], fill=(255, 0, 0, 255))
+        set_type_layer_raster(dest, {"description": patch})
+        self.assertEqual([(l.name, l.kind) for l in PSDImage.open(dest)], before)
+
+    def test_set_type_layer_raster_on_an_unreadable_file_is_a_no_op(self):
+        junk = self.tmp_dir / "not-a-raster.psd"
+        junk.write_bytes(b"nope")
+        self.assertEqual(
+            set_type_layer_raster(junk, {"description": Image.new("RGBA", (8, 8))}), []
         )
 
     def test_set_type_layer_text_on_an_unreadable_file_is_a_no_op(self):

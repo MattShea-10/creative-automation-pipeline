@@ -235,6 +235,98 @@ def replace_pixel_layers(psd_path, images: dict) -> list:
     return replaced
 
 
+def set_type_layer_raster(psd_path, images: dict) -> list:
+    """Replace the cached picture Photoshop shows for a live type layer,
+    without touching the text itself.
+
+    `images` maps a lowercased layer (or group) name to a full-canvas
+    RGBA image at the PSD's own size -- normally the words exactly as the
+    renderer drew them, glow and all.
+
+    Why a type layer needs this at all: alongside its text, Photoshop
+    stores a rasterized copy of how that text last looked, and that is
+    what it puts on screen when the file opens. Rewriting the string
+    updates what the layer SAYS; the picture beside it still shows the
+    old words until something makes Photoshop recompose. So a live-text
+    download whose copy had been correctly replaced still opened reading
+    the template's placeholder text -- while every pixel layer next to it
+    (the logo, the product shot) updated immediately, because a pixel
+    layer is nothing but its picture.
+
+    The layer stays a type layer: only its channels and their bounds are
+    rebuilt, and every tagged block -- the text engine data, the effects,
+    the warp -- is left exactly as it was. Click into it in Photoshop and
+    it recomposes from the text, which now matches what it was already
+    showing.
+
+    Returns the names of the layers whose raster was replaced.
+    """
+    try:
+        from psd_tools import PSDImage
+        from psd_tools.constants import ChannelID, Compression
+        from psd_tools.psd.layer_and_mask import ChannelData, ChannelInfo
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+
+    layers = _named_type_layers(psd)
+    canvas = (psd.width, psd.height)
+    replaced = []
+    for name, image in (images or {}).items():
+        layer = layers.get(name.strip().lower())
+        if layer is None or image is None:
+            continue
+        try:
+            rgba = image if image.mode == "RGBA" else image.convert("RGBA")
+            if rgba.size != canvas:
+                rgba = rgba.resize(canvas, Image.LANCZOS)
+            cropped, left, top = _tight_bbox_crop(rgba)
+            if cropped.width < 1 or cropped.height < 1:
+                continue
+
+            record = layer._record
+            record.channel_info = []
+            # ChannelDataList is a list subclass without .clear() in
+            # psd-tools 1.18, so it is emptied by slice assignment.
+            channels = layer._channels
+            channels[:] = []
+
+            width, height = cropped.width, cropped.height
+            version = psd._record.header.version
+
+            alpha = ChannelData(Compression.RLE)
+            alpha.set_data(cropped.getchannel("A").tobytes(), width, height, 8, version)
+            record.channel_info.append(
+                ChannelInfo(ChannelID.TRANSPARENCY_MASK, len(alpha.data) + 2)
+            )
+            channels.append(alpha)
+
+            for index, band in enumerate(("R", "G", "B")):
+                data = ChannelData(Compression.RLE)
+                data.set_data(
+                    cropped.getchannel(band).tobytes(), width, height, 8, version
+                )
+                record.channel_info.append(ChannelInfo(ChannelID(index), len(data.data) + 2))
+                channels.append(data)
+
+            record.top, record.left = top, left
+            record.bottom, record.right = top + height, left + width
+        except Exception:  # noqa: BLE001
+            continue
+        replaced.append(layer.name)
+
+    if not replaced:
+        return []
+    try:
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return replaced
+
+
 def _named_shape_layers(node) -> dict:
     """_named_type_layers()'s counterpart for vector shape layers.
 

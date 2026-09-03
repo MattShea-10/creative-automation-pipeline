@@ -55,6 +55,7 @@ from src.psd_export import (
     set_flattened_preview,
     set_shape_layer_style,
     set_type_layer_effects,
+    set_type_layer_raster,
     set_type_layer_text,
     set_type_layer_colors,
 )
@@ -2545,6 +2546,9 @@ def generate():
                 # layer name -> the font size apply_layer_text_override()
                 # settled on for it this size. See where it is filled.
                 rendered_font_sizes: dict = {}
+                # The CTA label's own glyphs, kept apart from the patch
+                # that carries the whole button. See where it is set.
+                cta_label_patch = None
                 # A pristine copy of this size's template, exactly as it
                 # renders with zero overrides -- i.e. Pillow's own
                 # embedded/flattened PSD composite (the same source used
@@ -3295,6 +3299,12 @@ def generate():
                         # on it). Opaque over the backdrop it was cleaned
                         # to, which composites identically and can't drift
                         # from the render the way a re-derived patch can.
+                        # ...but the label on its own is still wanted:
+                        # in the live-text PSD the words are a type layer
+                        # INSIDE the group, and giving that layer a
+                        # picture of the whole button would bury the
+                        # shape it sits on.
+                        cta_label_patch = export_layer_patches.get("cta")
                         cta_patch = Image.new("RGBA", final_image.size, (0, 0, 0, 0))
                         cta_patch.paste(final_image.crop(cta_box).convert("RGBA"), cta_box[:2])
                         export_layer_patches["cta"] = cta_patch
@@ -3564,6 +3574,37 @@ def generate():
                             # quick-look, because those read the cached
                             # composite the template shipped with rather
                             # than redrawing the layers.
+                            # The picture Photoshop shows for each type
+                            # layer. A type layer carries a rasterized
+                            # copy of how its words last looked, and that
+                            # is what is on screen when the file opens --
+                            # so replacing the string left the layer
+                            # SAYING the new copy while still SHOWING the
+                            # template's. Next to a logo that updated
+                            # instantly (a pixel layer is nothing but its
+                            # picture) it read as the text override
+                            # simply not working. The words stay live:
+                            # only the cached picture is rebuilt, from
+                            # the same patch the render drew.
+                            live_text_rasters = {}
+                            for key in ("header", "description", "legal"):
+                                patch = export_layer_patches.get(key)
+                                if patch is not None:
+                                    live_text_rasters[key] = patch
+                            if cta_label_patch is not None:
+                                live_text_rasters["cta"] = cta_label_patch
+                            if live_text_rasters:
+                                redrawn = set_type_layer_raster(
+                                    job_dir / source_candidate_filename, live_text_rasters
+                                )
+                                if redrawn:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: live-text PSD's type layers "
+                                        "now show this run's words on open -- "
+                                        + ", ".join(redrawn)
+                                        + " (still editable)."
+                                    )
+
                             set_flattened_preview(
                                 job_dir / source_candidate_filename, final_image
                             )

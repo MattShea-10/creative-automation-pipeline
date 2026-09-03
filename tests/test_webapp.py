@@ -5704,6 +5704,62 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             "type", [l.kind for l in psd], "the layered download must be pixels"
         )
 
+    def test_the_live_text_psd_shows_this_run_on_open(self):
+        # It said the right words and showed the wrong ones. A type
+        # layer carries a picture of how its text last looked and that
+        # is what opens; the logo beside it updated instantly because a
+        # pixel layer is nothing but its picture. Composited from the
+        # LAYERS -- what Photoshop draws -- not from the snapshot cached
+        # in the file.
+        from psd_tools import PSDImage
+
+        (w, h), staged_path = self._stage_real_template()
+        hero = self._sample_image_bytes(size=(w, h), color=(255, 0, 255))
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Drive the summer",
+            "upload_custom_hero_enabled": "1",
+            "upload_hero_image": (hero, "hero.png"),
+            "layer_description_text": "Drive the summer",
+            "layer_description_use_custom_color": "1",
+            "layer_description_text_color": "#33ff66",
+            "layer_cta_text": "claim my prize",
+            "layer_cta_button_color": "#f2760c",
+            "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        source = (
+            webapp.JOBS_DIR / job_id
+            / f"HydroBoost_campaign1_{w}x{h}_source-template.psd"
+        )
+        psd = PSDImage.open(source)
+
+        def type_layers(node):
+            for layer in node:
+                if layer.kind == "type":
+                    yield layer
+                elif layer.is_group():
+                    yield from type_layers(layer)
+
+        described = [
+            l for l in type_layers(psd) if l.name.strip().lower() == "description"
+        ]
+        if not described:
+            self.skipTest("staged template has no description type layer")
+        layer = described[0]
+        # Still editable...
+        self.assertEqual(layer.kind, "type")
+        self.assertEqual(layer.text.rstrip("\x00"), "Drive the summer")
+        # ...and its picture is this run's, in this run's colour, rather
+        # than the template's black placeholder.
+        raster = layer.topil().convert("RGBA")
+        greens = [
+            px for px in raster.getdata()
+            if px[3] > 200 and px[1] > 180 and px[0] < 140 and px[2] < 160
+        ]
+        self.assertTrue(greens, "the type layer still shows the template's words")
+
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to
         # pixels except the text layers inherited from the template) and
