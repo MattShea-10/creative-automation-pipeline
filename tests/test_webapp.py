@@ -5831,8 +5831,9 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         ]
         if not original:
             self.skipTest("staged template has no description type layer")
-        original_bbox = [
-            l.bbox for l in PSDImage.open(staged_path)
+        original_picture = [
+            l.topil().convert("RGBA").tobytes()
+            for l in PSDImage.open(staged_path)
             if l.kind == "type" and l.name.strip().lower() == "description"
         ][0]
 
@@ -5868,16 +5869,66 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             if l.name.strip().lower() == "description"
         ][0]
         self.assertEqual(layer.kind, "type", "the template must stay retypeable")
-        # Its picture moved with its words: the raster's extent is the
-        # new copy's, not the placeholder's.
+        # Its picture changed with its words -- and its box did NOT,
+        # because that box is what every later run fits its copy into.
         self.assertNotEqual(
-            layer.bbox, original_bbox, "the template's type layer still shows its old words"
+            layer.topil().convert("RGBA").tobytes(),
+            original_picture,
+            "the template's type layer still shows its old words",
         )
         self.assertIn(b"saved template", r.data)
         self.assertTrue(
             any(webapp.TEMPLATE_BACKUPS_DIR.glob(f"{staged_path.stem}.*.psd")),
             "no backup of the version that was replaced",
         )
+
+    def test_a_run_after_a_template_write_back_starts_clean(self):
+        # The pair of failures this guards against, both cumulative.
+        # Pillow reads a PSD's flattened snapshot, so a rewritten template
+        # rendered with its OLD words underneath the new ones. And the
+        # type layer's box was cut to each run's words, so the next run
+        # fitted its copy into less -- the description shrank to a
+        # whisker over three runs and the placeholder never went away.
+        try:
+            import skimage  # noqa: F401
+        except ImportError:
+            self.skipTest("refreshing a preview needs scikit-image")
+        from src.image_ops import get_psd_layer_boxes
+
+        (w, h), staged_path = self._stage_real_template()
+        box_before = get_psd_layer_boxes(staged_path).get("description")
+        if box_before is None:
+            self.skipTest("staged template has no description layer")
+
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "update_saved_templates": "1",
+            "layer_description_text": "Drive summer with a refreshing drink",
+            "header": "", "description": "",
+        }
+        renders = []
+        for _ in range(2):
+            r = self.client.post("/generate", data=dict(data), content_type="multipart/form-data")
+            job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+            renders.append(
+                Image.open(
+                    webapp.JOBS_DIR / job_id / f"HydroBoost_campaign1_{w}x{h}.png"
+                ).convert("RGB")
+            )
+
+        # The box the template offers has not shrunk...
+        self.assertEqual(get_psd_layer_boxes(staged_path).get("description"), box_before)
+        # ...and the second run is the first run: nothing left over from
+        # the template's old words, nothing squeezed smaller.
+        first, second = renders
+        total = sum(
+            abs(a - b)
+            for pa, pb in zip(first.getdata(), second.getdata())
+            for a, b in zip(pa, pb)
+        )
+        self.assertLess(total / (w * h * 3), 2, "the second run differs from the first")
 
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to

@@ -112,6 +112,53 @@ def _first_type_layer(group):
                 yield nested
 
 
+def refresh_flattened_preview(psd_path) -> bool:
+    """Rebuild the PSD's stored flattened composite from its own layers.
+
+    For a file this app has just edited layer by layer -- a saved
+    template with new words typed into it -- the merged snapshot
+    Photoshop wrote is now a picture of the OLD document. Everything
+    that reads a PSD the quick way reads that snapshot: Finder, Preview,
+    and Pillow's Image.open(), which is how this app itself loads a
+    template to render on. So a template that had been correctly
+    rewritten still rendered with its old copy underneath, and the new
+    words drawn into a box sized for them, on top of placeholder text
+    that should have been gone.
+
+    Composited with force=True so the layers are actually drawn rather
+    than the stale snapshot handed straight back. Best-effort.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return False
+    try:
+        psd = PSDImage.open(psd_path)
+        # Type layers are left out of the composite and pasted back from
+        # their own pictures afterwards. Forced to draw a type layer,
+        # psd-tools typesets it itself, in a fallback font at a default
+        # size -- a fair attempt, and nothing like what Photoshop laid
+        # out or what this app just drew into the layer's raster. The
+        # raster is the truth here.
+        flat = psd.composite(
+            force=True,
+            layer_filter=lambda layer: layer.is_visible() and layer.kind != "type",
+        ).convert("RGBA")
+        for layer in psd.descendants():
+            if layer.kind != "type" or not layer.is_visible():
+                continue
+            try:
+                picture = layer.topil()
+            except Exception:  # noqa: BLE001
+                continue
+            if picture is None:
+                continue
+            flat.alpha_composite(picture.convert("RGBA"), dest=(layer.left, layer.top))
+    except Exception:  # noqa: BLE001
+        return False
+    return set_flattened_preview(psd_path, flat)
+
+
 def set_flattened_preview(psd_path, image) -> bool:
     """Replace the PSD's stored flattened composite with `image`.
 
@@ -381,7 +428,30 @@ def set_type_layer_raster(psd_path, images: dict) -> list:
             rgba = image if image.mode == "RGBA" else image.convert("RGBA")
             if rgba.size != canvas:
                 rgba = rgba.resize(canvas, Image.LANCZOS)
-            cropped, left, top = _tight_bbox_crop(rgba)
+            # The picture is cut to the layer's EXISTING box, not to the
+            # new words' tight extent. That box is the designer's text
+            # box, and it is what every later run fits its copy into --
+            # shrink it to a short line's outline and the next run
+            # squeezes into that, and the one after into less again,
+            # until the description is a whisker. Words that fall outside
+            # it were never going to fit the design anyway.
+            box = tuple(int(v) for v in layer.bbox)
+            _tight, tight_left, tight_top = _tight_bbox_crop(rgba)
+            tight_box = (
+                tight_left, tight_top,
+                tight_left + _tight.width, tight_top + _tight.height,
+            )
+            if box[2] <= box[0] or box[3] <= box[1]:
+                box = tight_box
+            elif _tight.width and _tight.height:
+                # The union: never smaller than the designed box, never
+                # clipping words that reach past it.
+                box = (
+                    min(box[0], tight_box[0]), min(box[1], tight_box[1]),
+                    max(box[2], tight_box[2]), max(box[3], tight_box[3]),
+                )
+            cropped = rgba.crop(box)
+            left, top = box[0], box[1]
             if cropped.width < 1 or cropped.height < 1:
                 continue
 

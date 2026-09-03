@@ -52,6 +52,7 @@ from src.psd_export import (
     save_layered_psd,
     save_layered_psd_preserving_type,
     replace_pixel_layers,
+    refresh_flattened_preview,
     set_flattened_preview,
     set_shape_layer_style,
     set_type_layer_effects,
@@ -3741,6 +3742,17 @@ def generate():
                                             set_type_layer_raster(
                                                 psd_path_for_size, live_text_rasters
                                             )
+                                        # Last: the file's own flattened
+                                        # snapshot, rebuilt from the layers
+                                        # just edited. Pillow's Image.open
+                                        # -- which is how this app loads a
+                                        # template to render on -- reads
+                                        # that snapshot, not the layers.
+                                        # Left as Photoshop wrote it, the
+                                        # next run drew the new copy on
+                                        # top of the old placeholder text
+                                        # still sitting in the picture.
+                                        refresh_flattened_preview(psd_path_for_size)
                                     except Exception:  # noqa: BLE001
                                         retyped_template = []
                                     if retyped_template:

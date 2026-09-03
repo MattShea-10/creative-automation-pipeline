@@ -18,3 +18,10 @@ pytesseract>=0.3.10
 # every per-layer operation silently returns nothing and the render loses
 # the layers it was meant to keep.
 aggdraw>=1.3.15
+# Layer-effect rendering for psd-tools. Needed to rebuild a PSD's stored
+# flattened preview from its layers after this app edits them (the "save
+# this copy into the templates" option): without it composite(force=True)
+# raises ImportError on any document carrying an effect or a vector
+# stroke, the refresh silently fails, and the next run draws the new copy
+# on top of the old placeholder still sitting in the stale preview.
+scikit-image>=0.21

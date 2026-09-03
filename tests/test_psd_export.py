@@ -29,6 +29,7 @@ from src.psd_export import (
     set_shape_layer_style,
     replace_pixel_layers,
     set_flattened_preview,
+    refresh_flattened_preview,
     set_type_layer_effects,
     set_type_layer_raster,
     pair_type_layers_with_pixels,
@@ -491,12 +492,14 @@ class PsdExportTest(unittest.TestCase):
         # Still live text, still saying the new words...
         self.assertEqual(layer.kind, "type", "the layer must stay editable text")
         self.assertEqual(layer.text.rstrip("\x00"), "Drive the summer")
-        # ...and now showing them.
-        self.assertEqual(layer.bbox, (100, 400, 701, 601))
+        # ...and now showing them, WITHOUT the layer's box shrinking to
+        # the new words' outline. That box is the designer's text box
+        # and what every later run fits its copy into: shrink it once
+        # and the next run squeezes into less, and the one after into
+        # less again. The union of the old box and the new picture.
+        self.assertEqual(layer.bbox, (64, 367, 701, 744))
         raster = layer.topil().convert("RGBA")
-        self.assertEqual(
-            raster.getpixel((raster.width // 2, raster.height // 2)), (51, 255, 102, 255)
-        )
+        self.assertEqual(raster.getpixel((400 - 64, 500 - 367)), (51, 255, 102, 255))
 
     @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
     def test_replacing_a_raster_keeps_the_rest_of_the_document(self):
@@ -510,6 +513,53 @@ class PsdExportTest(unittest.TestCase):
         ImageDraw.Draw(patch).rectangle([10, 10, 200, 90], fill=(255, 0, 0, 255))
         set_type_layer_raster(dest, {"description": patch})
         self.assertEqual([(l.name, l.kind) for l in PSDImage.open(dest)], before)
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_replacing_the_picture_twice_does_not_shrink_the_box(self):
+        # The failure this guards against was cumulative: each run cut
+        # the box to that run's words, so the description got smaller on
+        # every run until it was a whisker.
+        from PIL import ImageDraw
+
+        dest = self.tmp_dir / "no-shrink.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        before = [l for l in PSDImage.open(dest) if l.name == "description"][0].bbox
+        psd = PSDImage.open(dest)
+        small = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        ImageDraw.Draw(small).rectangle([100, 400, 300, 440], fill=(0, 0, 0, 255))
+        set_type_layer_raster(dest, {"description": small})
+        set_type_layer_raster(dest, {"description": small})
+        after = [l for l in PSDImage.open(dest) if l.name == "description"][0].bbox
+        self.assertEqual(after, before, "the text box shrank")
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_refreshing_the_preview_shows_the_layers_as_they_are_now(self):
+        # Pillow's Image.open() -- how this app loads a template to
+        # render on -- reads the flattened snapshot, not the layers. So a
+        # template whose type layer had been rewritten still rendered
+        # with its old copy underneath, and the new words drawn on top
+        # of placeholder text that should have been gone.
+        from PIL import ImageDraw
+
+        try:
+            import skimage  # noqa: F401
+        except ImportError:
+            self.skipTest("refreshing a preview needs scikit-image (psd-tools[composite])")
+
+        dest = self.tmp_dir / "preview-refresh.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        layer = [l for l in PSDImage.open(dest) if l.name == "description"][0]
+        box = layer.bbox
+        psd = PSDImage.open(dest)
+        # A solid magenta block where the words were: unmistakable.
+        block = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        ImageDraw.Draw(block).rectangle(list(box), fill=(255, 0, 255, 255))
+        set_type_layer_raster(dest, {"description": block})
+
+        self.assertTrue(refresh_flattened_preview(dest))
+        preview = Image.open(dest).convert("RGB")
+        cx, cy = (box[0] + box[2]) // 2, (box[1] + box[3]) // 2
+        self.assertEqual(preview.getpixel((cx, cy)), (255, 0, 255))
 
     def test_set_type_layer_raster_on_an_unreadable_file_is_a_no_op(self):
         junk = self.tmp_dir / "not-a-raster.psd"
