@@ -84,6 +84,7 @@ from src.image_ops import (
     get_psd_group_text,
     get_psd_group_text_box,
     get_psd_layer_stack,
+    get_psd_layer_names,
     get_psd_visible_layers,
     get_psd_layer_text_style,
     map_box_through_fit,
@@ -2816,6 +2817,35 @@ def generate():
                     if psd_path_for_size is not None
                     else set()
                 )
+                # Say so when a template has a layer switched off. A
+                # designer's eye-icon in Photoshop silently removes that
+                # layer from this size and nothing else on the page
+                # explains the hole -- the creative just comes back
+                # missing its product, or its button, while every other
+                # size has one. Worth a line: it is a two-second fix in
+                # the template and an unanswerable mystery without it.
+                if visible_in_template:
+                    # Against every layer the template HAS, not just the
+                    # ones with a usable box: a switched-off group
+                    # reports an empty bounding box and drops out of the
+                    # box map, so a CTA turned off in Photoshop -- the
+                    # exact case worth reporting -- would go unmentioned.
+                    switched_off_here = sorted(
+                        name
+                        for name in get_psd_layer_names(psd_path_for_size)
+                        if name not in visible_in_template
+                        and name not in hidden_layer_names
+                    )
+                    if switched_off_here:
+                        background_notes.append(
+                            f"{size_label(width, height)}: "
+                            + ", ".join(switched_off_here)
+                            + " switched off in that size's template, so "
+                            + ("they were" if len(switched_off_here) > 1 else "it was")
+                            + " not drawn. Turn the layer back on in Photoshop and re-save "
+                            "the template to use it."
+                        )
+
                 for layer_name in sorted(hidden_layer_names):
                     hidden_box = layer_boxes.get(layer_name)
                     if hidden_box is None:

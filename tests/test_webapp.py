@@ -5625,6 +5625,37 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         # Downloads can be matched back to the run that made it.
         self.assertIn(job_id[:6], page)
 
+    def test_a_switched_off_layer_is_reported_for_the_size_it_affects(self):
+        # A designer's eye-icon in Photoshop silently removes a layer
+        # from that size, and nothing on the page explained the hole --
+        # the creative came back missing its product, or its button,
+        # while every other size had one. That is a two-second fix in
+        # the template and an unanswerable mystery without a note.
+        from psd_tools import PSDImage
+
+        (w, h), staged_path = self._stage_real_template()
+        psd = PSDImage.open(staged_path)
+        off = sorted(
+            (l.name or "").strip().lower()
+            for l in psd
+            if (l.name or "").strip() and not l.visible
+        )
+        if not off:
+            self.skipTest("staged template has every layer switched on")
+
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "layer_description_text": "Drive the summer",
+            "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        page = r.data.decode()
+        self.assertIn("switched off in that size's template", page.replace("&#39;", "'"))
+        for name in off:
+            self.assertIn(name, page)
+
     def test_the_layered_psd_download_looks_like_the_preview(self):
         # The whole promise of the layered download: open it and see the
         # creative from the results grid. It used to inherit the

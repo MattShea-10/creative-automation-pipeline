@@ -1429,6 +1429,36 @@ def get_psd_group_text_box(psd_path: Union[str, Path], group_name: str):
     return None
 
 
+def get_psd_layer_names(psd_path: Union[str, Path]) -> set:
+    """Lowercased names of every top-level layer in a PSD, drawn or not.
+
+    get_psd_visible_layers() answers "what does this file draw"; this
+    answers "what does it contain". The difference between the two is
+    the set of layers a designer has switched off, which is worth naming
+    to whoever is wondering where their product shot went.
+
+    A switched-off GROUP is why this exists rather than reading the keys
+    of get_psd_layer_boxes(): a hidden group reports an empty bounding
+    box, so it drops out of the box map entirely and a CTA that had been
+    turned off looked, from there, like a template that never had one.
+
+    Empty set if psd-tools isn't installed or the file can't be read.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return set()
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return set()
+    return {
+        (layer.name or "").strip().lower()
+        for layer in psd
+        if (layer.name or "").strip()
+    }
+
+
 def get_psd_visible_layers(psd_path: Union[str, Path]) -> set:
     """Lowercased names of the top-level layers a PSD actually draws --
     the ones switched ON in Photoshop.
