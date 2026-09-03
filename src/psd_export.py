@@ -112,6 +112,312 @@ def _first_type_layer(group):
                 yield nested
 
 
+def set_flattened_preview(psd_path, image) -> bool:
+    """Replace the PSD's stored flattened composite with `image`.
+
+    Every PSD carries a merged snapshot of the document alongside its
+    layers -- what Finder, Preview, quick-look and psd-tools show, and
+    what "maximize compatibility" writes. Photoshop ignores it and
+    redraws from the layers, so it is a picture of the file rather than
+    the file itself; but the two disagreeing is what makes a correctly
+    edited PSD look untouched everywhere except Photoshop. Retyped text
+    and a restyled shape are exactly that case: the layer data is new and
+    the cached snapshot is the template's.
+
+    So the snapshot is replaced with this render. The layers stay live
+    and editable; what changes is only what a viewer sees before opening
+    it properly.
+
+    Returns True when the preview was written. Best-effort, like the rest
+    of this module.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return False
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        header = psd._record.header
+        flat = image.convert("RGB")
+        if flat.size != (header.width, header.height):
+            flat = flat.resize((header.width, header.height), Image.LANCZOS)
+        channels = [band.tobytes() for band in flat.split()]
+        # A 4-channel document wants an alpha plane too; the composite is
+        # opaque, so it is a solid one.
+        while len(channels) < header.channels:
+            channels.append(
+                Image.new("L", (header.width, header.height), 255).tobytes()
+            )
+        psd._record.image_data.set_data(channels[: header.channels], header)
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def replace_pixel_layers(psd_path, images: dict) -> list:
+    """Swap named pixel layers' artwork in the PSD at `psd_path`, in
+    place, leaving every other layer -- type layers, groups, the CTA's
+    live shape -- exactly as it was.
+
+    `images` maps a lowercased layer name to a full-canvas RGBA image at
+    the PSD's own size. A name that isn't a top-level pixel layer in the
+    file is skipped.
+
+    This is what turns the source-template download from a copy of the
+    template into a copy of THIS creative. The file's whole value is that
+    it still has editable text and an editable button, so the artwork
+    cannot be baked in by flattening -- each pixel layer is removed and
+    rebuilt from the new image at the same height in the stack, which is
+    the only way psd-tools can write pixels at all (it can create layers
+    and nothing else).
+
+    Returns the names of the layers actually replaced. Best-effort: a
+    file that won't open, or a layer that won't rebuild, returns [] and
+    leaves the file untouched rather than raising.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+
+    wanted = {
+        name.strip().lower(): image for name, image in (images or {}).items() if image
+    }
+    if not wanted:
+        return []
+
+    canvas = (psd.width, psd.height)
+    replaced = []
+    try:
+        for name in list(wanted):
+            index = None
+            original = None
+            for position, layer in enumerate(psd):
+                if (layer.name or "").strip().lower() == name and layer.kind == "pixel":
+                    index, original = position, layer
+                    break
+            if original is None:
+                continue
+            image = wanted[name]
+            if image.mode != "RGBA":
+                image = image.convert("RGBA")
+            if image.size != canvas:
+                image = image.resize(canvas, Image.LANCZOS)
+            cropped, left, top = _tight_bbox_crop(image)
+            psd.remove(original)
+            rebuilt = psd.create_pixel_layer(
+                cropped, name=original.name, top=top, left=left
+            )
+            # create_pixel_layer appends; the layer has to go back where
+            # the one it replaces was, or a background lands on top of
+            # everything it is supposed to sit under.
+            if rebuilt is not None:
+                psd.remove(rebuilt)
+                psd.insert(index, rebuilt)
+            replaced.append(original.name)
+    except Exception:  # noqa: BLE001
+        return []
+
+    if not replaced:
+        return []
+    try:
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return replaced
+
+
+def _named_shape_layers(node) -> dict:
+    """_named_type_layers()'s counterpart for vector shape layers.
+
+    Same reason it exists: a designer's CTA is a group, and the shape
+    holding the button is a child called something like "Rectangle 1",
+    not the "cta" the form addresses it by. Both names point at it.
+    """
+    found = {}
+
+    def visit(container):
+        for layer in container:
+            name = (layer.name or "").strip().lower()
+            if getattr(layer, "kind", None) == "shape":
+                found.setdefault(name, layer)
+                continue
+            if getattr(layer, "is_group", None) and layer.is_group():
+                for child in _first_shape_layer(layer):
+                    if name:
+                        found.setdefault(name, child)
+                    break
+                visit(layer)
+
+    try:
+        visit(node)
+    except Exception:  # noqa: BLE001
+        pass
+    return found
+
+
+def _first_shape_layer(group):
+    """Yield the vector shape layers inside `group`, outermost first."""
+    try:
+        children = list(group)
+    except Exception:  # noqa: BLE001
+        return
+    for layer in children:
+        if getattr(layer, "kind", None) == "shape":
+            yield layer
+    for layer in children:
+        if getattr(layer, "is_group", None) and layer.is_group():
+            for nested in _first_shape_layer(layer):
+                yield nested
+
+
+def _shape_block(layer, tag_name):
+    """The parsed data of one of `layer`'s tagged blocks, or None.
+
+    Looked up by the tag's *name* rather than by importing the Tag enum,
+    so a psd-tools that spells one differently costs a skipped property
+    rather than an import error at module load.
+    """
+    try:
+        for key, block in layer.tagged_blocks.items():
+            if str(key).rsplit(".", 1)[-1] == tag_name:
+                return block.data
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def _write_descriptor_rgb(colour_descriptor, rgb) -> bool:
+    """Set an RGB colour descriptor's channels in place.
+
+    The components are psd-tools Double objects and are mutated rather
+    than replaced: assigning plain Python floats parses back fine but
+    blows up on save, since the writer expects objects that know how to
+    serialize themselves. Same trap as set_type_layer_colors().
+    """
+    red, green, blue = rgb
+    try:
+        for key, value in ((b"Rd  ", red), (b"Grn ", green), (b"Bl  ", blue)):
+            colour_descriptor[key].value = float(value)
+    except Exception:  # noqa: BLE001
+        return False
+    return True
+
+
+def set_shape_layer_style(psd_path, styles: dict) -> list:
+    """Restyle live vector shape layers in the PSD at `psd_path`, in
+    place, keeping them editable shapes.
+
+    `styles` maps a lowercased layer (or group) name to any of:
+
+        fill              (r, g, b) -- the shape's fill colour
+        stroke_color      (r, g, b) -- the stroke's colour
+        stroke_width_pct  percentage of the shape's own height, matching
+                          how the renderer sizes a CTA border, so one
+                          setting reads the same at 160x600 and 1080x1080
+
+    A stroke_width_pct of 0 switches the stroke off; anything above it
+    turns the stroke on, since asking for a width is asking to see one.
+
+    These are the properties Photoshop's own shape toolbar edits, stored
+    as descriptors on the layer (the fill in the vector stroke *content*
+    block, the rest in the vector stroke block), so what comes back is a
+    button whose colour and outline can still be changed by clicking it
+    -- not a picture of one.
+
+    Not included: corner radius, which is a different kind of change.
+    Photoshop draws the shape from its vector path, and the live-shape
+    radii sitting beside it are only what the properties panel reads
+    back; rounding the corners for real means rewriting the path's bezier
+    knots, and writing a path that disagrees with its own live-shape data
+    is how a file starts opening wrong. The rendered PSD beside this one
+    has the radius baked in correctly.
+
+    Returns the names of the layers actually restyled. Best-effort, like
+    everything else here: an unreadable file, a name that isn't a shape,
+    or an unexpectedly shaped descriptor returns [] rather than raising.
+
+    The same caveat as set_type_layer_colors() applies: this rewrites the
+    shape's styling, not the rasterized preview Photoshop caches beside
+    it. Photoshop redraws the shape on open, so it is right there; a
+    viewer that only reads the cached composite may still show the old
+    button.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+
+    layers = _named_shape_layers(psd)
+    restyled = []
+    for name, spec in (styles or {}).items():
+        layer = layers.get(name.strip().lower())
+        if layer is None or not spec:
+            continue
+        touched = False
+
+        fill = spec.get("fill")
+        if fill is not None:
+            content = _shape_block(layer, "VECTOR_STROKE_CONTENT_DATA")
+            try:
+                colour = content[b"Clr "]
+            except Exception:  # noqa: BLE001
+                colour = None
+            if colour is not None and _write_descriptor_rgb(colour, fill):
+                touched = True
+
+        stroke = _shape_block(layer, "VECTOR_STROKE_DATA")
+        if stroke is not None:
+            stroke_colour = spec.get("stroke_color")
+            if stroke_colour is not None:
+                try:
+                    colour = stroke[b"strokeStyleContent"][b"Clr "]
+                except Exception:  # noqa: BLE001
+                    colour = None
+                if colour is not None and _write_descriptor_rgb(colour, stroke_colour):
+                    touched = True
+
+            pct = spec.get("stroke_width_pct")
+            if pct is not None:
+                try:
+                    top, bottom = layer.bbox[1], layer.bbox[3]
+                    height = max(0, bottom - top)
+                    # The renderer's own rule (apply_layer_cta_override):
+                    # a percentage of the button's height, floored at one
+                    # pixel so a small percentage is still visible.
+                    width_px = 0.0
+                    if pct > 0 and height:
+                        width_px = float(max(1, round(height * (pct / 100.0))))
+                    stroke[b"strokeStyleLineWidth"].value = width_px
+                    stroke[b"strokeEnabled"].value = width_px > 0
+                    touched = True
+                except Exception:  # noqa: BLE001
+                    pass
+
+        if touched:
+            restyled.append(layer.name)
+
+    if not restyled:
+        return []
+    try:
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return restyled
+
+
 def set_type_layer_text(psd_path, texts: dict) -> list:
     """Rewrite live Photoshop type layers' copy in the PSD at `psd_path`,
     in place, keeping them editable text.

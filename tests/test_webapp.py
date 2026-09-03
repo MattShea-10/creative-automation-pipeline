@@ -1850,11 +1850,24 @@ class PsdTemplateSectionTest(unittest.TestCase):
         source = job_dir / "creative_campaign1_300x250_source-template.psd"
         self.assertTrue(rebuilt.is_file())
         self.assertTrue(source.is_file())
-        # Byte-identical to what was uploaded -- that's the whole point:
-        # nothing was re-encoded, so the type layers survive intact.
-        self.assertEqual(source.read_bytes(), template_bytes)
+        # Not byte-identical any more -- this file now carries the run's
+        # own copy, artwork and button styling, and its cached composite
+        # is this render rather than the template's (see
+        # set_flattened_preview()). What must survive is the structure:
+        # the same layers, still the same kinds, nothing rasterized on
+        # the way through, because that is what makes it editable.
+        from psd_tools import PSDImage
+
+        uploaded = Path(self.tmp_dir) / "uploaded-template.psd"
+        uploaded.write_bytes(template_bytes)
+        self.assertEqual(
+            [(l.name, l.kind) for l in PSDImage.open(source)],
+            [(l.name, l.kind) for l in PSDImage.open(uploaded)],
+            "the source template's layer stack must survive intact",
+        )
         # The rebuild really is a different file, not the same copy.
         self.assertNotEqual(rebuilt.read_bytes(), template_bytes)
+        self.assertNotEqual(rebuilt.read_bytes(), source.read_bytes())
 
         # Both are offered on the results page, and both ride along in
         # the bulk zip.
@@ -5500,6 +5513,87 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertIn(b"updated layer(s) -- cta", r.data)
+
+    def test_the_source_psd_download_is_this_creative_not_the_template(self):
+        # It was a straight copy of the template, so the one download
+        # made to be edited showed the template's stock backdrop and its
+        # stock button. Now the artwork is swapped in, the CTA shape
+        # carries the styling as shape properties (still editable), and
+        # the cached composite every viewer except Photoshop reads is
+        # this render rather than the template's.
+        from psd_tools import PSDImage
+
+        (w, h), staged_path = self._stage_real_template()
+        hero = self._sample_image_bytes(size=(w, h), color=(255, 0, 255))
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_custom_hero_enabled": "1",
+            "upload_hero_image": (hero, "magenta.png"),
+            "layer_cta_text": "Buy now",
+            "layer_cta_button_color": "#f2760c",
+            "layer_cta_stroke_size": "3",
+            "layer_cta_stroke_color": "#00ff00",
+            "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        source = (
+            webapp.JOBS_DIR / job_id
+            / f"HydroBoost_campaign1_{w}x{h}_source-template.psd"
+        )
+        self.assertTrue(source.is_file())
+        psd = PSDImage.open(source)
+
+        # The hero is the backdrop now, not the template's own.
+        background = [l for l in psd if l.name.strip().lower() == "background"]
+        if background:
+            self.assertEqual(
+                background[0].topil().convert("RGB").getpixel((5, 5)), (255, 0, 255)
+            )
+
+        # The CTA is still a live group, and its shape carries the fill
+        # and stroke as shape properties rather than as pixels.
+        def shapes(node):
+            for layer in node:
+                if layer.kind == "shape":
+                    yield layer
+                elif layer.is_group():
+                    yield from shapes(layer)
+
+        shape = next(iter(shapes(psd)), None)
+        if shape is None:
+            self.skipTest("this template's CTA has no vector shape in it")
+        self.assertEqual(shape.kind, "shape")
+
+        def block(layer, tag_name):
+            for key, blk in layer.tagged_blocks.items():
+                if str(key).rsplit(".", 1)[-1] == tag_name:
+                    return blk.data
+            return None
+
+        fill = block(shape, "VECTOR_STROKE_CONTENT_DATA")[b"Clr "]
+        self.assertEqual(
+            [round(float(fill[k])) for k in (b"Rd  ", b"Grn ", b"Bl  ")], [242, 118, 12]
+        )
+        stroke = block(shape, "VECTOR_STROKE_DATA")
+        self.assertTrue(bool(stroke[b"strokeEnabled"]))
+
+        # And the cached composite is this render, so the file doesn't
+        # look untouched everywhere except Photoshop.
+        rendered = Image.open(
+            webapp.JOBS_DIR / job_id / f"HydroBoost_campaign1_{w}x{h}.png"
+        ).convert("RGB")
+        preview = psd.composite().convert("RGB").resize(rendered.size)
+        self.assertLess(
+            max(
+                abs(a - b)
+                for pa, pb in zip(rendered.getdata(), preview.getdata())
+                for a, b in zip(pa, pb)
+            ),
+            24,
+            "the PSD's cached preview doesn't match the render",
+        )
 
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to

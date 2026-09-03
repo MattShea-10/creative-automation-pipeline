@@ -51,6 +51,9 @@ from psd_tools import PSDImage
 from src.psd_export import (
     save_layered_psd,
     save_layered_psd_preserving_type,
+    replace_pixel_layers,
+    set_flattened_preview,
+    set_shape_layer_style,
     set_type_layer_text,
     set_type_layer_colors,
 )
@@ -3312,6 +3315,47 @@ def generate():
                             )
                             shutil.copy(psd_path_for_size, job_dir / source_candidate_filename)
                             source_psd_filename = source_candidate_filename
+                            # The artwork, in the template's own
+                            # coordinate space. This file was a straight
+                            # copy of the template, which meant the one
+                            # download made to be edited showed the
+                            # template's stock backdrop instead of the
+                            # hero image the creative was built from --
+                            # correct as a "source template", useless as
+                            # a copy of what you just made. The patches
+                            # built for the rendered PSD are in the
+                            # OUTPUT canvas's space, so they can't be
+                            # reused here; each override is re-applied
+                            # against the template's own layer boxes,
+                            # which needs no fit mapping at all.
+                            source_layer_images = {}
+                            if layer_image_overrides:
+                                source_boxes = get_psd_layer_boxes(psd_path_for_size)
+                                source_size = get_psd_canvas_size(psd_path_for_size) or (width, height)
+                                for name, override_image in layer_image_overrides.items():
+                                    box = source_boxes.get(name)
+                                    if box is None:
+                                        continue
+                                    blank = Image.new("RGBA", source_size, (0, 0, 0, 0))
+                                    if name == "background":
+                                        source_layer_images[name] = apply_layer_background_override(
+                                            blank, box, override_image, keep_alpha=True,
+                                            fit="contain" if upload_ai_allow_text else "crop",
+                                        )
+                                    else:
+                                        source_layer_images[name] = apply_layer_image_override(
+                                            blank, box, override_image, keep_alpha=True
+                                        )
+                            if source_layer_images:
+                                swapped = replace_pixel_layers(
+                                    job_dir / source_candidate_filename, source_layer_images
+                                )
+                                if swapped:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: source PSD's artwork replaced -- "
+                                        + ", ".join(swapped)
+                                        + "."
+                                    )
                             # Carry the typed copy into the live text.
                             # This file is a straight copy of the
                             # template -- the one download that still has
@@ -3340,6 +3384,35 @@ def generate():
                                         + ", ".join(retyped)
                                         + "."
                                     )
+                            # ...and the button's own properties into
+                            # the live shape under that label. The
+                            # rendered PSD has the restyled button drawn
+                            # as pixels; here the fill and the stroke are
+                            # still the ones Photoshop's shape toolbar
+                            # edits, so the button that opens is the one
+                            # asked for AND still a shape. Only when
+                            # something was actually asked for -- an
+                            # untouched CTA keeps the design as drawn.
+                            # (Corner radius is deliberately not carried:
+                            # see set_shape_layer_style().)
+                            cta_shape_style = {}
+                            if layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT:
+                                cta_shape_style["fill"] = layer_cta_button_color
+                            if layer_cta_stroke_size:
+                                cta_shape_style["stroke_width_pct"] = layer_cta_stroke_size
+                                cta_shape_style["stroke_color"] = layer_cta_stroke_color
+                            if cta_shape_style:
+                                restyled = set_shape_layer_style(
+                                    job_dir / source_candidate_filename,
+                                    {"cta": cta_shape_style},
+                                )
+                                if restyled:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: source PSD's CTA shape restyled -- "
+                                        + ", ".join(restyled)
+                                        + " (still an editable shape; corner radius is baked into the "
+                                        "rendered PSD only)."
+                                    )
                             # Carry a custom text colour into the live
                             # text too. The rendered PSD beside this one
                             # has the colour baked into pixels; here it
@@ -3364,6 +3437,16 @@ def generate():
                                         + ", ".join(recoloured)
                                         + "."
                                     )
+                            # Last, after every layer edit above: the
+                            # snapshot every viewer except Photoshop
+                            # shows. Without it a correctly edited PSD
+                            # looks untouched in Finder, Preview and
+                            # quick-look, because those read the cached
+                            # composite the template shipped with rather
+                            # than redrawing the layers.
+                            set_flattened_preview(
+                                job_dir / source_candidate_filename, final_image
+                            )
                         psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
                         # Inherit the template's live text layers instead
                         # of baking this size's copy into pixels like

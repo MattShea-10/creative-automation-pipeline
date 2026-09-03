@@ -26,6 +26,9 @@ from src.psd_export import (
     save_layered_psd_preserving_type,
     set_type_layer_colors,
     set_type_layer_text,
+    set_shape_layer_style,
+    replace_pixel_layers,
+    set_flattened_preview,
 )
 
 
@@ -192,6 +195,133 @@ class PsdExportTest(unittest.TestCase):
         self.assertEqual(set_type_layer_text(dest, {"description": None, "header": ""}), [])
         after = [l for l in PSDImage.open(dest) if l.name == "description"][0].text
         self.assertEqual(after, before)
+
+    def _cta_shape(self, path):
+        """The vector shape inside the template's CTA group, or None."""
+        def walk(node):
+            for layer in node:
+                if layer.kind == "shape":
+                    yield layer
+                elif layer.is_group():
+                    yield from walk(layer)
+
+        return next(iter(walk(PSDImage.open(path))), None)
+
+    @staticmethod
+    def _shape_block(layer, tag_name):
+        for key, block in layer.tagged_blocks.items():
+            if str(key).rsplit(".", 1)[-1] == tag_name:
+                return block.data
+        return None
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_set_shape_layer_style_restyles_the_button_as_a_shape(self):
+        # The rendered PSD draws the restyled button as pixels. This is
+        # the other half: the same colours written to the properties
+        # Photoshop's shape toolbar edits, so what opens is the button
+        # that was asked for AND still a shape you can click and change.
+        dest = self.tmp_dir / "styled.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        if self._cta_shape(dest) is None:
+            self.skipTest("this template's CTA has no vector shape in it")
+
+        # Addressed as "cta" -- the group's name. The shape inside is
+        # called something like "Rectangle 1", which is the whole reason
+        # a flat scan of the document misses it.
+        restyled = set_shape_layer_style(
+            dest,
+            {"cta": {"fill": (242, 118, 12), "stroke_color": (0, 255, 0), "stroke_width_pct": 3}},
+        )
+        self.assertTrue(restyled, "the group's shape was never found")
+
+        shape = self._cta_shape(dest)
+        self.assertEqual(shape.kind, "shape", "restyling must not rasterize the layer")
+        fill = self._shape_block(shape, "VECTOR_STROKE_CONTENT_DATA")[b"Clr "]
+        self.assertEqual(
+            [round(float(fill[k])) for k in (b"Rd  ", b"Grn ", b"Bl  ")], [242, 118, 12]
+        )
+        stroke = self._shape_block(shape, "VECTOR_STROKE_DATA")
+        colour = stroke[b"strokeStyleContent"][b"Clr "]
+        self.assertEqual(
+            [round(float(colour[k])) for k in (b"Rd  ", b"Grn ", b"Bl  ")], [0, 255, 0]
+        )
+        self.assertTrue(bool(stroke[b"strokeEnabled"]))
+        # A percentage of the shape's own height, the same rule the
+        # renderer uses, so one setting reads the same at every size.
+        height = shape.bbox[3] - shape.bbox[1]
+        self.assertEqual(
+            float(stroke[b"strokeStyleLineWidth"]), float(max(1, round(height * 0.03)))
+        )
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_a_zero_width_stroke_switches_the_stroke_off(self):
+        dest = self.tmp_dir / "nostroke.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        if self._cta_shape(dest) is None:
+            self.skipTest("this template's CTA has no vector shape in it")
+        set_shape_layer_style(dest, {"cta": {"stroke_width_pct": 0}})
+        stroke = self._shape_block(self._cta_shape(dest), "VECTOR_STROKE_DATA")
+        self.assertFalse(bool(stroke[b"strokeEnabled"]))
+        self.assertEqual(float(stroke[b"strokeStyleLineWidth"]), 0.0)
+
+    def test_set_shape_layer_style_on_an_unreadable_file_is_a_no_op(self):
+        junk = self.tmp_dir / "not-a-shape.psd"
+        junk.write_bytes(b"nope")
+        self.assertEqual(set_shape_layer_style(junk, {"cta": {"fill": (1, 2, 3)}}), [])
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_replace_pixel_layers_swaps_artwork_and_keeps_the_stack(self):
+        # The source PSD was a straight copy of the template, so it
+        # showed the template's stock backdrop rather than the creative
+        # it came with. Swapping the pixels has to leave everything that
+        # makes the file worth downloading -- the type layers, the CTA
+        # group -- exactly where it was.
+        dest = self.tmp_dir / "swapped.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        before = [(l.name, l.kind) for l in PSDImage.open(dest)]
+        if not any(name == "background" and kind == "pixel" for name, kind in before):
+            self.skipTest("this template has no background pixel layer")
+
+        psd = PSDImage.open(dest)
+        magenta = Image.new("RGBA", (psd.width, psd.height), (255, 0, 255, 255))
+        self.assertEqual(replace_pixel_layers(dest, {"background": magenta}), ["background"])
+
+        after = PSDImage.open(dest)
+        self.assertEqual([(l.name, l.kind) for l in after], before, "the stack changed")
+        layer = [l for l in after if l.name == "background"][0]
+        self.assertEqual(layer.topil().convert("RGB").getpixel((5, 5)), (255, 0, 255))
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_replace_pixel_layers_ignores_names_that_are_not_pixel_layers(self):
+        dest = self.tmp_dir / "notpixel.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        psd = PSDImage.open(dest)
+        blank = Image.new("RGBA", (psd.width, psd.height), (0, 255, 0, 255))
+        # "cta" is a group and "header" is type -- neither can take pixels
+        # without ceasing to be what makes it useful.
+        self.assertEqual(replace_pixel_layers(dest, {"cta": blank, "header": blank}), [])
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_the_flattened_preview_is_replaced_without_touching_the_layers(self):
+        # Finder, Preview and quick-look read the cached composite, not
+        # the layers, so a correctly edited PSD looked untouched
+        # everywhere except Photoshop.
+        dest = self.tmp_dir / "preview.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        before = [(l.name, l.kind) for l in PSDImage.open(dest)]
+        psd = PSDImage.open(dest)
+        flat = Image.new("RGB", (psd.width, psd.height), (0, 200, 0))
+
+        self.assertTrue(set_flattened_preview(dest, flat))
+
+        after = PSDImage.open(dest)
+        self.assertEqual([(l.name, l.kind) for l in after], before)
+        self.assertEqual(after.composite().convert("RGB").getpixel((5, 5)), (0, 200, 0))
+
+    def test_set_flattened_preview_on_an_unreadable_file_is_a_no_op(self):
+        junk = self.tmp_dir / "not-a-preview.psd"
+        junk.write_bytes(b"nope")
+        self.assertFalse(set_flattened_preview(junk, Image.new("RGB", (4, 4))))
 
     def test_set_type_layer_text_on_an_unreadable_file_is_a_no_op(self):
         junk = self.tmp_dir / "not-a-text.psd"
