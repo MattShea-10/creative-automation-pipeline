@@ -37,15 +37,25 @@ jobs:
       - name: Smoke test the exe
         shell: pwsh
         run: |
-          $p = Start-Process -FilePath "dist\CreativeAutomationPipeline\CreativeAutomationPipeline.exe" -PassThru -RedirectStandardOutput exe.log -RedirectStandardError exe.err
+          $exe = Resolve-Path "dist\CreativeAutomationPipeline\CreativeAutomationPipeline.exe"
+          $p = Start-Process -FilePath $exe -WorkingDirectory (Split-Path $exe) -PassThru -RedirectStandardOutput "$PWD\exe.log" -RedirectStandardError "$PWD\exe.err"
           $ok = $false
-          for ($i = 0; $i -lt 60; $i++) {
+          $url = "http://127.0.0.1:5000/"
+          # A cold runner takes a while to page in OpenCV and scikit-image;
+          # and the app moves off 5000 if something else holds it, so read
+          # the address it prints rather than assuming.
+          for ($i = 0; $i -lt 180; $i++) {
             Start-Sleep -Seconds 1
-            try { $r = Invoke-WebRequest -UseBasicParsing -Uri http://127.0.0.1:5000/ -TimeoutSec 2; if ($r.StatusCode -eq 200) { $ok = $true; break } } catch { }
+            if ($p.HasExited) { Write-Host "the exe exited early with code $($p.ExitCode)" -ForegroundColor Red; break }
+            $log = Get-Content exe.log -Raw -ErrorAction SilentlyContinue
+            if ($log -match "http://127\.0\.0\.1:(\d+)") { $url = "http://127.0.0.1:$($Matches[1])/" }
+            try { $r = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 60; if ($r.StatusCode -eq 200) { $ok = $true; break } } catch { }
           }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
-          Get-Content exe.log, exe.err -ErrorAction SilentlyContinue
-          if (-not $ok) { Write-Host "the exe never answered on port 5000" -ForegroundColor Red; exit 1 }
+          Write-Host "---- exe.log ----"; Get-Content exe.log -ErrorAction SilentlyContinue
+          Write-Host "---- exe.err ----"; Get-Content exe.err -ErrorAction SilentlyContinue
+          if ($ok) { Write-Host "the exe answered on $url after $i s" -ForegroundColor Green }
+          else { Write-Host "the exe never answered (last tried $url)" -ForegroundColor Red; exit 1 }
 
       - uses: actions/upload-artifact@v5
         with:
