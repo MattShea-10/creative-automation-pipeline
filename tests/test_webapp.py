@@ -2357,6 +2357,36 @@ class PaidProviderTest(unittest.TestCase):
         # Never the whole key.
         self.assertNotIn("abcd-not-a-real-key", message)
 
+    def test_a_missing_key_in_full_ad_mode_is_a_notice_not_a_500(self):
+        # IdeogramProvider() refuses to construct without a key, and in
+        # full-ad mode that construction was outside any try -- a 500
+        # with a traceback in the terminal and a blank error page, for a
+        # configuration problem whose message already says how to fix
+        # it. That is exactly what a fresh install from the disk image
+        # hits before the key is pasted in.
+        import os
+        from unittest import mock
+
+        import webapp as _webapp
+
+        _webapp.app.config["TESTING"] = True
+        _webapp.app.config["SECRET_KEY"] = _webapp.app.config.get("SECRET_KEY") or "test"
+        client = _webapp.app.test_client()
+        data = {
+            "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+            "campaign_message": "Stay charged",
+            "upload_ai_enabled": "1",
+            "upload_ai_provider": "ideogram",
+            "upload_ai_full_ad": "1",
+            "header": "", "description": "",
+        }
+        with mock.patch.dict(os.environ, {"IDEOGRAM_API_KEY": ""}):
+            r = client.post("/generate", data=data, content_type="multipart/form-data", follow_redirects=True)
+        self.assertEqual(r.status_code, 200, "a missing key must not be a server error")
+        page = r.data.decode()
+        self.assertIn("IDEOGRAM_API_KEY is not set", page)
+        self.assertIn("Can&#39;t generate the whole ad with ideogram", page.replace("&#x27;", "&#39;"))
+
     def test_ideogram_seed_can_be_pinned_to_reproduce_an_image(self):
         seeds = self._ideogram_seeds(2, seed=4242)
         self.assertEqual(seeds, [4242, 4242])
@@ -6048,6 +6078,44 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 for a, b in zip(pa, pb)
             ) / (before.width * before.height * 3)
             self.assertLess(diff, 6, f"hiding the product changed the CTA under it ({extra.keys()})")
+
+    def test_the_backdrop_generator_is_sent_the_ticked_brand_colours_too(self):
+        # The palette went only into the full-ad prompt. A backdrop
+        # generated with swatches ticked came back in whatever colours
+        # the model liked, and the brand-colour check on the results
+        # page then flagged every size -- which read as the check being
+        # broken rather than the request never having been sent.
+        import re as _re
+
+        self._stage_real_template()
+        client = self.client
+        base = {
+            "product_name": "HydroBoost",
+            "upload_ai_enabled": "1",
+            "upload_ai_provider": "mock",
+            "brand_color_1": "#0057b8", "brand_color_1_enabled": "1",
+            "brand_color_2": "#ff7a00",                       # NOT ticked
+            "header": "", "description": "",
+        }
+        for typed in ("", "moody studio lighting on wet stone"):
+            data = dict(base)
+            if typed:
+                data["upload_ai_prompt"] = typed
+            r = client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            page = r.data.decode().replace("&quot;", '"').replace("&#34;", '"')
+            sent = _re.search(r"Campaign artwork generated with AI \(mock\).*?prompt: \"(.*?)\"", page, _re.S)
+            self.assertIsNotNone(sent, "no record of the prompt that was sent")
+            prompt = sent.group(1)
+            self.assertIn("using the brand palette", prompt)
+            self.assertIn("#0057b8 (blue)", prompt)
+            # The unticked swatch stays out, whatever the form holds.
+            self.assertNotIn("#ff7a00", prompt)
+            if typed:
+                # A typed prompt keeps its words and gains the palette --
+                # the swatches are a separate instruction, not something
+                # a prompt author should have to restate.
+                self.assertIn(typed, prompt)
 
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to

@@ -443,6 +443,22 @@ def _colour_word(rgb) -> str:
     )[1]
 
 
+def _brand_palette_phrase(brand_colors) -> str:
+    """The ticked brand colours as a prompt clause, or "" when none are.
+
+    Hex plus a plain colour word for each: the hex is exact, the word is
+    what a model actually steers by. Only the ticked swatches arrive here
+    -- an unticked one still holds a colour in the form, and sending it
+    would be steering the picture by a value the user switched off.
+    """
+    if not brand_colors:
+        return ""
+    swatches = ", ".join(
+        f"#{r:02x}{g:02x}{b:02x} ({_colour_word((r, g, b))})" for r, g, b in brand_colors
+    )
+    return f"using the brand palette {swatches}"
+
+
 def _build_full_ad_prompt(
     product_name, campaign_message, header_text, cta_text, audience, market,
     brand_colors=None,
@@ -477,14 +493,9 @@ def _build_full_ad_prompt(
     if cta_text:
         lines.append(f'a clear call-to-action button reading exactly "{cta_text}"')
     parts.append("with " + ", ".join(lines))
-    if brand_colors:
-        # Only the ticked ones arrive here -- an unticked swatch still
-        # holds a colour in the form, and sending it would be steering
-        # the ad by a value the user switched off.
-        swatches = ", ".join(
-            f"#{r:02x}{g:02x}{b:02x} ({_colour_word((r, g, b))})" for r, g, b in brand_colors
-        )
-        parts.append(f"using the brand palette {swatches}")
+    palette = _brand_palette_phrase(brand_colors)
+    if palette:
+        parts.append(palette)
     if audience:
         parts.append(f"art directed for {audience}")
     if market:
@@ -1698,6 +1709,18 @@ def generate():
                 f"abstract background texture evoking {product_name or 'the product'}, "
                 "unbranded, subtle gradient, soft lighting"
             )
+        # The ticked brand colours, whichever prompt is in play. This
+        # went only into the full-ad prompt, so a backdrop generated
+        # with three swatches ticked came back in whatever palette the
+        # model felt like -- and the brand-colour check on the results
+        # page then flagged every size as missing them, which read as
+        # the check being broken rather than the request never sent.
+        # Appended to a typed prompt as well as the automatic one: the
+        # swatches are a separate, explicit instruction, not something a
+        # prompt author should have to restate.
+        palette = _brand_palette_phrase(brand_colors)
+        if palette:
+            upload_ai_prompt_text = f"{upload_ai_prompt_text}, {palette}"
         if upload_ai_background_style:
             upload_ai_prompt_text = (
                 f"{upload_ai_prompt_text}, "
@@ -2396,7 +2419,20 @@ def generate():
             market,
             brand_colors=brand_colors,
         )
-        provider_for_ads = get_provider(upload_ai_provider)
+        # Constructing the provider is where a missing key surfaces
+        # (IdeogramProvider() reads IDEOGRAM_API_KEY and refuses without
+        # one). Unhandled, that was a 500 with a traceback in the
+        # terminal and a blank error page in the browser -- for a
+        # configuration problem the message already explains how to fix.
+        # It goes back to the form as a notice instead. The backdrop
+        # generator above degrades to the offline placeholder in this
+        # case; a full ad has nothing to degrade to, since the model IS
+        # the creative here.
+        try:
+            provider_for_ads = get_provider(upload_ai_provider)
+        except ImageProviderError as exc:
+            flash(f"Can't generate the whole ad with {upload_ai_provider}: {exc}")
+            return redirect(url_for("index"))
         background_notes.append(
             f"Full ad mode: {len(sizes)} separate generation(s) with "
             f"{upload_ai_provider}, one per output size -- prompt: \"{full_ad_prompt}\"."
