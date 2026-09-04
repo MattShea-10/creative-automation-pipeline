@@ -6128,6 +6128,60 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 # a prompt author should have to restate.
                 self.assertIn(typed, prompt)
 
+    def test_the_same_brief_does_not_ask_for_the_same_picture_every_run(self):
+        # Two Ideogram runs of one brief, different seeds, came back as
+        # the same thing: a wordmark, the product name as a logo with
+        # the second word filled with water, on a flat field. Different
+        # files, identical idea. The seed varies the rendering; only the
+        # prompt can vary the idea -- and it was the product name and
+        # nothing else, led by "the words set as the headline", which is
+        # a logo brief.
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Provider:
+            name = "stub"
+            supports_negative_prompt = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                from PIL import Image as _Image
+
+                sent.append((prompt, negative_prompt or ""))
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name: _Provider()
+        try:
+            for _ in range(6):
+                data = {
+                    "product_name": "HydroBoost", "market": "UK", "audience": "runners",
+                    "campaign_message": "Drive the summer with a refreshing drink",
+                    "upload_ai_enabled": "1", "upload_ai_allow_text": "1",
+                    "header": "", "description": "",
+                }
+                r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+                self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+
+        prompts = [p for p, _ in sent]
+        self.assertEqual(len(prompts), 6)
+        # More than one idea across six runs of an unchanged brief.
+        self.assertGreater(len(set(prompts)), 1, "every run asked for the same picture")
+        for prompt, negative in sent:
+            # The brief is in it, not just the product name...
+            self.assertIn("runners", prompt)
+            self.assertIn("Drive the summer with a refreshing drink", prompt)
+            # ...it leads with a photograph and sets the type OVER it...
+            self.assertTrue(prompt.startswith("advertising photograph:"), prompt)
+            self.assertIn('"HydroBoost" set as a headline over the photograph', prompt)
+            # ...the message is a theme, never quoted copy to letter...
+            self.assertNotIn('"Drive the summer', prompt)
+            # ...and the logo is excluded where exclusions work.
+            self.assertIn("wordmark", negative)
+
     def test_the_source_psd_download_carries_the_typed_copy(self):
         # Two PSDs ship per size: the rendered one (every layer baked to
         # pixels except the text layers inherited from the template) and

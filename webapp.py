@@ -24,6 +24,18 @@ from __future__ import annotations
 import io
 import json
 import os
+import random
+import sys
+from pathlib import Path
+
+# Packaged builds (windows/build_exe.ps1, PyInstaller) run from a folder
+# that holds the exe, and everything the user owns or the app writes --
+# .env, default_templates/, outputs/, downloads/ -- lives beside the exe
+# where they can see it. The read-only files that ship inside the bundle
+# (templates/, fonts/) live in PyInstaller's extraction dir instead.
+FROZEN = bool(getattr(sys, "frozen", False))
+BASE_DIR = Path(sys.executable).resolve().parent if FROZEN else Path(__file__).resolve().parent
+BUNDLE_DIR = Path(getattr(sys, "_MEIPASS", BASE_DIR))
 
 try:  # optional, same as src/main.py -- a missing python-dotenv isn't fatal
     from dotenv import load_dotenv
@@ -33,13 +45,14 @@ else:
     # The CLI has always read .env; the web app never did, so a token or
     # model set there was silently ignored and "HUGGINGFACE_API_TOKEN is
     # not set" came back from a form that had it configured all along.
-    load_dotenv()
+    # The path is explicit because dotenv's own search starts from this
+    # file, which inside a packaged build is not where the user's .env is.
+    load_dotenv(BASE_DIR / ".env")
 import re
 import secrets
 import shutil
 import uuid
 import zipfile
-from pathlib import Path
 
 from flask import Flask, abort, flash, redirect, render_template, request, send_file, url_for
 from PIL import Image
@@ -123,7 +136,6 @@ DEFAULT_LOGO_OPACITY_PERCENT = 100
 DEFAULT_BADGE_SCALE_PERCENT = 35
 DEFAULT_BADGE_OPACITY_PERCENT = 100
 
-BASE_DIR = Path(__file__).resolve().parent
 JOBS_DIR = BASE_DIR / "outputs" / "web"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -441,6 +453,62 @@ def _colour_word(rgb) -> str:
         + (entry[0][1] - green) ** 2
         + (entry[0][2] - blue) ** 2,
     )[1]
+
+
+# What the automatic backdrop prompt must not collapse into. With
+# nothing but a product name to go on, and asked for "the words set as
+# the headline", Ideogram produced the same thing on every run whatever
+# the seed: a wordmark, the product name as a logo with the second word
+# filled with water, on a flat field. Different files, identical idea.
+# The exclusion names that idea.
+LOGO_NEGATIVE_CLAUSE = (
+    "logo design, wordmark, lettermark, brand mark, typographic poster, "
+    "plain flat background, text-only layout"
+)
+
+# Compositions for the automatic backdrop to draw from, one per run.
+# The same brief on the same model with only the seed changing gives
+# the same concept -- the seed varies the rendering, not the idea. Each
+# of these is a different idea.
+BACKDROP_SCENES = (
+    "a dramatic product hero shot on a reflective surface with a splash frozen mid-air",
+    "a wide lifestyle photograph of the audience in motion outdoors at golden hour",
+    "an extreme close-up of the product's texture and droplets, shallow depth of field",
+    "an energetic action scene with the audience mid-effort, motion blur in the background",
+    "a bold studio still life with hard directional light and long shadows",
+    "an aerial or high-angle scene suggesting the campaign's setting, with open space",
+    "a moody low-key scene with a single shaft of light on the product",
+    "a bright, airy scene with the product surrounded by fresh natural elements",
+)
+
+
+def _backdrop_scene(product_name, campaign_message, audience, rng=None) -> str:
+    """One composition for this run's automatic backdrop, with the brief
+    folded into it.
+
+    The product name alone is what made every run the same picture. The
+    campaign message says what the ad is ABOUT, the audience says who is
+    in it, and the scene says how it is shot -- none of which were being
+    sent. The scene rotates per run so two runs of the same brief are two
+    ideas rather than two renderings of one.
+    """
+    chooser = rng or random
+    scene = chooser.choice(BACKDROP_SCENES)
+    pictured = "the audience" in scene
+    who = audience or "the target audience"
+    scene = scene.replace("the audience", who)
+    parts = [scene]
+    if product_name:
+        parts.append(f"featuring {product_name}")
+    if audience and not pictured:
+        # A scene without people in it still has an audience: it sets
+        # the styling, so the brief's audience always reaches Ideogram.
+        parts.append(f"styled for {audience}")
+    if campaign_message:
+        # Unquoted on purpose. Quoted text in an Ideogram prompt is a
+        # request to letter it; this is a theme, not copy to set.
+        parts.append(f"on the theme of {campaign_message.rstrip('.')}")
+    return ", ".join(parts)
 
 
 # What a palette request must NOT turn into. Sent as a negative prompt
@@ -793,7 +861,7 @@ def _snap_to_template_size(size, template_sizes) -> tuple:
 import datetime as _datetime
 
 _WATCHED_SOURCE_FILES = [
-    Path(__file__),
+    Path(sys.executable) if FROZEN else Path(__file__),
     BASE_DIR / "src" / "image_ops.py",
     BASE_DIR / "src" / "creative_render.py",
     BASE_DIR / "templates" / "index.html",
@@ -817,7 +885,7 @@ SIZE_PRESET_CHOICES = [
     ("broadcast", "Broadcast/video frame sizes (3) -- 1080p, 720p, 4K UHD"),
 ]
 
-app = Flask(__name__, template_folder=str(BASE_DIR / "templates"))
+app = Flask(__name__, template_folder=str(BUNDLE_DIR / "templates"))
 app.secret_key = os.environ.get("WEBAPP_SECRET_KEY", secrets.token_hex(16))
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB -- generous enough for a short product video
 # Jinja compiles a template once and caches it for the life of the
@@ -1745,16 +1813,24 @@ def generate():
             # colour, nothing behind them -- which is not a campaign
             # creative. The brief is a hero shot, or failing that a real
             # photographic scene, with the brand set over it.
+            # The scene first and the type second. Led by 'the words
+            # "Hydro Boost" set as the headline', Ideogram made the
+            # headline THE picture: a wordmark on a flat field, every
+            # run, whatever the seed. Led by a photograph, it makes a
+            # photograph and sets the words over it.
             upload_ai_prompt_text = upload_ai_prompt or (
-                f'advertising creative for {product_name or "the product"}, '
-                + (f'the words "{product_name}" set as the headline, ' if product_name else "")
-                + "a hero product image or a photographic background behind the type, "
+                f"advertising photograph: "
+                f"{_backdrop_scene(product_name, campaign_message, audience)}, "
+                + (
+                    f'with the words "{product_name}" set as a headline over the photograph, '
+                    if product_name else ""
+                )
                 + "bold headline typography, clean layout"
             )
         else:
             upload_ai_prompt_text = upload_ai_prompt or (
-                f"abstract background texture evoking {product_name or 'the product'}, "
-                "unbranded, subtle gradient, soft lighting"
+                f"{_backdrop_scene(product_name, campaign_message, audience)}, "
+                "unbranded, room for text, soft lighting"
             )
         # The ticked brand colours, whichever prompt is in play. This
         # went only into the full-ad prompt, so a backdrop generated
@@ -1788,7 +1864,12 @@ def generate():
                 upload_ai_width,
                 upload_ai_height,
                 allow_text=upload_ai_allow_text,
-                negative_extra=PALETTE_NEGATIVE_CLAUSE if brand_colors else None,
+                negative_extra=", ".join(
+                    clause for clause in (
+                        PALETTE_NEGATIVE_CLAUSE if brand_colors else None,
+                        LOGO_NEGATIVE_CLAUSE if upload_ai_allow_text else None,
+                    ) if clause
+                ) or None,
             )
             background_notes_pending = (
                 f"Campaign artwork generated with AI ({upload_ai_provider}) at "
@@ -4262,8 +4343,59 @@ def download_psd(job_id, filename):
     return send_file(file_path, as_attachment=True, download_name=stamped)
 
 
+def _free_port(preferred: int) -> int:
+    """The preferred port if nothing is listening on it, else the first
+    free one from the same fallback list run.sh / run.ps1 use. On a Mac
+    port 5000 is usually AirPlay's, and a packaged build has no shell
+    script in front of it to notice."""
+    import socket
+
+    for candidate in (preferred, 5050, 8080, 8000, 8765):
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+            try:
+                probe.bind(("127.0.0.1", candidate))
+            except OSError:
+                continue
+            return candidate
+    return preferred
+
+
+def _open_browser_when_up(url: str) -> None:
+    """Open the default browser once the server answers, from a thread
+    so the server itself is never held up."""
+    import threading
+    import time
+    import urllib.request
+    import webbrowser
+
+    def wait_then_open():
+        for _ in range(40):
+            time.sleep(0.5)
+            try:
+                urllib.request.urlopen(url, timeout=2).close()
+            except Exception:
+                continue
+            webbrowser.open(url)
+            return
+
+    threading.Thread(target=wait_then_open, daemon=True).start()
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    if FROZEN:
+        # A packaged build is double-clicked, not launched from a shell:
+        # pick a free port, say where the app is, and open it. The
+        # reloader is off because it restarts the process by re-running
+        # the interpreter with the script's path, which does not exist in
+        # a frozen build -- and there is no source to reload anyway.
+        port = _free_port(port)
+        url = f"http://127.0.0.1:{port}"
+        print(f"Creative Automation Pipeline -> {url}   (close this window to stop)")
+        print(f"Files live beside the app in: {BASE_DIR}")
+        _open_browser_when_up(url)
+        app.run(host="127.0.0.1", port=port, debug=False, use_reloader=False)
+        raise SystemExit(0)
     # Auto-reload on by default. This is a local dev tool, and the cost of
     # not reloading is invisible: an edited template or module keeps
     # serving the old behaviour, every symptom points at the change that

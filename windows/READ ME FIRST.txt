@@ -1,0 +1,27 @@
+Creative Automation Pipeline -- Windows
+
+1. Unzip this folder somewhere you can find it (Desktop, Documents).
+   Keep everything together: the .exe needs the _internal folder beside it.
+
+2. The Ideogram key. Rename ".env.example" to ".env" (or make a copy
+   called .env), open it in Notepad, find the line IDEOGRAM_API_KEY= and
+   paste the key after the =. Save. (Skip this to use the free
+   Pollinations backdrops instead.)
+
+3. Double-click CreativeAutomationPipeline.exe. A black window opens and
+   prints the address (http://127.0.0.1:5000 unless that port is busy);
+   your browser opens on it a moment later. Leave the black window open --
+   closing it stops the app.
+
+If Windows shows "Windows protected your PC" (SmartScreen), click
+"More info" and then "Run anyway". The exe is not code-signed; that
+warning is all it means.
+
+Where things go: finished creatives are in outputs\ and downloads\ beside
+the exe. The PSD templates applied to each size are in default_templates\
+-- drop your own in there, named for the size (e.g. mybrand-1080x1080.psd).
+
+If the browser doesn't open, read the address from the black window and
+paste it into any browser. If the window closes at once, run it from a
+Command Prompt (cd into the folder, then CreativeAutomationPipeline.exe)
+to see the error.

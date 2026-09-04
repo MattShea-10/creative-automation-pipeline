@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import re
+import sys
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, Union
 
@@ -303,7 +304,9 @@ VALID_FONT_FAMILIES = tuple(_FONT_FAMILIES.keys())
 # matter what font size was asked for, which is exactly the "text stuck
 # tiny" bug this bundling fixes. Bundling these files means font loading
 # never depends on what's installed on the host OS at all.
-_FONTS_DIR = Path(__file__).resolve().parent.parent / "fonts"
+# Inside a packaged build (PyInstaller) the fonts ship in the bundle's
+# extraction dir, not next to a source tree.
+_FONTS_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.parent)) / "fonts"
 
 _FONT_LOAD_WARNED = False
 

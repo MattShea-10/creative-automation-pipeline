@@ -38,7 +38,8 @@ it in `src/providers/__init__.py`. Nothing else in the pipeline changes.
 
 ## Running it locally
 
-**Before you start:** you need **Python 3.10 or newer**. Check with
+**Before you start:** unless you're using the Windows exe (Option A2,
+which needs nothing installed), you need **Python 3.10 or newer**. Check with
 `python3 --version` in a terminal. If it's missing or older, install it
 from https://www.python.org/downloads/ (on a Mac, `brew install
 python@3.12` also works). You also need an internet connection for the
@@ -64,6 +65,32 @@ Pollinations provider needs no key.
 
 To start it any later time: double-click the app. To stop it: Ctrl-C in
 the Terminal window.
+
+### Option A2 -- the Windows exe (no Python needed)
+
+Download `CreativeAutomationPipeline-windows.zip` from the repository's
+**Releases** page (or, for the newest build, from the latest **Windows
+exe** run under the **Actions** tab, in its *Artifacts* box). Then:
+
+1. Unzip it somewhere you can find it, and keep the folder together --
+   the exe needs the `_internal` folder beside it.
+2. **Add the key:** rename `.env.example` in that folder to `.env`, open it
+   in Notepad, find the line `IDEOGRAM_API_KEY=` and paste the key after
+   the `=`. Save.
+3. Double-click `CreativeAutomationPipeline.exe`. A black window prints
+   the address (`http://127.0.0.1:5000` unless that port is busy) and the
+   browser opens on it a moment later. Closing the black window stops
+   the app.
+
+If Windows shows *"Windows protected your PC"*, click **More info** and
+then **Run anyway** -- the exe isn't code-signed, and that's all the
+warning means. Creatives land in `outputs\` and `downloads\` beside the
+exe; the per-size PSD templates it applies are in `default_templates\`.
+
+The zip is built by GitHub Actions on a Windows runner from
+`windows/build_exe.ps1` on every push to `main`; pushing a tag such as
+`v1.1` attaches it to a Release. It can also be built on any Windows PC
+with `.\install.ps1` then `.\windows\build_exe.ps1`.
 
 ### Option B -- from the repository (Mac, Linux or Windows)
 
