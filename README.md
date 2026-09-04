@@ -36,10 +36,45 @@ just writing one more small class in `src/providers/` that implements
 `ImageProvider.generate(prompt, width, height) -> PIL.Image` and registering
 it in `src/providers/__init__.py`. Nothing else in the pipeline changes.
 
+## Installing
+
+One command sets everything up in a private virtual environment inside
+this folder -- nothing touches the system Python, nothing needs sudo, and
+it is safe to re-run.
+
+**macOS / Linux**
+
+```bash
+./install.sh     # Python 3.10+ check, .venv/, requirements, .env, optional tesseract check
+./run.sh         # starts the web app on http://127.0.0.1:5000 and opens it
+```
+
+**Windows (PowerShell)**
+
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # only if scripts are blocked
+.\install.ps1
+.\run.ps1
+```
+
+What the installer does, in order: finds a Python 3.10 or newer (`py`
+launcher on Windows, so the Store stub is never picked), creates `.venv/`,
+installs `requirements.txt` into it, proves the packages that matter for
+PSD work actually import (`aggdraw` for vector shapes, `scikit-image` for
+rebuilding a template's preview -- both fail silently at render time if
+missing, so they are checked here instead), creates `.env` from
+`.env.example` if you don't have one, and reports whether the optional
+`tesseract` OCR binary is present. Ideogram needs `IDEOGRAM_API_KEY` in
+`.env`; the default Pollinations provider needs no key at all.
+
+`PORT=8080 ./run.sh` (or `$env:PORT = 8080; .\run.ps1`) picks another
+port. Ctrl-C stops the server.
+
 ## How to run it
 
 ```bash
-python3 -m venv .venv && source .venv/bin/activate   # optional but recommended
+# Or by hand, without the installer:
+python3 -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
 
 # Run with the free, keyless default provider:
