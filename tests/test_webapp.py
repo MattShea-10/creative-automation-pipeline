@@ -2421,9 +2421,12 @@ class PaidProviderTest(unittest.TestCase):
             "HydroBoost", "Stay charged", "First 500", "Claim my spot", None, None,
             brand_colors=[(0, 87, 184), (255, 122, 0)],
         )
-        self.assertIn("using the brand palette", prompt)
-        self.assertIn("#0057b8 (blue)", prompt)
-        self.assertIn("#ff7a00 (orange)", prompt)
+        # Words, not hex, and phrased as where the colours GO. The hex
+        # version came back from Ideogram as a style-guide strip with
+        # "#D00606 #1332CD #FFFFFF" lettered under three swatches.
+        self.assertIn("blue and orange as the dominant colours of the scene", prompt)
+        self.assertNotIn("#0057b8", prompt)
+        self.assertNotIn("palette", prompt)
 
     def test_full_ad_prompt_says_nothing_about_colour_when_none_are_ticked(self):
         # An unticked swatch still holds a colour in the form. Sending it
@@ -2433,7 +2436,7 @@ class PaidProviderTest(unittest.TestCase):
         prompt = webapp._build_full_ad_prompt(
             "HydroBoost", "Stay charged", None, None, None, None, brand_colors=[]
         )
-        self.assertNotIn("brand palette", prompt)
+        self.assertNotIn("dominant colour", prompt)
 
     def test_full_ad_prompt_survives_an_empty_brief(self):
         import webapp
@@ -6107,10 +6110,18 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             sent = _re.search(r"Campaign artwork generated with AI \(mock\).*?prompt: \"(.*?)\"", page, _re.S)
             self.assertIsNotNone(sent, "no record of the prompt that was sent")
             prompt = sent.group(1)
-            self.assertIn("using the brand palette", prompt)
-            self.assertIn("#0057b8 (blue)", prompt)
+            self.assertIn("blue as the dominant colour of the scene", prompt)
+            # No hex, and no word that reads as "draw me a chart".
+            self.assertNotIn("#0057b8", prompt)
+            import webapp as _webapp
+            positive = prompt.split(_webapp.PALETTE_NEGATIVE_CLAUSE)[0]
+            self.assertNotIn("palette", positive)
+            # ...while the exclusion of exactly that chart rides along as
+            # a negative prompt (folded into the string by a provider
+            # without a real negative field, like the mock).
+            self.assertIn(_webapp.PALETTE_NEGATIVE_CLAUSE, prompt)
             # The unticked swatch stays out, whatever the form holds.
-            self.assertNotIn("#ff7a00", prompt)
+            self.assertNotIn("orange", prompt)
             if typed:
                 # A typed prompt keeps its words and gains the palette --
                 # the swatches are a separate instruction, not something

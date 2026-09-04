@@ -443,20 +443,49 @@ def _colour_word(rgb) -> str:
     )[1]
 
 
+# What a palette request must NOT turn into. Sent as a negative prompt
+# whenever brand colours are ticked -- see _brand_palette_phrase().
+PALETTE_NEGATIVE_CLAUSE = (
+    "color swatches, colour chips, palette strip, hex codes, color codes, "
+    "style guide, color reference chart"
+)
+
+
 def _brand_palette_phrase(brand_colors) -> str:
     """The ticked brand colours as a prompt clause, or "" when none are.
 
-    Hex plus a plain colour word for each: the hex is exact, the word is
-    what a model actually steers by. Only the ticked swatches arrive here
-    -- an unticked one still holds a colour in the form, and sending it
-    would be steering the picture by a value the user switched off.
+    Colour WORDS only, phrased as art direction for the scene. The first
+    version sent hex codes too, for precision -- and Ideogram rendered
+    exactly what it was given: a style-guide strip across the bottom of
+    the ad with "#D00606  #1332CD  #FFFFFF" printed under three swatches.
+    To an image model a hex code is not a colour, it is six characters
+    to letter, and "palette" beside it is a request for a chart. So the
+    hex stays in the results page for people, the words go to the model,
+    and the clause says where the colours go: into the picture. What it
+    must not become is in PALETTE_NEGATIVE_CLAUSE, on the channel that
+    actually works for "not this".
+
+    Only the ticked swatches arrive here -- an unticked one still holds a
+    colour in the form, and sending it would be steering the picture by
+    a value the user switched off.
     """
     if not brand_colors:
         return ""
-    swatches = ", ".join(
-        f"#{r:02x}{g:02x}{b:02x} ({_colour_word((r, g, b))})" for r, g, b in brand_colors
+    words = []
+    for rgb in brand_colors:
+        word = _colour_word(rgb)
+        if word not in words:
+            words.append(word)
+    if len(words) == 1:
+        return (
+            f"{words[0]} as the dominant colour of the scene, in the lighting, "
+            "surfaces and background"
+        )
+    named = ", ".join(words[:-1]) + " and " + words[-1]
+    return (
+        f"{named} as the dominant colours of the scene, in the lighting, "
+        "surfaces and background"
     )
-    return f"using the brand palette {swatches}"
 
 
 def _build_full_ad_prompt(
@@ -507,7 +536,10 @@ def _build_full_ad_prompt(
     return ", ".join(parts)
 
 
-def _generate_text_free(provider, prompt: str, width: int, height: int, allow_text: bool = False):
+def _generate_text_free(
+    provider, prompt: str, width: int, height: int, allow_text: bool = False,
+    negative_extra: str = None,
+):
     """Generate `prompt`, and regenerate if the result has text baked in.
 
     With `allow_text`, none of that happens: no negative prompt, no OCR
@@ -546,9 +578,24 @@ def _generate_text_free(provider, prompt: str, width: int, height: int, allow_te
     # Providers without such a field (Pollinations' GET endpoint) fold it
     # into the prompt themselves -- weaker, but it's that or nothing.
     negative = NO_TEXT_CLAUSE
+    if negative_extra:
+        negative = f"{negative}, {negative_extra}"
     if allow_text:
-        # One call, taken as it comes: nothing to steer away from and
-        # nothing to verify, so the retry budget stays unspent.
+        # One call, taken as it comes: nothing to verify, so the retry
+        # budget stays unspent. Lettering is wanted here, so the no-text
+        # clause stays out -- but a caller's own exclusion (the palette
+        # not becoming a swatch chart) still goes, on the channel that
+        # works for it.
+        if negative_extra:
+            image = provider.generate(
+                prompt, width=width, height=height, negative_prompt=negative_extra
+            )
+            shown = (
+                f"{prompt}  [excluded: {negative_extra}]"
+                if getattr(provider, "supports_negative_prompt", False)
+                else f"{prompt}, {negative_extra}"
+            )
+            return image, shown, 1, TextCheckResult(available=False)
         image = provider.generate(prompt, width=width, height=height)
         return image, prompt, 1, TextCheckResult(available=False)
     # The offline placeholder draws the prompt across its own gradient on
@@ -1741,6 +1788,7 @@ def generate():
                 upload_ai_width,
                 upload_ai_height,
                 allow_text=upload_ai_allow_text,
+                negative_extra=PALETTE_NEGATIVE_CLAUSE if brand_colors else None,
             )
             background_notes_pending = (
                 f"Campaign artwork generated with AI ({upload_ai_provider}) at "
@@ -2440,7 +2488,10 @@ def generate():
         for width, height in sizes:
             try:
                 ad_image = provider_for_ads.generate(
-                    full_ad_prompt, width=width, height=height
+                    full_ad_prompt,
+                    width=width,
+                    height=height,
+                    negative_prompt=PALETTE_NEGATIVE_CLAUSE if brand_colors else None,
                 )
             except ImageProviderError as exc:
                 background_warnings.append(
