@@ -5,6 +5,17 @@ $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 if (-not (Test-Path ".venv\Scripts\python.exe")) { Write-Host "No .venv\ yet -- run .\install.ps1 first." -ForegroundColor Red; exit 1 }
 $port = if ($env:PORT) { $env:PORT } else { "5000" }
+# Move off a busy port rather than opening the browser on something
+# that isn't this app.
+function PortBusy($p) {
+  try { $l = New-Object System.Net.Sockets.TcpListener([System.Net.IPAddress]::Loopback, [int]$p); $l.Start(); $l.Stop(); return $false } catch { return $true }
+}
+foreach ($cand in @($port, "5050", "8080", "8000", "8765")) {
+  if (-not (PortBusy $cand)) {
+    if ($cand -ne $port) { Write-Host "Port $port is in use -- using $cand instead." -ForegroundColor Yellow }
+    $port = $cand; break
+  }
+}
 $url = "http://127.0.0.1:$port"
 # Open the browser once the server answers, without blocking the server.
 Start-Job -ScriptBlock {
