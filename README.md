@@ -36,39 +36,108 @@ just writing one more small class in `src/providers/` that implements
 `ImageProvider.generate(prompt, width, height) -> PIL.Image` and registering
 it in `src/providers/__init__.py`. Nothing else in the pipeline changes.
 
-## Installing
+## Running it locally
 
-One command sets everything up in a private virtual environment inside
-this folder -- nothing touches the system Python, nothing needs sudo, and
-it is safe to re-run.
+**Before you start:** you need **Python 3.10 or newer**. Check with
+`python3 --version` in a terminal. If it's missing or older, install it
+from https://www.python.org/downloads/ (on a Mac, `brew install
+python@3.12` also works). You also need an internet connection for the
+first install.
 
-**macOS / Linux**
+If you've been given an Ideogram API key, you'll paste it in at the
+"Add the key" step below. Without one the app still runs -- the default
+Pollinations provider needs no key.
+
+### Option A -- from the disk image (Mac only)
+
+1. Open `CreativeAutomationPipeline.dmg`.
+2. **Right-click** `Creative Automation Pipeline.app` and choose **Open**,
+   then **Open** again in the warning. The app isn't Apple-signed, so this
+   is needed once; afterwards it's a normal double-click.
+3. A Terminal window opens and installs everything into
+   `~/Creative Automation Pipeline`. This takes a few minutes. When the
+   browser opens, you're running.
+4. **Add the key:** open `~/Creative Automation Pipeline/.env` in any text
+   editor (TextEdit is fine), find the line `IDEOGRAM_API_KEY=` and paste
+   the key after the `=`. Save. Then press **Ctrl-C** in the Terminal and
+   double-click the app again.
+
+To start it any later time: double-click the app. To stop it: Ctrl-C in
+the Terminal window.
+
+### Option B -- from the repository (Mac, Linux or Windows)
+
+**Mac / Linux** -- open Terminal and paste:
 
 ```bash
-./install.sh     # Python 3.10+ check, .venv/, requirements, .env, optional tesseract check
-./run.sh         # starts the web app on http://127.0.0.1:5000 and opens it
+git clone https://github.com/MattShea-10/creative-automation-pipeline.git
+cd creative-automation-pipeline
+./install.sh
 ```
 
-**Windows (PowerShell)**
+**Windows** -- open PowerShell and paste:
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass   # only if scripts are blocked
+git clone https://github.com/MattShea-10/creative-automation-pipeline.git
+cd creative-automation-pipeline
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 .\install.ps1
-.\run.ps1
 ```
 
-What the installer does, in order: finds a Python 3.10 or newer (`py`
-launcher on Windows, so the Store stub is never picked), creates `.venv/`,
-installs `requirements.txt` into it, proves the packages that matter for
-PSD work actually import (`aggdraw` for vector shapes, `scikit-image` for
-rebuilding a template's preview -- both fail silently at render time if
-missing, so they are checked here instead), creates `.env` from
-`.env.example` if you don't have one, and reports whether the optional
-`tesseract` OCR binary is present. Ideogram needs `IDEOGRAM_API_KEY` in
-`.env`; the default Pollinations provider needs no key at all.
+The installer ends with `Done`. Then:
 
-`PORT=8080 ./run.sh` (or `$env:PORT = 8080; .\run.ps1`) picks another
-port. Ctrl-C stops the server.
+1. **Add the key:** open the file `.env` inside the
+   `creative-automation-pipeline` folder in a text editor, find
+   `IDEOGRAM_API_KEY=` and paste the key after the `=`. Save.
+2. **Start it:** `./run.sh` (Mac/Linux) or `.\run.ps1` (Windows). It opens
+   in your browser at `http://127.0.0.1:5000` -- if that port is busy the
+   terminal says which one it used instead.
+
+To stop: **Ctrl-C** in the terminal. To start again later: just `./run.sh`
+-- no reinstall needed.
+
+### Using it
+
+Fill in the campaign brief at the top (product, market, audience,
+message). Then either:
+
+- **Custom hero image** -- tick it, choose an image, and optionally type
+  header, description and CTA text in the sections below. Generate renders
+  every size from the saved templates.
+- **Upload AI Image** -- tick it, choose **Ideogram** as the provider
+  (that's what the key is for), optionally write a prompt, and Generate.
+
+Each result has **Download layered PSD** (opens looking exactly like the
+preview) and **Download live-text PSD** (the same, with the text still
+editable in Photoshop).
+
+### If something goes wrong
+
+The message on screen normally says exactly what. The two common ones:
+
+- **"Ideogram rejected the key (401)"** -- the key in `.env` isn't right,
+  or the app was started before you saved it. Check the line, stop with
+  Ctrl-C, start again.
+- **"No Python 3.10+ found"** -- install Python from the link above and
+  run the installer again.
+
+### What the installer does
+
+`install.sh` / `install.ps1` find a Python 3.10 or newer (the `py`
+launcher on Windows, so the Store stub is never picked), create a private
+virtual environment in `.venv/`, install `requirements.txt` into it, prove
+that the packages that matter for PSD work actually import (`aggdraw` for
+vector shapes, `scikit-image` for rebuilding a template's preview -- both
+fail silently at render time if missing, so they are checked here), create
+`.env` from `.env.example` if there isn't one, and report whether the
+optional `tesseract` OCR binary is present. Nothing touches the system
+Python, nothing needs sudo, and it is safe to re-run. `PORT=8080 ./run.sh`
+(or `$env:PORT = 8080; .\run.ps1`) picks another port.
+
+**Building the disk image** (maintainers, on a Mac): `./macos/make_dmg.sh`
+packages a clean copy of the project -- tracked files plus whatever is in
+`default_templates/`, never `.env` -- with the double-clickable launcher
+described in Option A.
 
 ## How to run it
 

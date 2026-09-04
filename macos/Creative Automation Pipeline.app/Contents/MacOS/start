@@ -1,0 +1,47 @@
+#!/bin/bash
+# Double-click launcher. Lives on the .dmg next to a copy of the project.
+#
+# A disk image is read-only, and the app needs somewhere it can write
+# (.venv, outputs, .env) -- so the first launch copies the project into
+# the user's home folder, and every launch after that just starts what's
+# there. The actual work happens in a Terminal window, because the
+# installer takes a few minutes the first time and someone should be
+# able to see it happening.
+set -u
+
+APP_DIR="$(cd "$(dirname "$0")/../.." && pwd)"        # the .app bundle
+SOURCE="$(dirname "$APP_DIR")/creative-automation-pipeline"   # the project beside it on the dmg
+DEST="$HOME/Creative Automation Pipeline"
+
+fail() {
+  osascript -e "display dialog \"$1\" buttons {\"OK\"} default button 1 with icon stop with title \"Creative Automation Pipeline\"" >/dev/null 2>&1
+  exit 1
+}
+
+if [ ! -d "$DEST" ]; then
+  [ -d "$SOURCE" ] || fail "Couldn't find the project folder next to this app. Open the disk image and run it from there."
+  # Everything except the bits that are made by an install anyway.
+  mkdir -p "$DEST"
+  rsync -a --exclude '.venv' --exclude 'outputs' --exclude 'downloads' --exclude '__pycache__' \
+        --exclude '.git' --exclude '_to_delete' --exclude '_template_backups' \
+        "$SOURCE/" "$DEST/" || fail "Copying the project to '$DEST' failed."
+  chmod +x "$DEST/install.sh" "$DEST/run.sh" 2>/dev/null
+fi
+
+# First launch: install, then run. Later launches: just run. Both in a
+# Terminal window that stays open, so progress and any error are visible.
+if [ -x "$DEST/.venv/bin/python" ]; then
+  CMD="cd \"$DEST\" && ./run.sh"
+else
+  CMD="cd \"$DEST\" && ./install.sh && ./run.sh"
+fi
+
+# The command goes inside an AppleScript string, so its own double
+# quotes (the folder name has spaces) are escaped for AppleScript.
+ESCAPED="${CMD//\"/\\\"}"
+osascript <<APPLESCRIPT
+tell application "Terminal"
+  activate
+  do script "$ESCAPED"
+end tell
+APPLESCRIPT
