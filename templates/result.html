@@ -124,6 +124,9 @@
       Run <code>{{ job_id[:6] }}</code> &mdash; every PSD you download from this page ends in
       <code>_{{ job_id[:6] }}</code>, so you can tell it from an earlier run's copy in your Downloads folder.
     </p>
+    {% if spend_note %}
+      <p class="hint" style="margin-top: -0.4rem; color: #fcd34d;" data-role="spend-note">{{ spend_note }}</p>
+    {% endif %}
     {% if campaign_slot %}
       <p class="hint" style="margin-top: -0.4rem;">
         Every file below is named <code>..._campaign{{ campaign_slot }}_&lt;size&gt;</code> and the zip nests them

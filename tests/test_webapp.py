@@ -2317,6 +2317,40 @@ class PaidProviderTest(unittest.TestCase):
                     pass
         return seeds
 
+    def test_ideogram_rendering_speed_is_a_knob_with_a_price(self):
+        from src.providers.ideogram_provider import IdeogramProvider
+        from src.providers import get_provider
+        from src.providers.base import ImageProviderError
+        from unittest import mock
+
+        with mock.patch.dict(os.environ, {"IDEOGRAM_API_KEY": "k" * 32}):
+            self.assertEqual(IdeogramProvider().rendering_speed, "QUALITY")  # the provider's own default
+            self.assertAlmostEqual(IdeogramProvider(rendering_speed="turbo").cost_per_image, 0.03)
+            self.assertAlmostEqual(get_provider("ideogram", rendering_speed="DEFAULT").cost_per_image, 0.06)
+            with self.assertRaises(ImageProviderError):
+                IdeogramProvider(rendering_speed="ULTRA")
+            # And the choice goes out on the wire.
+            sent = {}
+
+            class _Resp:
+                status_code = 200
+                text = ""
+                content = b""
+
+                def json(self):
+                    return {"data": [{"url": "http://example.invalid/i.png"}]}
+
+            def fake_post(url, headers=None, json=None, timeout=None, files=None):
+                sent.update(json or {})
+                return _Resp()
+
+            with mock.patch("requests.post", fake_post), mock.patch("requests.get", fake_post):
+                try:
+                    IdeogramProvider(rendering_speed="TURBO").generate("x")
+                except Exception:
+                    pass
+            self.assertEqual(sent.get("rendering_speed"), "TURBO")
+
     def test_ideogram_sends_a_style_reference_as_a_multipart_file(self):
         # A reference picture can't go in a JSON body. With one attached
         # the request is multipart from the start, the picture rides in
@@ -4383,7 +4417,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         data.update(extra)
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        match = re.search(rb"prompt: &#34;(.{0,400}?)&#34;", r.data)
+        match = re.search(rb"prompt: &#34;(.{0,1500}?)&#34;", r.data)
         self.assertIsNotNone(match, "the results page must report the prompt actually used")
         return match.group(1).decode()
 
@@ -6402,6 +6436,117 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 "upload_ai_reference_url": "file:///etc/passwd",
             }, content_type="multipart/form-data", follow_redirects=True)
         self.assertIn("must start with http:// or https://", r.get_data(as_text=True))
+
+    def _paid_stub(self, sent, find=None):
+        class _Paid:
+            name = "stub"
+            supports_negative_prompt = True
+            cost_per_image = 0.09
+            rendering_speed = "QUALITY"
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, **kw):
+                from PIL import Image as _Image
+                sent.append(prompt)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+        return _Paid()
+
+    def test_the_results_page_says_what_the_run_cost(self):
+        # $15 of credit and no idea what a run spends is how a budget
+        # disappears. One line, from the provider's own price, counting
+        # every image the run actually asked for.
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: self._paid_stub(sent)
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            page = r.data.decode()
+            self.assertEqual(len(sent), 1)
+            self.assertIn("Ideogram spend this run: about $0.09 (1 image at Quality).", page)
+            # Full-ad mode is one image per size, and the line says so.
+            sent.clear()
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_full_ad": "1",
+                "sizes": ["default"], "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            page = r.data.decode()
+            cards = page.count('<div class="card">')
+            self.assertGreaterEqual(cards, 1)
+            self.assertEqual(len(sent), cards, "full-ad mode is one image per size")
+            self.assertIn(
+                f"Ideogram spend this run: about ${0.09 * cards:.2f} ({cards} image{'s' if cards != 1 else ''} at Quality).",
+                page,
+            )
+        finally:
+            _webapp.get_provider = original
+
+    def test_a_free_run_has_no_spend_line(self):
+        import webapp as _webapp
+
+        self._stage_real_template()
+        r = self.client.post("/generate", data={
+            "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_provider": "mock",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertNotIn("spend this run", r.data.decode())
+
+    def test_a_paid_provider_gets_one_retry_for_lettering_not_two(self):
+        # Every retry after a text-check failure is a paid image. Two
+        # retries meant a "one image" run could quietly bill three.
+        from unittest import mock
+        import webapp as _webapp
+        from src.text_check import TextCheckResult, TextFinding
+
+        self._stage_real_template()
+        sent = []
+        always_text = TextCheckResult(available=True, findings=[TextFinding("SALE", 0.99, (1, 1, 10, 5))])
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: self._paid_stub(sent)
+        try:
+            with mock.patch.object(_webapp, "find_text", lambda image: always_text), \
+                 mock.patch.object(_webapp, "remove_text", lambda image, result: (image, 0, "too large")):
+                r = self.client.post("/generate", data={
+                    "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        self.assertEqual(len(sent), 2, "one retry, not AI_TEXT_RETRIES")
+        self.assertIn("Ideogram spend this run: about $0.18 (2 images at Quality).", r.data.decode())
+
+    def test_the_rendering_speed_chosen_on_the_form_reaches_the_provider(self):
+        import webapp as _webapp
+
+        self._stage_real_template()
+        asked = []
+        original = _webapp.get_provider
+
+        def fake(name, rendering_speed=None):
+            asked.append(rendering_speed)
+            return self._paid_stub([])
+
+        _webapp.get_provider = fake
+        try:
+            for speed, expect in (("QUALITY", "QUALITY"), ("turbo", "TURBO"), ("", "TURBO"), ("ULTRA", "TURBO")):
+                asked.clear()
+                r = self.client.post("/generate", data={
+                    "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_speed": speed,
+                    "header": "", "description": "",
+                }, content_type="multipart/form-data")
+                self.assertEqual(r.status_code, 200)
+                self.assertEqual(set(asked), {expect}, f"form value {speed!r}")
+                # ...and comes back selected on Edit.
+                job_id = re.search(r'/edit/([0-9a-f]+)', r.data.decode()).group(1)
+                self.assertIn(f'value="{expect}" selected', self.client.get(f"/edit/{job_id}").get_data(as_text=True))
+        finally:
+            _webapp.get_provider = original
 
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp

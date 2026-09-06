@@ -32,12 +32,15 @@ DEFAULT_PROVIDER_NAME = PROVIDER_NAMES[0]
 ALL_PROVIDER_NAMES = PROVIDER_NAMES + ["mock"]
 
 
-def get_provider(name: str) -> ImageProvider:
+def get_provider(name: str, rendering_speed: str = None) -> ImageProvider:
+    """`rendering_speed` is Ideogram's TURBO / DEFAULT / QUALITY knob --
+    a third, two thirds or the full price per image. Ignored by the
+    providers that have no such setting."""
     name = (name or "pollinations").lower()
     if name == "pollinations":
         return PollinationsProvider()
     if name == "ideogram":
-        return IdeogramProvider()
+        return IdeogramProvider(rendering_speed=rendering_speed)
     if name == "mock":
         return MockImageProvider()
     raise ValueError(f"Unknown IMAGE_PROVIDER '{name}'. Choose from: {ALL_PROVIDER_NAMES}")

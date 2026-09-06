@@ -1017,6 +1017,22 @@
                Pollinations has no typography to speak of, so these switches are
                hidden rather than offered and disappointed. #}
             <div data-role="ideogram-only">
+            <div class="inline-controls" style="margin-top: 0.6rem;">
+              <label class="provider-control" for="upload_ai_speed" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Rendering</span>
+                <select class="font-family-select" id="upload_ai_speed" name="upload_ai_speed">
+                  {% for value, label in ideogram_speeds %}
+                    <option value="{{ value }}" {% if prefill.get('upload_ai_speed', default_ideogram_speed) == value %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Ideogram bills per image, and a run is normally one image (the backdrop is reused across every
+              size). Draft on Turbo, tick "Keep this image" while you adjust text and styling (free), and switch
+              to Quality only for the one you'll keep. "Generate the whole ad" below is one image per size.
+              The results page says exactly what each run cost.
+            </div>
             <div class="checkbox-row" style="margin-top: 0.5rem;">
               <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
               <span>Generate the whole ad <span style="font-weight: 400; color: var(--muted);">(headline, hero and CTA, from your campaign brief)</span></span>

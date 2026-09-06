@@ -28,6 +28,13 @@ from .base import ImageProvider, ImageProviderError
 API_BASE = "https://api.ideogram.ai"
 DEFAULT_MODEL = "ideogram-v3"
 
+# What Ideogram charges per image at each rendering speed (v3, USD),
+# from https://developer.ideogram.ai/api-reference/pricing. Turbo is a
+# rougher, faster pass that costs a third of Quality -- right for drafts,
+# wrong for the keeper.
+RENDERING_SPEEDS = {"TURBO": 0.03, "DEFAULT": 0.06, "QUALITY": 0.09}
+DEFAULT_RENDERING_SPEED = "QUALITY"
+
 # Ideogram's own accepted range for an explicit seed.
 SEED_MIN, SEED_MAX = 0, 2147483647
 
@@ -68,8 +75,15 @@ class IdeogramProvider(ImageProvider):
         model: str = None,
         timeout: int = 120,
         seed: int = None,
+        rendering_speed: str = None,
     ):
         self.api_token = api_token or os.environ.get("IDEOGRAM_API_KEY")
+        speed = (rendering_speed or os.environ.get("IDEOGRAM_RENDERING_SPEED") or DEFAULT_RENDERING_SPEED).upper()
+        if speed not in RENDERING_SPEEDS:
+            raise ImageProviderError(
+                f"Unknown Ideogram rendering speed {speed!r}; choose one of {', '.join(RENDERING_SPEEDS)}."
+            )
+        self.rendering_speed = speed
         # Left as None, every request gets a fresh seed -- see generate().
         # Set it to pin one image and get it back on a re-run.
         self.seed = seed
@@ -103,6 +117,10 @@ class IdeogramProvider(ImageProvider):
                 "an ideogram.ai subscription is billed separately and doesn't cover the API."
             )
 
+    @property
+    def cost_per_image(self) -> float:
+        return RENDERING_SPEEDS[self.rendering_speed]
+
     def generate(
         self,
         prompt: str,
@@ -123,7 +141,7 @@ class IdeogramProvider(ImageProvider):
         fields = {
             "prompt": prompt,
             "aspect_ratio": _closest_aspect(width, height),
-            "rendering_speed": "QUALITY",
+            "rendering_speed": self.rendering_speed,
             "num_images": 1,
             "seed": self.seed if self.seed is not None else random.randint(SEED_MIN, SEED_MAX),
         }

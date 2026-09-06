@@ -243,7 +243,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "product_name", "market", "audience", "campaign_message",
     "brand_color_1", "brand_color_2", "brand_color_3",
     "ai_hero_prompt", "ai_hero_provider",
-    "upload_ai_prompt", "upload_ai_provider", "upload_ai_headline",
+    "upload_ai_prompt", "upload_ai_provider", "upload_ai_speed", "upload_ai_headline",
     "upload_ai_background_style",
     "layer_header_glow_color", "layer_header_glow_size", "layer_header_glow_opacity",
     "layer_header_align", "layer_header_background_color", "layer_header_background_opacity",
@@ -653,6 +653,51 @@ def _build_full_ad_prompt(
     return ", ".join(parts)
 
 
+IDEOGRAM_SPEED_CHOICES = (
+    ("TURBO", "Turbo -- $0.03 an image, rougher (drafts)"),
+    ("DEFAULT", "Default -- $0.06 an image"),
+    ("QUALITY", "Quality -- $0.09 an image (the keeper)"),
+)
+DEFAULT_IDEOGRAM_SPEED = "TURBO"
+
+
+class _MeteredProvider:
+    """A provider with a running bill. Every generate() adds one image
+    at the provider's own price to `meter`, so the results page can say
+    what the run cost -- and the retry that a text check triggers is
+    counted like any other image, because it is one."""
+
+    def __init__(self, provider, meter: dict):
+        self._provider = provider
+        self._meter = meter
+
+    def __getattr__(self, name):
+        return getattr(self._provider, name)
+
+    def generate(self, *args, **kwargs):
+        image = self._provider.generate(*args, **kwargs)
+        self._meter["images"] += 1
+        self._meter["cost"] += float(getattr(self._provider, "cost_per_image", 0.0) or 0.0)
+        speeds = self._meter.setdefault("speeds", set())
+        speed = getattr(self._provider, "rendering_speed", None)
+        if speed:
+            speeds.add(speed)
+        return image
+
+
+def _spend_note(meter: dict) -> str:
+    """One line for the results page: what this run cost, or "" if it
+    was free."""
+    if not meter.get("cost"):
+        return ""
+    images = meter["images"]
+    speeds = ", ".join(sorted(s.title() for s in meter.get("speeds", ())))
+    return (
+        f"Ideogram spend this run: about ${meter['cost']:.2f} "
+        f"({images} image{'s' if images != 1 else ''}{f' at {speeds}' if speeds else ''})."
+    )
+
+
 def _generate_text_free(
     provider, prompt: str, width: int, height: int, allow_text: bool = False,
     negative_extra: str = None, style_reference: bytes = None,
@@ -734,7 +779,14 @@ def _generate_text_free(
     # regenerating an image that is text by design, and pay for several
     # seconds of OCR to learn nothing.
     verify = getattr(provider, "name", "") != "mock"
-    while attempts <= (AI_TEXT_RETRY_LIMIT if verify else 0):
+    retry_limit = AI_TEXT_RETRY_LIMIT if verify else 0
+    if getattr(provider, "cost_per_image", 0):
+        # Every retry here is a paid image. One more go when the first
+        # came back with lettering is worth it; a third is money spent
+        # on a prompt that has twice shown it wants to letter, and the
+        # paint-out afterwards is free.
+        retry_limit = min(retry_limit, 1)
+    while attempts <= retry_limit:
         # First attempt asks politely; every retry escalates, since the
         # polite phrasing has by then demonstrably failed for this prompt.
         # Escalation goes into the negative prompt too -- the same
@@ -1329,7 +1381,12 @@ def _ideogram_key_status() -> dict:
 
 @app.context_processor
 def _inject_settings():
-    return {"ideogram_key": _ideogram_key_status(), "env_file": str(ENV_FILE)}
+    return {
+        "ideogram_key": _ideogram_key_status(),
+        "env_file": str(ENV_FILE),
+        "ideogram_speeds": IDEOGRAM_SPEED_CHOICES,
+        "default_ideogram_speed": DEFAULT_IDEOGRAM_SPEED,
+    }
 
 
 def save_env_value(name: str, value: str, env_file: Path = None) -> Path:
@@ -1546,6 +1603,20 @@ def generate():
         upload_ai_allow_text = True
     upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
+    upload_ai_speed = (request.form.get("upload_ai_speed") or DEFAULT_IDEOGRAM_SPEED).upper()
+    if upload_ai_speed not in dict(IDEOGRAM_SPEED_CHOICES):
+        upload_ai_speed = DEFAULT_IDEOGRAM_SPEED
+    # Everything this run generates is billed through one meter.
+    spend = {"images": 0, "cost": 0.0}
+
+    def _provider(name):
+        try:
+            raw = get_provider(name, rendering_speed=upload_ai_speed)
+        except TypeError:
+            # A provider factory with the old one-argument signature
+            # (the test stubs, mostly): no speed knob to turn.
+            raw = get_provider(name)
+        return _MeteredProvider(raw, spend)
     # ALL_PROVIDER_NAMES, not PROVIDER_NAMES: the offline placeholder is
     # deliberately absent from the dropdowns but still accepted if asked
     # for by name, which is how the tests render without a network.
@@ -2064,7 +2135,7 @@ def generate():
                 upload_ai_attempts,
                 upload_ai_text,
             ) = _generate_text_free(
-                get_provider(upload_ai_provider),
+                _provider(upload_ai_provider),
                 upload_ai_prompt_text,
                 upload_ai_width,
                 upload_ai_height,
@@ -2083,7 +2154,7 @@ def generate():
                 f"\"{upload_ai_prompt_used}\"."
             )
             if upload_ai_reference_path is not None:
-                sent_as_file = getattr(get_provider(upload_ai_provider), "supports_style_reference", False)
+                sent_as_file = getattr(_provider(upload_ai_provider), "supports_style_reference", False)
                 background_notes_pending += (
                     f" Styled after the reference image {upload_ai_reference_path.name}"
                     + (
@@ -2591,7 +2662,7 @@ def generate():
             # campaign artwork does not want it stripped out of the hero
             # image standing in the same creative.
             generated_image, prompt, hero_attempts, hero_text = _generate_text_free(
-                get_provider(ai_hero_provider),
+                _provider(ai_hero_provider),
                 prompt,
                 hero_width,
                 hero_height,
@@ -2776,7 +2847,7 @@ def generate():
         # case; a full ad has nothing to degrade to, since the model IS
         # the creative here.
         try:
-            provider_for_ads = get_provider(upload_ai_provider)
+            provider_for_ads = _provider(upload_ai_provider)
         except ImageProviderError as exc:
             flash(f"Can't generate the whole ad with {upload_ai_provider}: {exc}")
             return redirect(url_for("index"))
@@ -4352,6 +4423,8 @@ def generate():
     # is a convenience, never something that should fail a render that
     # already succeeded.
     form_state_fields = {name: (request.form.get(name) or "") for name in EDIT_TEXT_FIELD_NAMES}
+    # As applied, not as typed: the form's select needs the normalised value to reselect.
+    form_state_fields["upload_ai_speed"] = upload_ai_speed
     # These already have a validated/defaulted Python variable (the raw
     # form field could be missing or invalid) -- prefer that so a radio
     # group's default always round-trips into a real checked option
@@ -4435,6 +4508,9 @@ def generate():
     # run -- is gone the moment the tab is closed, and diagnosing one
     # depends on somebody transcribing red text from a screenshot. Write
     # them next to the job's own output instead.
+    spend_note = _spend_note(spend)
+    if spend_note:
+        background_notes.append(spend_note)
     try:
         (job_dir / "run_report.json").write_text(
             json.dumps(
@@ -4455,6 +4531,7 @@ def generate():
         "result.html",
         job_id=job_id,
         creatives=creatives,
+        spend_note=spend_note,
         fit_mode=fit_mode,
         background_notes=background_notes,
         background_warnings=background_warnings,

@@ -38,6 +38,10 @@ class ImageProvider(ABC):
     # reference_look_phrase() in src/image_ops.py).
     supports_style_reference: bool = False
 
+    # What one image costs in USD, so the app can say what a run spent.
+    # Zero for the free and offline providers.
+    cost_per_image: float = 0.0
+
     @abstractmethod
     def generate(
         self,
