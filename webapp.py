@@ -1107,6 +1107,50 @@ def _save_upload(file_storage, dest_dir: Path) -> Path:
     return dest
 
 
+REFERENCE_FETCH_LIMIT = 25 * 1024 * 1024  # Ideogram's per-image cap
+
+
+def _fetch_web_image(url: str, dest_dir: Path) -> Path:
+    """Save the picture at `url` into `dest_dir` and return its path.
+
+    For a picture dragged in from a web page: the browser hands over the
+    image's address rather than a file, so the app goes and gets it.
+    http(s) only, must come back as an image, capped at what Ideogram
+    will accept. Raises ValueError with a message fit for the form.
+    """
+    import requests
+    from urllib.parse import urlparse
+
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError("The reference image address must start with http:// or https://.")
+    try:
+        resp = requests.get(
+            url, timeout=20, stream=True,
+            headers={"User-Agent": "Mozilla/5.0 (creative-automation-pipeline)"},
+        )
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Couldn't fetch the reference image: {exc}") from exc
+    if resp.status_code != 200:
+        raise ValueError(f"The reference image address returned HTTP {resp.status_code}.")
+    ctype = (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower()
+    ext = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}.get(ctype)
+    if ext is None:
+        raise ValueError(
+            f"That address isn't a PNG, JPEG or WebP image (it came back as {ctype or 'unknown'}). "
+            "Right-click the picture and copy the image address itself, not the page's."
+        )
+    data = b""
+    for chunk in resp.iter_content(64 * 1024):
+        data += chunk
+        if len(data) > REFERENCE_FETCH_LIMIT:
+            raise ValueError("The reference image is over 25 MB, which is more than Ideogram accepts.")
+    stem = secure_filename(Path(parsed.path).stem) or "web-reference"
+    dest = dest_dir / f"{stem}{ext}"
+    dest.write_bytes(data)
+    return dest
+
+
 def _carry_forward_upload(field_name, uploads_dir: Path, prior_job_dir, prior_form_state: dict):
     """When editing a prior job (see /edit/<job_id>) and no new file was
     chosen for `field_name` this time, reuse the file uploaded for it last
@@ -1826,6 +1870,7 @@ def generate():
     # in the prompt for every provider (see reference_look_phrase()).
     # Carried forward on Edit like the other uploads.
     upload_ai_reference_file = request.files.get("upload_ai_reference")
+    upload_ai_reference_url = (request.form.get("upload_ai_reference_url") or "").strip()
     if upload_ai_reference_file is not None and upload_ai_reference_file.filename:
         if not _allowed(upload_ai_reference_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
             flash(
@@ -1834,6 +1879,15 @@ def generate():
             )
             return redirect(url_for("index"))
         upload_ai_reference_path = _save_upload(upload_ai_reference_file, uploads_dir)
+    elif upload_ai_reference_url:
+        # Dragged from a web page, or an address pasted in. Fetched now
+        # and kept as a file from here on, so Edit carries it forward
+        # like any upload and the page never has to fetch it twice.
+        try:
+            upload_ai_reference_path = _fetch_web_image(upload_ai_reference_url, uploads_dir)
+        except ValueError as exc:
+            flash(str(exc))
+            return redirect(url_for("index"))
     elif request.form.get("upload_ai_reference_clear"):
         upload_ai_reference_path = None
     else:

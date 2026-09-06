@@ -983,7 +983,16 @@
               <label for="upload_ai_reference" style="font-weight: 400;">Reference image <span style="font-weight: 400; color: var(--muted);">(optional -- make the backdrop look like this)</span></label>
               <div class="drop-zone" data-role="reference-drop-zone">
                 <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
-                <div class="hint" style="margin: 0.2rem 0 0;">Drop a picture here or choose one. Its palette, lighting and mood are matched -- not its subject; the scene still comes from the brief.</div>
+                <input type="text" name="upload_ai_reference_url" data-role="reference-url" placeholder="...or drag a picture in from a web page, or paste an image address" value="" style="margin-top: 0.4rem;">
+                <div class="layer-image-cached" data-role="reference-url-preview" hidden style="margin-top: 0.4rem;">
+                  <img alt="Web image" data-role="reference-url-thumb">
+                  <div class="layer-image-cached-meta">
+                    <strong>From the web</strong>
+                    <span class="layer-image-cached-name" data-role="reference-url-name"></span>
+                  </div>
+                  <button type="button" class="clear-btn" data-role="reference-url-clear" title="Drop this web image">&times;</button>
+                </div>
+                <div class="hint" style="margin: 0.3rem 0 0;">Drop a picture here, choose a file, or drag one straight off a web page. Its palette, lighting and mood are matched -- not its subject; the scene still comes from the brief.</div>
               </div>
               {% if prefill_files.get('upload_ai_reference') %}
                 <div class="layer-image-cached" data-role="layer-cached-upload_ai_reference" data-prefill-hint style="margin-top: 0.4rem;">
@@ -1283,12 +1292,51 @@
       }
       var refZone = root.querySelector('[data-role="reference-drop-zone"]');
       if (refZone) {
+        var refUrl = refZone.querySelector('[data-role="reference-url"]');
+        var refPreview = refZone.querySelector('[data-role="reference-url-preview"]');
+        var refThumb = refZone.querySelector('[data-role="reference-url-thumb"]');
+        var refName = refZone.querySelector('[data-role="reference-url-name"]');
+        var showWebImage = function (url) {
+          refUrl.value = url;
+          if (refThumb) refThumb.src = url;
+          if (refName) refName.textContent = url.replace(/^https?:\/\//, "").slice(0, 60);
+          if (refPreview) refPreview.hidden = !url;
+          // One reference at a time: a web picture replaces a chosen file.
+          if (url && refInput) { refInput.value = ""; if (refChip) refChip.hidden = true; }
+        };
+        // A picture dragged off a web page arrives as its address, not a
+        // file -- a file input ignores it. Both kinds land on the zone.
         ["dragenter", "dragover"].forEach(function (evt) {
-          refZone.addEventListener(evt, function () { refZone.classList.add("is-dragover"); });
+          refZone.addEventListener(evt, function (e) { e.preventDefault(); refZone.classList.add("is-dragover"); });
         });
-        ["dragleave", "drop"].forEach(function (evt) {
-          refZone.addEventListener(evt, function () { refZone.classList.remove("is-dragover"); });
+        refZone.addEventListener("dragleave", function () { refZone.classList.remove("is-dragover"); });
+        refZone.addEventListener("drop", function (e) {
+          refZone.classList.remove("is-dragover");
+          var dt = e.dataTransfer;
+          if (!dt) return;
+          if (dt.files && dt.files.length && refInput) {
+            e.preventDefault();
+            refInput.files = dt.files;
+            refInput.dispatchEvent(new Event("change"));
+            showWebImage("");
+            return;
+          }
+          var url = (dt.getData("text/uri-list") || dt.getData("text/plain") || "").split("\n")[0].trim();
+          if (!url) {
+            // Some browsers only give the <img> markup.
+            var html = dt.getData("text/html") || "";
+            var m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+            if (m) url = m[1];
+          }
+          if (/^https?:\/\//i.test(url)) { e.preventDefault(); showWebImage(url); }
         });
+        if (refUrl) {
+          refUrl.addEventListener("change", function () { showWebImage(refUrl.value.trim()); });
+          refUrl.addEventListener("paste", function () { setTimeout(function () { showWebImage(refUrl.value.trim()); }, 0); });
+        }
+        var refUrlClear = refZone.querySelector('[data-role="reference-url-clear"]');
+        if (refUrlClear) refUrlClear.addEventListener("click", function () { showWebImage(""); });
+        if (refInput) refInput.addEventListener("change", function () { if (refInput.value) showWebImage(""); });
       }
 
       var customHeroToggle = root.querySelector('[data-role="custom-hero-toggle"]');

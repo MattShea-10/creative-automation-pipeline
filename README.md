@@ -133,9 +133,10 @@ message). Then either:
 - **Upload AI Image** -- tick it, choose **Ideogram** as the provider
   (that's what the key is for), optionally write a prompt, and Generate.
   To make the backdrop look like a picture you already have, drop it on
-  the **Reference image** box under the prompt: its palette, lighting and
-  mood are matched (not its subject -- the scene still comes from the
-  brief). With Ideogram the picture itself goes to the model as a style
+  the **Reference image** box under the prompt -- a file from your
+  computer, a picture dragged straight off a web page, or a pasted image
+  address (the app fetches it). Its palette, lighting and mood are
+  matched (not its subject -- the scene still comes from the brief). With Ideogram the picture itself goes to the model as a style
   reference; with Pollinations, which only accepts web addresses for a
   reference, the app describes the picture's look in words in the prompt
   instead, so expect a similar feel rather than a close match.

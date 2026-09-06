@@ -6261,6 +6261,87 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         page = r.data.decode()
         self.assertIn("described in the prompt -- pollinations can", page)
 
+    def test_a_picture_dragged_from_a_web_page_is_fetched_and_used_as_the_reference(self):
+        # A browser hands a drop target the image's ADDRESS, not a file,
+        # so the form carries it as upload_ai_reference_url and the app
+        # fetches it. From then on it is a file like any upload: kept on
+        # Edit, shown on the results page by name.
+        from unittest import mock
+        import webapp as _webapp
+
+        self._stage_real_template()
+        png = self._reference_png()
+        sent = []
+
+        class _Ideogramish:
+            name = "stub"
+            supports_style_reference = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, style_reference=None):
+                from PIL import Image as _Image
+                sent.append((prompt, style_reference))
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        class _Resp:
+            status_code = 200
+            headers = {"Content-Type": "image/png"}
+
+            def iter_content(self, n):
+                yield png
+
+        fetched = []
+
+        def fake_get(url, **kw):
+            fetched.append(url)
+            return _Resp()
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name: _Ideogramish()
+        try:
+            with mock.patch("requests.get", fake_get):
+                r = self.client.post("/generate", data={
+                    "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                    "upload_ai_reference_url": "https://example.com/looks/sunset-board.png",
+                }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        self.assertEqual(fetched, ["https://example.com/looks/sunset-board.png"])
+        self.assertEqual(sent[0][1], png)
+        self.assertIn("navy", sent[0][0])
+        page = r.data.decode()
+        self.assertIn("Styled after the reference image sunset-board.png", page)
+        # Kept on Edit under the same chip as an uploaded reference.
+        job_id = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+        self.assertIn("sunset-board.png", self.client.get(f"/edit/{job_id}").get_data(as_text=True))
+
+    def test_a_web_address_that_is_not_an_image_is_refused_with_a_reason(self):
+        from unittest import mock
+
+        self._stage_real_template()
+
+        class _Resp:
+            status_code = 200
+            headers = {"Content-Type": "text/html; charset=utf-8"}
+
+            def iter_content(self, n):
+                yield b"<html>"
+
+        with mock.patch("requests.get", lambda url, **kw: _Resp()):
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "upload_ai_reference_url": "https://example.com/some-page",
+            }, content_type="multipart/form-data", follow_redirects=True)
+        page = r.get_data(as_text=True)
+        self.assertIn("isn&#39;t a PNG, JPEG or WebP image", page.replace("&#x27;", "&#39;"))
+        # And a non-web address never leaves the machine at all.
+        with mock.patch("requests.get", lambda url, **kw: self.fail("must not fetch")):
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "upload_ai_reference_url": "file:///etc/passwd",
+            }, content_type="multipart/form-data", follow_redirects=True)
+        self.assertIn("must start with http:// or https://", r.get_data(as_text=True))
+
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp
 
