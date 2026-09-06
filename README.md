@@ -173,7 +173,10 @@ saying exactly what that run spent.
 
 ### If something goes wrong
 
-The message on screen normally says exactly what. The two common ones:
+The message on screen normally says exactly what, and the form comes
+back with everything you typed and attached still in place -- a failed
+run is kept as a draft and reopened, so fix the one thing and press
+Generate again. The two common ones:
 
 - **"Ideogram rejected the key (401)"** -- the key in `.env` isn't right,
   or the app was started before you saved it. Check the line, stop with

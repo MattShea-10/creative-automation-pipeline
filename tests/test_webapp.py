@@ -495,7 +495,7 @@ class WebAppSmokeTest(unittest.TestCase):
         # (not just omitted; see _CampaignBriefAutoFillClient's docstring
         # for why omitted vs. explicitly-blank matters here) must flash
         # and redirect without ever reaching creative generation.
-        before = set(webapp.JOBS_DIR.glob("*")) if webapp.JOBS_DIR.is_dir() else set()
+        before = {p for p in webapp.JOBS_DIR.glob("*") if not p.name.startswith("draft_")} if webapp.JOBS_DIR.is_dir() else set()
         data = {
             "hero_image": (self._sample_image_bytes(), "hero.png"),
             "sizes": ["default"],
@@ -512,7 +512,7 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertIn(b"Campaign brief is required", r.data)
         for needle in (b"Product name", b"Market", b"Audience", b"Campaign message"):
             self.assertIn(needle, r.data)
-        after = set(webapp.JOBS_DIR.glob("*")) if webapp.JOBS_DIR.is_dir() else set()
+        after = {p for p in webapp.JOBS_DIR.glob("*") if not p.name.startswith("draft_")} if webapp.JOBS_DIR.is_dir() else set()  # a kept draft is not a job
         self.assertEqual(before, after)  # no job directory was created
 
     def test_generate_with_one_blank_campaign_brief_field_names_just_that_field(self):
@@ -536,7 +536,7 @@ class WebAppSmokeTest(unittest.TestCase):
     def test_generate_with_profanity_in_campaign_message_is_blocked(self):
         # Profanity is a hard gate, same class of thing as a missing
         # campaign-brief field -- no job directory should be created.
-        before = set(webapp.JOBS_DIR.glob("*")) if webapp.JOBS_DIR.is_dir() else set()
+        before = {p for p in webapp.JOBS_DIR.glob("*") if not p.name.startswith("draft_")} if webapp.JOBS_DIR.is_dir() else set()
         data = {
             "hero_image": (self._sample_image_bytes(), "hero.png"),
             "sizes": ["default"],
@@ -549,7 +549,7 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"language we can", r.data)
         self.assertIn(b"Campaign message", r.data)
-        after = set(webapp.JOBS_DIR.glob("*")) if webapp.JOBS_DIR.is_dir() else set()
+        after = {p for p in webapp.JOBS_DIR.glob("*") if not p.name.startswith("draft_")} if webapp.JOBS_DIR.is_dir() else set()  # a kept draft is not a job
         self.assertEqual(before, after)  # no job directory was created
 
     def test_generate_with_profanity_in_header_names_that_field(self):
@@ -6746,6 +6746,78 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             self.assertIn("fine print", negative)
             self.assertIn("demographic text", negative)
         self.assertIn("Whole ad on Turbo", r.data.decode())
+
+    def test_a_failed_submission_comes_back_with_the_brief_and_files_still_filled_in(self):
+        # An Ideogram error (or a wrong file type, or a size that won't
+        # parse) used to bounce to a blank form. The brief is now kept
+        # as a draft and the form reopens from it with the error on top.
+        import webapp as _webapp
+
+        self._stage_real_template()
+        original = _webapp.get_provider
+
+        def broken(name, rendering_speed=None):
+            from src.providers.base import ImageProviderError
+            raise ImageProviderError("Ideogram says the API account has no credit (402)")
+
+        _webapp.get_provider = broken
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "market": "UK", "audience": "runners 25-34",
+                "campaign_message": "Rehydrate now", "upload_ai_enabled": "1", "upload_ai_full_ad": "1",
+                "upload_ai_provider": "ideogram", "upload_ai_speed": "QUALITY", "layer_cta_text": "Shop now",
+                "header": "", "description": "",
+                "upload_ai_reference": (io.BytesIO(self._reference_png()), "moodboard.png"),
+            }, content_type="multipart/form-data", follow_redirects=False)
+        finally:
+            _webapp.get_provider = original
+        self.assertEqual(r.status_code, 302)
+        self.assertIn("/edit/draft_", r.headers["Location"])
+        draft_id = r.headers["Location"].rsplit("/", 1)[1]
+        page = self.client.get(f"/edit/{draft_id}").get_data(as_text=True)
+        self.assertIn("no credit (402)", page)  # the error, on top
+        for value in ("HydroBoost", "runners 25-34", "Shop now"):
+            self.assertIn(f'value="{value}"', page)
+        self.assertIn(">Rehydrate now</textarea>", page)
+        self.assertIn('value="QUALITY" selected', page)
+        self.assertIn('name="upload_ai_full_ad" value="1" checked', page)
+        self.assertIn("moodboard.png", page)  # the upload survived too
+        self.assertIn(f'name="edit_job_id" value="{draft_id}"', page)
+
+        # Resubmitting from the draft works, carries the file, and tidies the draft away.
+        sent = []
+
+        class _Fine:
+            name = "stub"
+            supports_style_reference = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, style_reference=None):
+                from PIL import Image as _Image
+                sent.append(style_reference)
+                return _Image.new("RGB", (width or 64, height or 64), (10, 20, 30))
+
+        _webapp.get_provider = lambda name, rendering_speed=None: _Fine()
+        try:
+            r2 = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "edit_job_id": draft_id,
+            }, content_type="multipart/form-data")
+        finally:
+            _webapp.get_provider = original
+        self.assertEqual(r2.status_code, 200)
+        self.assertTrue(sent and sent[0], "the draft's reference image should carry forward")
+        self.assertFalse((webapp.JOBS_DIR / draft_id).exists(), "the draft should be cleaned up after a successful run")
+
+    def test_a_bad_file_type_keeps_the_brief_too(self):
+        self._stage_real_template()
+        r = self.client.post("/generate", data={
+            "product_name": "HydroBoost", "campaign_message": "Keep me",
+            "upload_ai_enabled": "1", "header": "", "description": "",
+            "upload_ai_reference": (io.BytesIO(b"not an image"), "notes.txt"),
+        }, content_type="multipart/form-data", follow_redirects=True)
+        page = r.get_data(as_text=True)
+        self.assertIn("isn&#39;t a supported file type", page.replace("&#x27;", "&#39;"))
+        self.assertIn(">Keep me</textarea>", page)
 
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp

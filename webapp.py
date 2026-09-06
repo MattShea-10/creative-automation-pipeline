@@ -1296,6 +1296,16 @@ def _load_session_campaigns(session_id, fallback_job_id):
         "prefill_files": {},
         "edit_job_id": fallback_job_id,
     }]
+    # The job's own saved form is the fallback's content: a draft kept
+    # from a failed submission has no session index, and a run from
+    # before session tracking has none either -- both still have their
+    # fields to reopen.
+    try:
+        own = json.loads((JOBS_DIR / fallback_job_id / "form_state.json").read_text())
+        fallback[0]["prefill"] = own.get("fields") or {}
+        fallback[0]["prefill_files"] = own.get("files") or {}
+    except (OSError, ValueError, TypeError):
+        pass
     if not session_id:
         return fallback
     index_path = _session_index_path(session_id)
@@ -1556,6 +1566,73 @@ def generate_reload():
     return redirect(url_for("index"))
 
 
+def _keep_submission(message: str):
+    """A failed /generate that keeps what was typed.
+
+    Every exit that used to flash and send the person back to a blank
+    form now saves the submission as a draft -- the text fields as they
+    were, every uploaded file copied aside -- and reopens the form from
+    it, exactly the way Edit reopens a finished run. So an Ideogram
+    outage, a missing key, a wrong file type or a size that won't parse
+    costs one click, not a retyped campaign brief. Drafts live under
+    outputs/web/draft_*, hold no creatives, and are never listed as runs.
+    """
+    draft_id = f"draft_{uuid.uuid4().hex[:12]}"
+    draft_dir = JOBS_DIR / draft_id
+    uploads_dir = draft_dir / "uploads"
+    try:
+        uploads_dir.mkdir(parents=True, exist_ok=True)
+        fields = {}
+        for key in request.form:
+            values = request.form.getlist(key)
+            fields[key] = values[0] if len(values) == 1 else values
+        for name in EDIT_CHECKBOX_FIELD_NAMES:
+            fields[name] = bool(request.form.get(name))
+        files = {}
+        for key in request.files:
+            uploads = [f for f in request.files.getlist(key) if f is not None and f.filename]
+            if not uploads:
+                continue
+            for upload in uploads:
+                # Most of these were already saved once by the time the
+                # failure happened, which leaves the stream at its end --
+                # and a second save from there is an empty file.
+                try:
+                    upload.stream.seek(0)
+                except Exception:  # noqa: BLE001
+                    pass
+            if key == "upload_ai_reference":
+                # The mood board's pictures go to their numbered slots,
+                # which is where Edit looks for them.
+                for slot, upload in zip(REFERENCE_SLOTS, uploads):
+                    saved = _save_upload(upload, uploads_dir)
+                    files[slot] = saved.relative_to(uploads_dir).as_posix()
+            else:
+                saved = _save_upload(uploads[0], uploads_dir)
+                files[key] = saved.relative_to(uploads_dir).as_posix()
+        try:
+            campaign_slot = int((request.form.get("campaign_slot") or "1").strip())
+        except ValueError:
+            campaign_slot = 1
+        (draft_dir / "form_state.json").write_text(
+            json.dumps(
+                {
+                    "fields": fields,
+                    "files": files,
+                    "session_id": (request.form.get("session_id") or "").strip() or uuid.uuid4().hex,
+                    "campaign_slot": campaign_slot,
+                    "draft": True,
+                },
+                indent=2,
+            )
+        )
+    except Exception:  # noqa: BLE001 -- keeping the form is a courtesy, never a second failure
+        flash(message)
+        return redirect(url_for("index"))
+    flash(message)
+    return redirect(url_for("edit", job_id=draft_id))
+
+
 @app.route("/generate", methods=["POST"])
 def generate():
     # Editing a prior job (see /edit/<job_id>) carries a hidden
@@ -1565,7 +1642,7 @@ def generate():
     edit_job_id = (request.form.get("edit_job_id") or "").strip() or None
     prior_job_dir = None
     prior_form_state: dict = {}
-    if edit_job_id and re.fullmatch(r"[0-9a-f]{32}", edit_job_id):
+    if edit_job_id and re.fullmatch(r"(draft_)?[0-9a-f]{12,32}", edit_job_id):
         candidate_dir = JOBS_DIR / edit_job_id
         state_path = candidate_dir / "form_state.json"
         if state_path.is_file():
@@ -1579,11 +1656,10 @@ def generate():
     hero_file = request.files.get("hero_image")
     hero_fresh = hero_file is not None and bool(hero_file.filename)
     if hero_fresh and not _allowed(hero_file.filename, SUPPORTED_EXTENSIONS):
-        flash(
+        return _keep_submission(
             f"'{hero_file.filename}' isn't a supported file type. Accepted: "
             + ", ".join(SUPPORTED_EXTENSIONS)
         )
-        return redirect(url_for("index"))
 
     # AI-generated hero image -- an explicitly opted-in fallback for
     # whatever size(s) end up with no uploaded hero image and no matching
@@ -1749,12 +1825,11 @@ def generate():
         if not value
     ]
     if missing_brief_fields:
-        flash(
+        return _keep_submission(
             "Campaign brief is required -- please fill in: "
             + ", ".join(missing_brief_fields)
             + "."
         )
-        return redirect(url_for("index"))
 
     # Profanity check -- blocks generation outright, same as the campaign
     # brief being incomplete, rather than just a warning on the results
@@ -1777,12 +1852,11 @@ def generate():
     ]
     flagged_fields = [label for label, value in profanity_fields if value and check_profanity(value)]
     if flagged_fields:
-        flash(
+        return _keep_submission(
             "That contains language we can't allow through -- please edit: "
             + ", ".join(flagged_fields)
             + "."
         )
-        return redirect(url_for("index"))
 
     # Brand colors -- up to three, each independently opt-in (a swatch
     # with nothing checked contributes nothing; there's no meaningful
@@ -1834,8 +1908,7 @@ def generate():
     try:
         sizes = parse_sizes(",".join(spec_parts)) if spec_parts else list(DEFAULT_SIZES)
     except ValueError as exc:
-        flash(f"Couldn't parse the sizes you entered: {exc}")
-        return redirect(url_for("index"))
+        return _keep_submission(f"Couldn't parse the sizes you entered: {exc}")
 
     job_id = uuid.uuid4().hex
     job_dir = JOBS_DIR / job_id
@@ -1884,11 +1957,10 @@ def generate():
         psd_cleared = bool(request.form.get(f"psd_size_{i}_clear"))
         if psd_file_fresh:
             if not _allowed(psd_file.filename, ALLOWED_PSD_TEMPLATE_EXTENSIONS):
-                flash(
+                return _keep_submission(
                     f"PSD template row {i}: '{psd_file.filename}' isn't a supported file type. Accepted: "
                     + ", ".join(ALLOWED_PSD_TEMPLATE_EXTENSIONS)
                 )
-                return redirect(url_for("index"))
             psd_path = _save_upload(psd_file, uploads_dir)
             fresh_psd_uploads.append((f"PSD template row {i}", psd_path))
         elif psd_cleared:
@@ -1901,21 +1973,17 @@ def generate():
         if not psd_size_raw and not psd_file_provided:
             continue
         if psd_file_provided and not psd_size_raw:
-            flash(f"PSD template row {i}: choose a target size (e.g. 728x480) for the uploaded PSD file.")
-            return redirect(url_for("index"))
+            return _keep_submission(f"PSD template row {i}: choose a target size (e.g. 728x480) for the uploaded PSD file.")
         if psd_size_raw and not psd_file_provided:
-            flash(f"PSD template row {i}: you entered a size ({psd_size_raw}) but didn't attach a .psd file.")
-            return redirect(url_for("index"))
+            return _keep_submission(f"PSD template row {i}: you entered a size ({psd_size_raw}) but didn't attach a .psd file.")
         try:
             psd_width, psd_height = parse_size(psd_size_raw)
         except ValueError as exc:
-            flash(f"PSD template row {i}: {exc}")
-            return redirect(url_for("index"))
+            return _keep_submission(f"PSD template row {i}: {exc}")
         try:
             psd_templates[(psd_width, psd_height)] = open_as_rgb(psd_path)
         except ValueError as exc:
-            flash(f"PSD template row {i}: {exc}")
-            return redirect(url_for("index"))
+            return _keep_submission(f"PSD template row {i}: {exc}")
         psd_template_paths[(psd_width, psd_height)] = psd_path
 
     # "Quick campaign" single-input mode: upload just the one flagship
@@ -1926,11 +1994,10 @@ def generate():
     content_psd_fresh = content_psd_file is not None and bool(content_psd_file.filename)
     if content_psd_fresh:
         if not _allowed(content_psd_file.filename, ALLOWED_PSD_TEMPLATE_EXTENSIONS):
-            flash(
+            return _keep_submission(
                 f"728x480 content PSD: '{content_psd_file.filename}' isn't a supported file type. "
                 "Accepted: " + ", ".join(ALLOWED_PSD_TEMPLATE_EXTENSIONS)
             )
-            return redirect(url_for("index"))
         content_psd_path = _save_upload(content_psd_file, uploads_dir)
         fresh_psd_uploads.append(("728x480 content PSD", content_psd_path))
     else:
@@ -1941,8 +2008,7 @@ def generate():
         try:
             content_psd_image = open_as_rgb(content_psd_path)
         except ValueError as exc:
-            flash(f"728x480 content PSD: {exc}")
-            return redirect(url_for("index"))
+            return _keep_submission(f"728x480 content PSD: {exc}")
         # The upload renders as its own size (see the size_templates merge
         # below) *and* pulls in whatever's already saved in
         # default_templates/ -- "Output sizes"/"Custom sizes" and the
@@ -1959,11 +2025,10 @@ def generate():
     upload_hero_fresh = upload_hero_file is not None and bool(upload_hero_file.filename)
     if upload_hero_fresh:
         if not _allowed(upload_hero_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
-            flash(
+            return _keep_submission(
                 f"Campaign hero image: '{upload_hero_file.filename}' isn't a supported file type. "
                 "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
             )
-            return redirect(url_for("index"))
         upload_hero_path = _save_upload(upload_hero_file, uploads_dir)
     elif request.form.get("upload_hero_image_clear"):
         upload_hero_path = None
@@ -1976,8 +2041,7 @@ def generate():
         try:
             upload_hero_image = Image.open(upload_hero_path).convert("RGBA")
         except Exception as exc:  # noqa: BLE001
-            flash(f"Couldn't read the campaign hero image: {exc}")
-            return redirect(url_for("index"))
+            return _keep_submission(f"Couldn't read the campaign hero image: {exc}")
         # Like a content PSD upload, this drives a templated batch: the
         # sizes come from default_templates/, not from the size pickers.
         sizes = []
@@ -1994,11 +2058,10 @@ def generate():
     ]
     for upload in fresh_files:
         if not _allowed(upload.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
-            flash(
+            return _keep_submission(
                 f"Reference image: '{upload.filename}' isn't a supported file type. "
                 "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
             )
-            return redirect(url_for("index"))
         upload_ai_reference_paths.append(_save_upload(upload, uploads_dir))
     for url in (u.strip() for u in request.form.getlist("upload_ai_reference_url")):
         if not url:
@@ -2009,8 +2072,7 @@ def generate():
         try:
             upload_ai_reference_paths.append(_fetch_web_image(url, uploads_dir))
         except ValueError as exc:
-            flash(str(exc))
-            return redirect(url_for("index"))
+            return _keep_submission(str(exc))
     for slot in REFERENCE_SLOTS:
         if request.form.get(f"{slot}_clear"):
             continue
@@ -2032,8 +2094,7 @@ def generate():
             upload_ai_reference_images.append(Image.open(path).convert("RGB"))
             upload_ai_reference_bytes_list.append(path.read_bytes())
         except Exception as exc:  # noqa: BLE001
-            flash(f"Couldn't read the reference image {path.name}: {exc}")
-            return redirect(url_for("index"))
+            return _keep_submission(f"Couldn't read the reference image {path.name}: {exc}")
     upload_ai_reference_image = _mood_board(upload_ai_reference_images) if upload_ai_reference_images else None
     # One picture goes as bytes, a board as a list -- the provider takes either.
     upload_ai_reference_bytes = (
@@ -2318,11 +2379,10 @@ def generate():
     for psd_label, psd_path_to_scan in fresh_psd_uploads:
         for layer_name, layer_text in get_psd_text_layers(psd_path_to_scan).items():
             if check_profanity(layer_text):
-                flash(
+                return _keep_submission(
                     f"{psd_label}: the '{layer_name}' text layer contains language we can't allow "
                     "through -- please edit it in the PSD and re-upload."
                 )
-                return redirect(url_for("index"))
 
     background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
@@ -2413,14 +2473,13 @@ def generate():
             name for name in REQUIRED_PSD_LAYERS if name not in template_layer_boxes
         ]
         if missing_layers:
-            flash(
+            return _keep_submission(
                 f"{size_label(template_width, template_height)} template "
                 f"({Path(template_path).name}) is missing required layer(s): "
                 + ", ".join(missing_layers)
                 + ". Every PSD template needs 'logo', 'description', and 'product' layers "
                 "(named exactly that, case-insensitive)."
             )
-            return redirect(url_for("index"))
 
     # Layer overrides -- lives in the PSD section only: swap the
     # description text, logo image, CTA image, or product image, applied
@@ -2603,11 +2662,10 @@ def generate():
         layer_fresh = layer_file is not None and bool(layer_file.filename)
         if layer_fresh:
             if not _allowed(layer_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
-                flash(
+                return _keep_submission(
                     f"'{layer_file.filename}' isn't a supported file type for the {layer_name} layer update. "
                     "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
                 )
-                return redirect(url_for("index"))
             layer_path = _save_upload(layer_file, uploads_dir)
         elif request.form.get(f"{field_name}_clear"):
             # The (x) next to a carried-forward image. Without an explicit
@@ -2623,8 +2681,7 @@ def generate():
         try:
             layer_image = Image.open(layer_path).convert("RGBA")
         except Exception as exc:
-            flash(f"Couldn't read the {layer_name} layer update image: {exc}")
-            return redirect(url_for("index"))
+            return _keep_submission(f"Couldn't read the {layer_name} layer update image: {exc}")
         # Every layer-update image gets the same best-effort background
         # removal -- logo, CTA image, and product image are all commonly
         # exported flat (a solid background behind the mark/product)
@@ -2786,12 +2843,11 @@ def generate():
         # rather than leaving "upload something" as the only way forward,
         # since it's the one-click fix for exactly this situation.
         missing_labels = ", ".join(size_label(width, height) for width, height in missing_sizes)
-        flash(
+        return _keep_submission(
             f"These sizes need either a hero image or a matching PSD template: {missing_labels}. "
             "Or check \"Generate a hero image with AI\" under the Hero image field below to have "
             "one generated automatically instead."
         )
-        return redirect(url_for("index"))
 
     video_frame_seconds = None
     if hero_provided and hero_path.suffix.lower() in VIDEO_EXTENSIONS:
@@ -2800,7 +2856,7 @@ def generate():
             try:
                 video_frame_seconds = float(raw_seconds)
             except ValueError:
-                flash(f"'{raw_seconds}' isn't a valid number of seconds -- using the middle of the video instead.")
+                return _keep_submission(f"'{raw_seconds}' isn't a valid number of seconds -- using the middle of the video instead.")
 
     hero_image = None
     if hero_provided:
@@ -2808,7 +2864,6 @@ def generate():
             hero_image = open_as_rgb(hero_path, frame_seconds=video_frame_seconds)
         except ValueError as exc:
             flash(str(exc))
-            return redirect(url_for("index"))
 
     logo_position = request.form.get("logo_position", "top-right")
     if logo_position not in VALID_LOGO_POSITIONS:
@@ -2827,11 +2882,10 @@ def generate():
     logo_fresh = logo_file is not None and bool(logo_file.filename)
     if logo_fresh:
         if not _allowed(logo_file.filename, ALLOWED_LOGO_EXTENSIONS):
-            flash(
+            return _keep_submission(
                 f"Logo file '{logo_file.filename}' isn't a supported type -- use PNG or WEBP "
                 "(needs transparency to composite cleanly)."
             )
-            return redirect(url_for("index"))
         logo_path = _save_upload(logo_file, uploads_dir)
     else:
         logo_path = _carry_forward_upload("logo", uploads_dir, prior_job_dir, prior_form_state)
@@ -2853,11 +2907,10 @@ def generate():
     badge_fresh = badge_file is not None and bool(badge_file.filename)
     if badge_fresh:
         if not _allowed(badge_file.filename, ALLOWED_BADGE_EXTENSIONS):
-            flash(
+            return _keep_submission(
                 f"Badge file '{badge_file.filename}' isn't a supported type. Accepted: "
                 + ", ".join(ALLOWED_BADGE_EXTENSIONS)
             )
-            return redirect(url_for("index"))
         badge_path = _save_upload(badge_file, uploads_dir)
     else:
         badge_path = _carry_forward_upload("badge_image", uploads_dir, prior_job_dir, prior_form_state)
@@ -2916,8 +2969,7 @@ def generate():
         try:
             provider_for_ads = _provider(upload_ai_provider)
         except ImageProviderError as exc:
-            flash(f"Can't generate the whole ad with {upload_ai_provider}: {exc}")
-            return redirect(url_for("index"))
+            return _keep_submission(f"Can't generate the whole ad with {upload_ai_provider}: {exc}")
         background_notes.append(
             f"Full ad mode: {len(sizes)} separate generation(s) with "
             f"{upload_ai_provider}, one per output size -- prompt: \"{full_ad_prompt}\" "
@@ -4610,6 +4662,10 @@ def generate():
     # session's {slot -> job_id} index so a later Edit on ANY campaign
     # generated alongside it (see _load_session_campaigns()) can bring
     # all of them back, not just this one.
+    if prior_job_dir is not None and prior_job_dir.name.startswith("draft_"):
+        # The draft this run was reopened from has done its job.
+        shutil.rmtree(prior_job_dir, ignore_errors=True)
+
     try:
         session_index_path = _session_index_path(session_id)
         session_index_path.parent.mkdir(parents=True, exist_ok=True)
