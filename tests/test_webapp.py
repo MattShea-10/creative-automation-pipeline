@@ -2512,6 +2512,11 @@ class PaidProviderTest(unittest.TestCase):
         self.assertNotIn('"runners 25-34"', prompt)
         self.assertIn("runners 25-34", prompt)
         self.assertIn("hero product image", prompt)
+        # ...and told so in as many words. Handed "for Active Adults
+        # 18-34" the model set "ArrCtive Adullts 8-34" under the headline.
+        self.assertIn("runners 25-34 (not written on the ad)", prompt)
+        self.assertIn("UK market (not written on the ad)", prompt)
+        self.assertIn("only the quoted words appear as text", prompt)
 
     def test_full_ad_prompt_carries_the_ticked_brand_colours(self):
         # A hex triplet alone reads to an image model as text rather than
@@ -6709,6 +6714,39 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         finally:
             _webapp.get_provider = original
 
+    def test_a_whole_ad_run_excludes_fine_print_and_warns_about_turbo_type(self):
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Paid:
+            name = "stub"
+            cost_per_image = 0.03
+            rendering_speed = "TURBO"
+            supports_negative_prompt = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, **kw):
+                from PIL import Image as _Image
+                sent.append(negative_prompt or "")
+                return _Image.new("RGB", (width, height), (200, 120, 40))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Paid()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_full_ad": "1",
+                "upload_ai_provider": "ideogram", "upload_ai_speed": "TURBO", "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        self.assertTrue(sent)
+        for negative in sent:
+            self.assertIn("fine print", negative)
+            self.assertIn("demographic text", negative)
+        self.assertIn("Whole ad on Turbo", r.data.decode())
+
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp
 
@@ -7748,7 +7786,9 @@ class AdSplitTest(unittest.TestCase):
         # the feathered edges) -- the reconstruction is a split, not a redraw.
         import numpy as np
         diff = np.abs(np.array(stack.convert("RGB")).astype(int) - np.array(im).astype(int))
-        self.assertLess(float((diff > 40).mean()), 0.03)
+        # Near-exact: no ring of inpainted smear may show around the
+        # cut-outs (the fill must sit entirely under the layers above).
+        self.assertLess(float((diff > 24).mean()), 0.002, "the split leaves visible halos when restacked")
         # And the background has the subject painted out.
         cx, cy = im.width // 2, int(im.height * 0.6)
         self.assertGreater(sum(split.background.getpixel((cx, cy))[:3]), 300, "subject still in the background")

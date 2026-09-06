@@ -80,27 +80,38 @@ def _feather(mask, radius_px: int):
 def _inpaint_under(image: Image.Image, mask, small: bool):
     """Paint out `mask` (uint8, 255 = remove). `small` regions are
     inpainted at full size; large ones at a reduced size and scaled back,
-    which is what keeps a hero-sized hole from taking half a minute."""
+    which is what keeps a hero-sized hole from taking half a minute.
+
+    Two masks, on purpose. The FILL is computed from the mask grown a
+    little, so the inpainter samples the picture around the thing being
+    removed rather than the thing's own edge (sampled from the edge, a
+    dark subject fills its hole with dark). But the fill is APPLIED only
+    inside the mask itself: the layer cut out with that mask covers
+    exactly that footprint, so the stack put back together shows no
+    ring of smear around each word or along the subject's edge.
+    """
     import cv2
     import numpy as np
 
     bgr = np.array(image.convert("RGB"))[:, :, ::-1].copy()
     h, w = mask.shape
-    # Grow the hole a little so the edge of the removed thing goes too.
     grow = max(2, int(round(max(h, w) * 0.006)))
-    dilated = cv2.dilate(mask, np.ones((grow * 2 + 1, grow * 2 + 1), np.uint8))
+    kernel = np.ones((grow * 2 + 1, grow * 2 + 1), np.uint8)
+    grown = cv2.dilate(mask, kernel)
     if small:
-        painted = cv2.inpaint(bgr, dilated, max(3, grow), cv2.INPAINT_TELEA)
+        fill = cv2.inpaint(bgr, grown, max(3, grow), cv2.INPAINT_TELEA)
     else:
-        scale = INPAINT_WORK_EDGE / max(h, w)
+        scale = min(1.0, INPAINT_WORK_EDGE / max(h, w))
         sw, sh = max(8, int(w * scale)), max(8, int(h * scale))
         small_bgr = cv2.resize(bgr, (sw, sh), interpolation=cv2.INTER_AREA)
-        small_mask = cv2.resize(dilated, (sw, sh), interpolation=cv2.INTER_NEAREST)
+        small_mask = cv2.resize(grown, (sw, sh), interpolation=cv2.INTER_NEAREST)
         small_painted = cv2.inpaint(small_bgr, small_mask, 5, cv2.INPAINT_TELEA)
         fill = cv2.resize(small_painted, (w, h), interpolation=cv2.INTER_CUBIC)
-        # Only the hole takes the soft fill; everything else stays sharp.
-        blend = _feather(dilated, grow).astype("float32")[:, :, None] / 255.0
-        painted = (fill * blend + bgr * (1 - blend)).astype("uint8")
+    # Applied within the footprint only, fading over its last pixels so
+    # the join never shows as a hard line.
+    blend = _feather(cv2.erode(mask, kernel), grow).astype("float32")[:, :, None] / 255.0
+    blend = np.minimum(blend, (mask > 0).astype("float32")[:, :, None])
+    painted = (fill * blend + bgr * (1 - blend)).astype("uint8")
     return Image.fromarray(painted[:, :, ::-1])
 
 
@@ -226,7 +237,13 @@ def split_ad(image: Image.Image) -> AdSplit:
         notes.append("Tesseract isn't installed, so no text layer was cut out.")
     elif words:
         mask = build_text_mask(working, TextCheckResult(available=True, findings=words))
-        text_layer = _cutout(working, _feather(mask, edge))
+        # Feathered outward: a copy grown by the feather radius is
+        # softened, so the layer stays fully opaque over the whole box
+        # (and the hole inside it) and fades only beyond it.
+        import cv2 as _cv2
+        import numpy as _np
+        grown = _cv2.dilate(mask, _np.ones((edge * 2 + 1, edge * 2 + 1), _np.uint8))
+        text_layer = _cutout(working, _feather(grown, edge))
         working = _inpaint_under(working, mask, small=True)
         notes.append(
             f"{len(words)} word(s) cut to a 'text (painted)' layer: "
@@ -241,6 +258,8 @@ def split_ad(image: Image.Image) -> AdSplit:
     subject_layer = None
     alpha, how = _find_subject_rembg(working)
     if alpha is not None:
+        # The fill goes where the cutout is at least half solid; at the
+        # soft edge the layer sits over the original picture instead.
         subject_mask = (alpha > 128).astype("uint8") * 255
         subject_layer = _cutout(working, alpha)
         working = _inpaint_under(working, subject_mask, small=False)

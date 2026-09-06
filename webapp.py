@@ -670,14 +670,28 @@ def _build_full_ad_prompt(
     if palette:
         parts.append(palette)
     if audience:
-        parts.append(f"art directed for {audience}")
+        # Described, and told NOT to be written: handed "for Active
+        # Adults 18-34" the model set "ArrCtive Adullts 8-34" under the
+        # headline. Every word not in quotes is art direction.
+        parts.append(f"styled to appeal to {audience} (not written on the ad)")
     if market:
-        parts.append(f"for the {market} market")
+        parts.append(f"for the {market} market (not written on the ad)")
     parts.append(
-        "professional advertising design, clean legible typography, "
-        "balanced composition, generous margins so nothing is cropped at the edges"
+        "professional advertising design, clean legible typography, only the quoted words "
+        "appear as text, balanced composition, generous margins so nothing is cropped at the edges"
     )
     return ", ".join(parts)
+
+
+# What a whole-ad generation must not add of its own accord: the
+# audience and market lettered as copy, and the fine print, disclaimers
+# and pseudo-legal lines models like to fill a bottom edge with -- which
+# come out as gibberish, since there are no real words to set.
+FULL_AD_NEGATIVE_CLAUSE = (
+    "extra text, additional words, audience description as text, demographic text, "
+    "fine print, small print, disclaimer, legal text, footnote, lorem ipsum, "
+    "gibberish lettering, misspelled words, duplicated words"
+)
 
 
 IDEOGRAM_SPEED_CHOICES = (
@@ -2906,15 +2920,23 @@ def generate():
             return redirect(url_for("index"))
         background_notes.append(
             f"Full ad mode: {len(sizes)} separate generation(s) with "
-            f"{upload_ai_provider}, one per output size -- prompt: \"{full_ad_prompt}\"."
+            f"{upload_ai_provider}, one per output size -- prompt: \"{full_ad_prompt}\" "
+            f"[excluded: {FULL_AD_NEGATIVE_CLAUSE}]."
         )
+        if upload_ai_provider == "ideogram" and upload_ai_speed == "TURBO":
+            background_warnings.append(
+                "Whole ad on Turbo: Turbo is the roughest pass for typography and tends to misspell "
+                "and smear type. Fine for finding a layout; switch Rendering to Quality for the one you keep."
+            )
         for width, height in sizes:
             try:
                 ad_image = provider_for_ads.generate(
                     full_ad_prompt,
                     width=width,
                     height=height,
-                    negative_prompt=PALETTE_NEGATIVE_CLAUSE if brand_colors else None,
+                    negative_prompt=", ".join(
+                        c for c in (FULL_AD_NEGATIVE_CLAUSE, PALETTE_NEGATIVE_CLAUSE if brand_colors else None) if c
+                    ),
                     **(
                         {"style_reference": upload_ai_reference_bytes}
                         if upload_ai_reference_bytes
