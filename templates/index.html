@@ -54,6 +54,12 @@
     .layer-image-cache { @apply mt-2; }
     .layer-image-cache-row { @apply flex flex-wrap gap-2 mt-2; }
     .layer-image-cached { @apply flex items-center gap-2 border border-slate-700 rounded-md bg-slate-900/60 px-2 py-1; }
+    /* The reference-image drop zone. A file input already accepts a
+       dropped file in every browser; the dashed frame just says so, and
+       lights up while something is being dragged over it. */
+    .drop-zone { @apply border border-dashed border-slate-600 rounded-md px-3 py-2 bg-slate-900/40; }
+    .drop-zone.is-dragover { @apply border-blue-400 bg-blue-950/40; }
+    .drop-zone input[type="file"] { @apply border-0 bg-transparent px-0 py-1; }
     .layer-image-cached img { @apply w-10 h-10 object-contain rounded bg-slate-800; }
     .layer-image-cached-meta { @apply flex flex-col text-[0.78rem] leading-tight text-slate-300; }
     .layer-image-cached-name { @apply text-slate-500 max-w-[10rem] truncate; }
@@ -117,6 +123,18 @@
       @apply inline-block flex-none text-slate-400 text-[0.85rem] font-semibold no-underline border border-slate-700 rounded-md px-[0.9rem] py-[0.45rem] whitespace-nowrap mt-[0.15rem] hover:bg-slate-800 hover:text-slate-100;
     }
     .flash { @apply bg-red-950 border border-red-800 text-red-300 px-4 py-3 rounded-md mb-5 text-[0.9rem]; }
+    .flash.flash-ok { @apply bg-emerald-950 border-emerald-800 text-emerald-200; }
+    /* The Ideogram key box. Loud while no key is set -- for someone
+       running the packaged app it is the one setup step -- and a single
+       quiet line once there is one. */
+    .key-box { @apply border border-slate-700 rounded-md px-4 py-3 mb-5 text-[0.9rem]; }
+    .key-box.key-missing { @apply border-yellow-700 bg-yellow-950/40; }
+    .key-box summary { @apply cursor-pointer font-semibold list-none flex items-center gap-2; }
+    .key-box summary::-webkit-details-marker { display: none; }
+    .key-box[open] > summary .caret { transform: rotate(90deg); }
+    .key-box .key-row { @apply flex flex-wrap items-center gap-2 mt-3; }
+    .key-box .key-row input { @apply flex-1 min-w-[16rem] bg-slate-900 border border-slate-600 rounded-md px-3 py-2 text-slate-100 font-mono text-[0.85rem]; }
+    .key-box .key-row button { @apply bg-slate-100 text-slate-900 font-semibold rounded-md px-4 py-2 cursor-pointer hover:bg-white; }
     footer { @apply text-slate-500 text-[0.8rem] mt-8 text-center; }
     code { @apply bg-slate-800 px-[0.35rem] py-[0.1rem] rounded text-[0.85em] text-slate-300; }
     .ai-hero-callout { @apply border border-yellow-600 bg-yellow-950/40 rounded-md px-4 py-3; }
@@ -228,13 +246,33 @@
       <button type="button" id="add-campaign-btn" class="create-campaign-btn">Create Campaign</button>
     </div>
 
-    {% with messages = get_flashed_messages() %}
+    {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}
-        {% for m in messages %}
-          <div class="flash">{{ m }}</div>
+        {% for category, m in messages %}
+          <div class="flash{% if category == 'ok' %} flash-ok{% endif %}">{{ m }}</div>
         {% endfor %}
       {% endif %}
     {% endwith %}
+
+    <details class="key-box{% if not ideogram_key.set %} key-missing{% endif %}" data-role="ideogram-key-box"{% if not ideogram_key.set %} open{% endif %}>
+      <summary>
+        <span class="caret">&#9656;</span>
+        {% if ideogram_key.set %}
+          Ideogram API key: set{% if ideogram_key.hint %} (ends in {{ ideogram_key.hint }}){% endif %}
+          <span style="font-weight: 400; color: var(--muted);">-- click to change</span>
+        {% else %}
+          Ideogram API key: not set
+          <span style="font-weight: 400; color: var(--muted);">-- paste it here to use Ideogram backdrops (Pollinations works without one)</span>
+        {% endif %}
+      </summary>
+      <form action="{{ url_for('set_ideogram_key') }}" method="post" class="key-row" autocomplete="off">
+        <input type="password" name="ideogram_api_key" placeholder="Paste the Ideogram API key" aria-label="Ideogram API key" required>
+        <button type="submit">Save key</button>
+      </form>
+      <div class="hint" style="margin-top: 0.5rem; margin-bottom: 0;">
+        Saved to <code>.env</code> beside the app and used straight away; it never leaves this computer.
+      </div>
+    </details>
 
     <div class="busy-overlay" data-role="busy" hidden>
       <div class="busy-spinner" role="status" aria-live="polite" aria-label="Generating"></div>
@@ -940,6 +978,32 @@
             <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
             <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
             <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
+
+            <div class="field" style="margin-top: 0.7rem; margin-bottom: 0;">
+              <label for="upload_ai_reference" style="font-weight: 400;">Reference image <span style="font-weight: 400; color: var(--muted);">(optional -- make the backdrop look like this)</span></label>
+              <div class="drop-zone" data-role="reference-drop-zone">
+                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
+                <div class="hint" style="margin: 0.2rem 0 0;">Drop a picture here or choose one. Its palette, lighting and mood are matched -- not its subject; the scene still comes from the brief.</div>
+              </div>
+              {% if prefill_files.get('upload_ai_reference') %}
+                <div class="layer-image-cached" data-role="layer-cached-upload_ai_reference" data-prefill-hint style="margin-top: 0.4rem;">
+                  {% if edit_job_id %}
+                    <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get('upload_ai_reference')) }}" alt="Reference image">
+                  {% endif %}
+                  <div class="layer-image-cached-meta">
+                    <strong>Kept from your last run</strong>
+                    <span class="layer-image-cached-name" title="{{ prefill_files.get('upload_ai_reference') }}">{{ prefill_files.get('upload_ai_reference') }}</span>
+                  </div>
+                  <button type="button" class="clear-btn" data-role="layer-clear-btn-upload_ai_reference" title="Drop this reference image">&times;</button>
+                  <input type="hidden" name="upload_ai_reference_clear" value="">
+                </div>
+              {% endif %}
+              <div class="hint" data-role="reference-provider-note" style="margin-top: 0.3rem;">
+                With Ideogram the picture itself is sent as a style reference. With Pollinations it can't be
+                (that service only takes web addresses), so the app describes its colours and lighting in
+                the prompt instead -- a similar feel rather than a close match.
+              </div>
+            </div>
             {# Only Ideogram is worth handing a laid-out ad or live type to;
                Pollinations has no typography to speak of, so these switches are
                hidden rather than offered and disappointed. #}
@@ -1208,6 +1272,22 @@
       if (heroFileInput && heroKeptChip) {
         heroFileInput.addEventListener("change", function () {
           heroKeptChip.hidden = !!heroFileInput.value;
+        });
+      }
+
+      var refInput = root.querySelector('[name="upload_ai_reference"]');
+      var refChip = root.querySelector('[data-role="layer-cached-upload_ai_reference"]');
+      if (refInput && refChip) {
+        // The (x) itself is handled with every other kept-file chip below.
+        refInput.addEventListener("change", function () { refChip.hidden = !!refInput.value; });
+      }
+      var refZone = root.querySelector('[data-role="reference-drop-zone"]');
+      if (refZone) {
+        ["dragenter", "dragover"].forEach(function (evt) {
+          refZone.addEventListener(evt, function () { refZone.classList.add("is-dragover"); });
+        });
+        ["dragleave", "drop"].forEach(function (evt) {
+          refZone.addEventListener(evt, function () { refZone.classList.remove("is-dragover"); });
         });
       }
 

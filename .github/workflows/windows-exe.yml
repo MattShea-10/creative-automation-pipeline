@@ -57,7 +57,7 @@ jobs:
           if ($ok) { Write-Host "the exe answered on $url after $i s" -ForegroundColor Green }
           else { Write-Host "the exe never answered (last tried $url)" -ForegroundColor Red; exit 1 }
 
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: CreativeAutomationPipeline-windows
           path: dist/CreativeAutomationPipeline-windows.zip

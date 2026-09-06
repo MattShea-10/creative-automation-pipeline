@@ -33,6 +33,7 @@ class MockImageProvider(ImageProvider):
         width: int = 1024,
         height: int = 1024,
         negative_prompt: str = None,
+        style_reference: bytes = None,  # not supported here; described in words by the caller
     ) -> Image.Image:
         # Accepted and ignored: this draws a labelled placeholder, so
         # there is nothing to steer. Present only so callers never have

@@ -58,10 +58,9 @@ Pollinations provider needs no key.
 3. A Terminal window opens and installs everything into
    `~/Creative Automation Pipeline`. This takes a few minutes. When the
    browser opens, you're running.
-4. **Add the key:** open `~/Creative Automation Pipeline/.env` in any text
-   editor (TextEdit is fine), find the line `IDEOGRAM_API_KEY=` and paste
-   the key after the `=`. Save. Then press **Ctrl-C** in the Terminal and
-   double-click the app again.
+4. **Add the key:** the yellow box at the top of the page says *Ideogram
+   API key: not set*. Paste the key in and click **Save key**. It's kept
+   in `~/Creative Automation Pipeline/.env` and remembered from then on.
 
 To start it any later time: double-click the app. To stop it: Ctrl-C in
 the Terminal window.
@@ -74,13 +73,13 @@ exe** run under the **Actions** tab, in its *Artifacts* box). Then:
 
 1. Unzip it somewhere you can find it, and keep the folder together --
    the exe needs the `_internal` folder beside it.
-2. **Add the key:** rename `.env.example` in that folder to `.env`, open it
-   in Notepad, find the line `IDEOGRAM_API_KEY=` and paste the key after
-   the `=`. Save.
-3. Double-click `CreativeAutomationPipeline.exe`. A black window prints
+2. Double-click `CreativeAutomationPipeline.exe`. A black window prints
    the address (`http://127.0.0.1:5000` unless that port is busy) and the
    browser opens on it a moment later. Closing the black window stops
    the app.
+3. **Add the key:** the yellow box at the top of the page says *Ideogram
+   API key: not set*. Paste the key in and click **Save key**. It's kept
+   in a `.env` file beside the exe and remembered from then on.
 
 If Windows shows *"Windows protected your PC"*, click **More info** and
 then **Run anyway** -- the exe isn't code-signed, and that's all the
@@ -113,12 +112,12 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 
 The installer ends with `Done`. Then:
 
-1. **Add the key:** open the file `.env` inside the
-   `creative-automation-pipeline` folder in a text editor, find
-   `IDEOGRAM_API_KEY=` and paste the key after the `=`. Save.
-2. **Start it:** `./run.sh` (Mac/Linux) or `.\run.ps1` (Windows). It opens
+1. **Start it:** `./run.sh` (Mac/Linux) or `.\run.ps1` (Windows). It opens
    in your browser at `http://127.0.0.1:5000` -- if that port is busy the
    terminal says which one it used instead.
+2. **Add the key:** paste it into the yellow *Ideogram API key* box at the
+   top of the page and click **Save key**. (Or put it after
+   `IDEOGRAM_API_KEY=` in the `.env` file yourself -- same thing.)
 
 To stop: **Ctrl-C** in the terminal. To start again later: just `./run.sh`
 -- no reinstall needed.
@@ -133,6 +132,13 @@ message). Then either:
   every size from the saved templates.
 - **Upload AI Image** -- tick it, choose **Ideogram** as the provider
   (that's what the key is for), optionally write a prompt, and Generate.
+  To make the backdrop look like a picture you already have, drop it on
+  the **Reference image** box under the prompt: its palette, lighting and
+  mood are matched (not its subject -- the scene still comes from the
+  brief). With Ideogram the picture itself goes to the model as a style
+  reference; with Pollinations, which only accepts web addresses for a
+  reference, the app describes the picture's look in words in the prompt
+  instead, so expect a similar feel rather than a close match.
 
 Each result has **Download layered PSD** (opens looking exactly like the
 preview) and **Download live-text PSD** (the same, with the text still

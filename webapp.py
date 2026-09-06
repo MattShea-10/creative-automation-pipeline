@@ -511,6 +511,55 @@ def _backdrop_scene(product_name, campaign_message, audience, rng=None) -> str:
     return ", ".join(parts)
 
 
+def reference_look_phrase(image) -> str:
+    """A dropped reference picture described in words -- its dominant
+    colours, brightness, warmth, saturation and contrast -- as art
+    direction for the prompt.
+
+    This is the reference for providers that can't take the file
+    (Pollinations' GET endpoint, the offline placeholder), and it rides
+    along with the real style reference on Ideogram too, since a prompt
+    that agrees with the picture steers better than one that doesn't.
+    It is a description of the LOOK, not the subject: what is in the
+    picture stays out of the prompt on purpose, or a photo of a beach
+    would turn every backdrop into a beach. Words, never hex codes --
+    see _brand_palette_phrase() for what hex codes turn into.
+    """
+    small = image.convert("RGB")
+    small.thumbnail((96, 96))
+    # Dominant colours: quantise to a handful and take them by area,
+    # skipping ones that name the same word twice.
+    quantised = small.quantize(colors=6, method=Image.Quantize.MEDIANCUT)
+    palette = quantised.getpalette()[: 6 * 3]
+    counts = sorted(quantised.getcolors(), reverse=True)
+    words = []
+    for _, index in counts:
+        rgb = tuple(palette[index * 3 : index * 3 + 3])
+        word = _colour_word(rgb)
+        if word not in words:
+            words.append(word)
+        if len(words) == 3:
+            break
+    pixels = list(small.getdata())
+    n = max(len(pixels), 1)
+    lum = [0.299 * r + 0.587 * g + 0.114 * b for r, g, b in pixels]
+    mean_lum = sum(lum) / n
+    contrast = (sum((v - mean_lum) ** 2 for v in lum) / n) ** 0.5
+    sat = sum((max(p) - min(p)) / (max(p) or 1) for p in pixels) / n
+    warmth = sum(r - b for r, _, b in pixels) / n
+
+    tone = "dark and moody" if mean_lum < 80 else "bright and airy" if mean_lum > 170 else "evenly lit"
+    temp = "warm" if warmth > 25 else "cool" if warmth < -25 else "neutral"
+    colour = "vivid" if sat > 0.45 else "muted" if sat < 0.18 else "natural"
+    depth = "high-contrast lighting with deep shadows" if contrast > 60 else "soft low-contrast lighting" if contrast < 30 else "balanced lighting"
+
+    named = words[0] if len(words) == 1 else ", ".join(words[:-1]) + " and " + words[-1]
+    return (
+        f"in the look of the reference picture: a palette of {named}, "
+        f"{tone}, {temp} {colour} colours, {depth}"
+    )
+
+
 # What a palette request must NOT turn into. Sent as a negative prompt
 # whenever brand colours are ticked -- see _brand_palette_phrase().
 PALETTE_NEGATIVE_CLAUSE = (
@@ -606,9 +655,15 @@ def _build_full_ad_prompt(
 
 def _generate_text_free(
     provider, prompt: str, width: int, height: int, allow_text: bool = False,
-    negative_extra: str = None,
+    negative_extra: str = None, style_reference: bytes = None,
 ):
     """Generate `prompt`, and regenerate if the result has text baked in.
+
+    `style_reference` -- a dropped picture whose look the backdrop should
+    share -- goes to the provider as a file when it can take one
+    (Ideogram), and is left out otherwise: the caller has already put
+    that picture into the prompt in words for providers that can't (see
+    reference_look_phrase()).
 
     With `allow_text`, none of that happens: no negative prompt, no OCR
     check, no retry. Suppressing lettering is right for a backdrop the
@@ -648,6 +703,13 @@ def _generate_text_free(
     negative = NO_TEXT_CLAUSE
     if negative_extra:
         negative = f"{negative}, {negative_extra}"
+    # Only providers that declare support get the keyword at all, so a
+    # provider (or a test stub) with the plain signature keeps working.
+    extra = (
+        {"style_reference": style_reference}
+        if style_reference and getattr(provider, "supports_style_reference", False)
+        else {}
+    )
     if allow_text:
         # One call, taken as it comes: nothing to verify, so the retry
         # budget stays unspent. Lettering is wanted here, so the no-text
@@ -656,7 +718,7 @@ def _generate_text_free(
         # works for it.
         if negative_extra:
             image = provider.generate(
-                prompt, width=width, height=height, negative_prompt=negative_extra
+                prompt, width=width, height=height, negative_prompt=negative_extra, **extra
             )
             shown = (
                 f"{prompt}  [excluded: {negative_extra}]"
@@ -664,7 +726,7 @@ def _generate_text_free(
                 else f"{prompt}, {negative_extra}"
             )
             return image, shown, 1, TextCheckResult(available=False)
-        image = provider.generate(prompt, width=width, height=height)
+        image = provider.generate(prompt, width=width, height=height, **extra)
         return image, prompt, 1, TextCheckResult(available=False)
     # The offline placeholder draws the prompt across its own gradient on
     # purpose -- that is what makes it recognisable as a placeholder. It
@@ -682,7 +744,7 @@ def _generate_text_free(
             negative if attempts == 0 else f"{negative}, {NO_TEXT_ESCALATION}"
         )
         image = provider.generate(
-            used, width=width, height=height, negative_prompt=negative_used
+            used, width=width, height=height, negative_prompt=negative_used, **extra
         )
         attempts += 1
         if not verify:
@@ -1211,6 +1273,62 @@ def _present_text_layers() -> set:
     return present
 
 
+ENV_FILE = BASE_DIR / ".env"
+
+
+def _ideogram_key_status() -> dict:
+    """What the page may say about the Ideogram key: whether one is set
+    and its last four characters. Never the key itself."""
+    key = (os.environ.get("IDEOGRAM_API_KEY") or "").strip()
+    return {"set": bool(key), "hint": key[-4:] if len(key) >= 8 else ""}
+
+
+@app.context_processor
+def _inject_settings():
+    return {"ideogram_key": _ideogram_key_status(), "env_file": str(ENV_FILE)}
+
+
+def save_env_value(name: str, value: str, env_file: Path = None) -> Path:
+    """Write NAME=value into the .env beside the app, keeping every other
+    line. A missing .env is started from .env.example so the comments
+    that explain the other settings come along. The running process
+    picks the value up at once via os.environ -- no restart."""
+    env_file = env_file or ENV_FILE
+    if not env_file.exists():
+        example = env_file.parent / ".env.example"
+        env_file.write_text(example.read_text() if example.is_file() else "")
+    lines = env_file.read_text().splitlines()
+    written = False
+    for i, line in enumerate(lines):
+        if line.strip().startswith(f"{name}="):
+            lines[i] = f"{name}={value}"
+            written = True
+            break
+    if not written:
+        lines.append(f"{name}={value}")
+    env_file.write_text("\n".join(lines) + "\n")
+    os.environ[name] = value
+    return env_file
+
+
+@app.route("/settings/ideogram-key", methods=["POST"])
+def set_ideogram_key():
+    """The box at the top of the form. For someone running the packaged
+    app this is the whole key setup: paste, save, done -- no hidden file
+    to find and no editor. The key is stored in .env beside the app and
+    is never sent back to the browser."""
+    key = (request.form.get("ideogram_api_key") or "").strip()
+    if not key:
+        flash("Paste the Ideogram API key before saving.")
+        return redirect(url_for("index"))
+    if any(ch.isspace() for ch in key) or len(key) < 20:
+        flash("That doesn't look like an Ideogram API key -- check it was copied whole.")
+        return redirect(url_for("index"))
+    save_env_value("IDEOGRAM_API_KEY", key)
+    flash(f"Ideogram key saved (ends in {key[-4:]}). Choose Ideogram as the provider under Layer images to use it.", "ok")
+    return redirect(url_for("index"))
+
+
 @app.route("/", methods=["GET"])
 def index():
     return render_template(
@@ -1702,6 +1820,35 @@ def generate():
         except Exception as exc:  # noqa: BLE001
             flash(f"Couldn't read the campaign hero image: {exc}")
             return redirect(url_for("index"))
+
+    # A reference picture for the AI backdrop: "make it look like this".
+    # Sent to Ideogram as a style reference file, and described in words
+    # in the prompt for every provider (see reference_look_phrase()).
+    # Carried forward on Edit like the other uploads.
+    upload_ai_reference_file = request.files.get("upload_ai_reference")
+    if upload_ai_reference_file is not None and upload_ai_reference_file.filename:
+        if not _allowed(upload_ai_reference_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
+            flash(
+                f"Reference image: '{upload_ai_reference_file.filename}' isn't a supported file type. "
+                "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
+            )
+            return redirect(url_for("index"))
+        upload_ai_reference_path = _save_upload(upload_ai_reference_file, uploads_dir)
+    elif request.form.get("upload_ai_reference_clear"):
+        upload_ai_reference_path = None
+    else:
+        upload_ai_reference_path = _carry_forward_upload(
+            "upload_ai_reference", uploads_dir, prior_job_dir, prior_form_state
+        )
+    upload_ai_reference_image = None
+    upload_ai_reference_bytes = None
+    if upload_ai_reference_path is not None:
+        try:
+            upload_ai_reference_image = Image.open(upload_ai_reference_path).convert("RGB")
+            upload_ai_reference_bytes = upload_ai_reference_path.read_bytes()
+        except Exception as exc:  # noqa: BLE001
+            flash(f"Couldn't read the reference image: {exc}")
+            return redirect(url_for("index"))
         # Like a content PSD upload, this drives a templated batch: the
         # sizes come from default_templates/, not from the size pickers.
         sizes = []
@@ -1844,6 +1991,10 @@ def generate():
         palette = _brand_palette_phrase(brand_colors)
         if palette:
             upload_ai_prompt_text = f"{upload_ai_prompt_text}, {palette}"
+        if upload_ai_reference_image is not None:
+            upload_ai_prompt_text = (
+                f"{upload_ai_prompt_text}, {reference_look_phrase(upload_ai_reference_image)}"
+            )
         if upload_ai_background_style:
             upload_ai_prompt_text = (
                 f"{upload_ai_prompt_text}, "
@@ -1870,12 +2021,23 @@ def generate():
                         LOGO_NEGATIVE_CLAUSE if upload_ai_allow_text else None,
                     ) if clause
                 ) or None,
+                style_reference=upload_ai_reference_bytes,
             )
             background_notes_pending = (
                 f"Campaign artwork generated with AI ({upload_ai_provider}) at "
                 f"{upload_ai_image.width}x{upload_ai_image.height} -- prompt: "
                 f"\"{upload_ai_prompt_used}\"."
             )
+            if upload_ai_reference_path is not None:
+                sent_as_file = getattr(get_provider(upload_ai_provider), "supports_style_reference", False)
+                background_notes_pending += (
+                    f" Styled after the reference image {upload_ai_reference_path.name}"
+                    + (
+                        " (sent to Ideogram as a style reference, and described in the prompt)."
+                        if sent_as_file
+                        else f" (described in the prompt -- {upload_ai_provider} can't take the picture itself)."
+                    )
+                )
             if upload_ai_allow_text:
                 background_notes_pending += (
                     " Text was allowed in this image, so no no-text instruction was sent, "
@@ -2548,6 +2710,8 @@ def generate():
             market,
             brand_colors=brand_colors,
         )
+        if upload_ai_reference_image is not None:
+            full_ad_prompt = f"{full_ad_prompt}, {reference_look_phrase(upload_ai_reference_image)}"
         # Constructing the provider is where a missing key surfaces
         # (IdeogramProvider() reads IDEOGRAM_API_KEY and refuses without
         # one). Unhandled, that was a 500 with a traceback in the
@@ -2573,6 +2737,12 @@ def generate():
                     width=width,
                     height=height,
                     negative_prompt=PALETTE_NEGATIVE_CLAUSE if brand_colors else None,
+                    **(
+                        {"style_reference": upload_ai_reference_bytes}
+                        if upload_ai_reference_bytes
+                        and getattr(provider_for_ads, "supports_style_reference", False)
+                        else {}
+                    ),
                 )
             except ImageProviderError as exc:
                 background_warnings.append(
@@ -4148,6 +4318,7 @@ def generate():
         "hero_image": hero_path if hero_provided else None,
         "content_psd": content_psd_path if content_psd_provided else None,
         "upload_hero_image": upload_hero_path,
+        "upload_ai_reference": upload_ai_reference_path,
         # Under a key of its own, never a user-upload key -- see the
         # "Keep this image" branch in the generator block above.
         "upload_ai_generated": upload_ai_path,

@@ -3,15 +3,16 @@ Creative Automation Pipeline -- Windows
 1. Unzip this folder somewhere you can find it (Desktop, Documents).
    Keep everything together: the .exe needs the _internal folder beside it.
 
-2. The Ideogram key. Rename ".env.example" to ".env" (or make a copy
-   called .env), open it in Notepad, find the line IDEOGRAM_API_KEY= and
-   paste the key after the =. Save. (Skip this to use the free
-   Pollinations backdrops instead.)
-
-3. Double-click CreativeAutomationPipeline.exe. A black window opens and
+2. Double-click CreativeAutomationPipeline.exe. A black window opens and
    prints the address (http://127.0.0.1:5000 unless that port is busy);
    your browser opens on it a moment later. Leave the black window open --
    closing it stops the app.
+
+3. The Ideogram key. At the top of the page is a yellow box, "Ideogram
+   API key: not set". Paste the key you were given into it and click
+   Save key. That's it -- it is kept in a file called .env beside the exe
+   and remembered next time. (Skip this to use the free Pollinations
+   backdrops instead.)
 
 If Windows shows "Windows protected your PC" (SmartScreen), click
 "More info" and then "Run anyway". The exe is not code-signed; that

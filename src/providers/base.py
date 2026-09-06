@@ -31,6 +31,13 @@ class ImageProvider(ABC):
     # it into the prompt as best they can, so callers never branch.
     supports_negative_prompt: bool = False
 
+    # Whether the vendor can take a picture as a style reference -- "make
+    # it look like this" as an upload rather than as words. Providers
+    # without it still accept the argument and ignore it; the caller
+    # describes the picture in words for them instead (see
+    # reference_look_phrase() in src/image_ops.py).
+    supports_style_reference: bool = False
+
     @abstractmethod
     def generate(
         self,
@@ -38,10 +45,13 @@ class ImageProvider(ABC):
         width: int = 1024,
         height: int = 1024,
         negative_prompt: str = None,
+        style_reference: bytes = None,
     ) -> Image.Image:
         """Generate a single hero image for the given prompt.
 
         `negative_prompt` describes what to keep OUT of the image.
+        `style_reference` is the bytes of a JPEG/PNG/WebP whose palette,
+        lighting and mood the result should share.
 
         Implementations should raise ImageProviderError on failure so the
         pipeline can decide whether to fall back to another provider.

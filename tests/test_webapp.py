@@ -2317,6 +2317,43 @@ class PaidProviderTest(unittest.TestCase):
                     pass
         return seeds
 
+    def test_ideogram_sends_a_style_reference_as_a_multipart_file(self):
+        # A reference picture can't go in a JSON body. With one attached
+        # the request is multipart from the start, the picture rides in
+        # the style_reference_images file field, and every ordinary
+        # field is still there beside it.
+        from unittest import mock
+        from src.providers.ideogram_provider import IdeogramProvider
+
+        provider = IdeogramProvider(api_token="k" * 32)
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            text = ""
+            content = b""
+
+            def json(self):
+                return {"data": [{"url": "http://example.invalid/i.png"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None, files=None):
+            if "generate" in url:  # the image fetch afterwards goes through the same stub
+                seen["json"] = json
+                seen["files"] = files
+            return _Resp()
+
+        with mock.patch("requests.post", fake_post), mock.patch("requests.get", fake_post):
+            try:
+                provider.generate("a backdrop", 1024, 1024, negative_prompt="text", style_reference=b"PNGBYTES")
+            except Exception:
+                pass
+        self.assertIsNone(seen["json"], "a reference must not be sent as JSON")
+        fields = dict((k, v) for k, v in seen["files"])
+        self.assertEqual(fields["style_reference_images"][1], b"PNGBYTES")
+        self.assertEqual(fields["prompt"], (None, "a backdrop"))
+        self.assertEqual(fields["negative_prompt"], (None, "text"))
+        self.assertIn("seed", fields)
+
     def test_ideogram_sends_a_fresh_seed_every_request(self):
         # Without an explicit seed the service picks, and a re-run of an
         # unchanged prompt came back looking like the image it was meant
@@ -6128,6 +6165,169 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 # a prompt author should have to restate.
                 self.assertIn(typed, prompt)
 
+    def _reference_png(self, colour=(8, 14, 40)):
+        # A dark navy picture: dominant colour and mood are unambiguous.
+        from PIL import Image as _Image, ImageDraw as _Draw
+
+        im = _Image.new("RGB", (200, 120), colour)
+        _Draw.Draw(im).rectangle((80, 20, 120, 100), fill=(30, 90, 200))
+        buf = io.BytesIO()
+        im.save(buf, format="PNG")
+        return buf.getvalue()
+
+    def test_a_reference_picture_reaches_ideogram_as_a_file_and_the_prompt_as_words(self):
+        # "Make a background similar to this image." Ideogram can take
+        # the picture itself as a style reference, so it gets the bytes;
+        # every provider gets the picture's look in words, so the prompt
+        # and the reference agree.
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Ideogramish:
+            name = "stub"
+            supports_negative_prompt = True
+            supports_style_reference = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, style_reference=None):
+                from PIL import Image as _Image
+
+                sent.append((prompt, style_reference))
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        png = self._reference_png()
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name: _Ideogramish()
+        try:
+            data = {
+                "product_name": "HydroBoost", "upload_ai_enabled": "1",
+                "upload_ai_reference": (io.BytesIO(png), "moodboard.png"),
+                "header": "", "description": "",
+            }
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+
+        self.assertEqual(len(sent), 1)
+        prompt, reference = sent[0]
+        self.assertEqual(reference, png, "the picture itself was not sent as the style reference")
+        self.assertIn("in the look of the reference picture", prompt)
+        self.assertIn("navy", prompt)
+        self.assertIn("dark and moody", prompt)
+        page = r.data.decode()
+        self.assertIn("Styled after the reference image moodboard.png", page)
+        self.assertIn("sent to Ideogram as a style reference", page)
+
+    def test_a_provider_that_cannot_take_the_picture_still_gets_its_look_in_words(self):
+        # Pollinations only takes a web address for a reference, which a
+        # picture on someone's desk doesn't have. The stub here has the
+        # plain generate() signature -- passing style_reference= to it
+        # would be a TypeError -- so this also covers "never send the
+        # keyword to a provider that didn't ask for it".
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Plain:
+            name = "stub"
+            supports_negative_prompt = False
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                from PIL import Image as _Image
+
+                sent.append(prompt)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name: _Plain()
+        try:
+            data = {
+                "product_name": "HydroBoost", "upload_ai_enabled": "1",
+                "upload_ai_provider": "pollinations",
+                "upload_ai_reference": (io.BytesIO(self._reference_png()), "moodboard.png"),
+                "header": "", "description": "",
+            }
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+
+        self.assertEqual(len(sent), 1)
+        self.assertIn("in the look of the reference picture", sent[0])
+        self.assertIn("navy", sent[0])
+        page = r.data.decode()
+        self.assertIn("described in the prompt -- pollinations can", page)
+
+    def test_no_reference_means_no_reference_clause(self):
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Plain:
+            name = "stub"
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                from PIL import Image as _Image
+
+                sent.append(prompt)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name: _Plain()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        self.assertNotIn("reference picture", sent[0])
+        self.assertNotIn("Styled after", r.data.decode())
+
+    def test_the_reference_picture_is_kept_on_edit_and_can_be_dropped(self):
+        import webapp as _webapp
+
+        self._stage_real_template()
+
+        class _Plain:
+            name = "stub"
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None):
+                from PIL import Image as _Image
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name: _Plain()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "upload_ai_reference": (io.BytesIO(self._reference_png()), "moodboard.png"),
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            job_id = re.search(r'/edit/([0-9a-f]+)', r.data.decode()).group(1)
+            edit_page = self.client.get(f"/edit/{job_id}").get_data(as_text=True)
+            # The chip shows the kept picture under the drop zone...
+            self.assertIn('data-role="layer-cached-upload_ai_reference"', edit_page)
+            self.assertIn("moodboard.png", edit_page)
+            # ...a re-run carries it forward without re-uploading...
+            r2 = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "edit_job_id": job_id,
+            }, content_type="multipart/form-data")
+            self.assertIn("Styled after the reference image moodboard.png", r2.data.decode())
+            # ...and the (x) drops it.
+            r3 = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "edit_job_id": job_id, "upload_ai_reference_clear": "1",
+            }, content_type="multipart/form-data")
+            self.assertNotIn("Styled after", r3.data.decode())
+        finally:
+            _webapp.get_provider = original
+
     def test_the_same_brief_does_not_ask_for_the_same_picture_every_run(self):
         # Two Ideogram runs of one brief, different seeds, came back as
         # the same thing: a wordmark, the product name as a logo with
@@ -7008,3 +7208,65 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class IdeogramKeyBoxTest(unittest.TestCase):
+    """The key box at the top of the form: how someone running the
+    packaged app gets the Ideogram key in without finding a dotfile. The
+    key goes to .env beside the app and the page only ever shows its
+    last four characters."""
+
+    def setUp(self):
+        webapp.app.config["TESTING"] = True
+        self.client = webapp.app.test_client()
+        self.tmp_dir = Path(tempfile.mkdtemp())
+        self._orig_env_file = webapp.ENV_FILE
+        webapp.ENV_FILE = self.tmp_dir / ".env"
+        self._orig_key = os.environ.pop("IDEOGRAM_API_KEY", None)
+
+    def tearDown(self):
+        webapp.ENV_FILE = self._orig_env_file
+        if self._orig_key is None:
+            os.environ.pop("IDEOGRAM_API_KEY", None)
+        else:
+            os.environ["IDEOGRAM_API_KEY"] = self._orig_key
+        shutil.rmtree(self.tmp_dir, ignore_errors=True)
+
+    def test_the_form_asks_for_a_key_when_none_is_set(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("Ideogram API key: not set", page)
+        self.assertIn('name="ideogram_api_key"', page)
+
+    def test_saving_a_key_writes_env_and_takes_effect_at_once(self):
+        # A .env.example beside the app seeds the new .env, comments and all.
+        (self.tmp_dir / ".env.example").write_text("# settings\nIMAGE_PROVIDER=pollinations\nIDEOGRAM_API_KEY=\n")
+        key = "abcdefghijklmnopqrstuvwxyz0123456789ABCD"
+        r = self.client.post("/settings/ideogram-key", data={"ideogram_api_key": f"  {key}\n"}, follow_redirects=True)
+        self.assertEqual(r.status_code, 200)
+        env_text = (self.tmp_dir / ".env").read_text()
+        self.assertIn(f"IDEOGRAM_API_KEY={key}\n", env_text)
+        self.assertIn("IMAGE_PROVIDER=pollinations", env_text)  # the rest of the file survives
+        self.assertEqual(env_text.count("IDEOGRAM_API_KEY="), 1)
+        self.assertEqual(os.environ.get("IDEOGRAM_API_KEY"), key)  # no restart needed
+        page = r.get_data(as_text=True)
+        self.assertIn("Ideogram key saved (ends in ABCD)", page)
+        self.assertIn("Ideogram API key: set (ends in ABCD)", page)
+        self.assertNotIn(key, page)  # the key itself never goes back to the browser
+
+    def test_saving_again_replaces_the_old_key_rather_than_adding_a_line(self):
+        first, second = "A" * 30, "B" * 30
+        self.client.post("/settings/ideogram-key", data={"ideogram_api_key": first})
+        self.client.post("/settings/ideogram-key", data={"ideogram_api_key": second})
+        env_text = (self.tmp_dir / ".env").read_text()
+        self.assertEqual(env_text.count("IDEOGRAM_API_KEY="), 1)
+        self.assertIn(f"IDEOGRAM_API_KEY={second}", env_text)
+        self.assertNotIn(first, env_text)
+
+    def test_a_blank_or_mangled_key_is_refused_and_nothing_is_written(self):
+        for bad in ("", "   ", "short", "has a space in it and is long enough"):
+            r = self.client.post("/settings/ideogram-key", data={"ideogram_api_key": bad}, follow_redirects=True)
+            self.assertEqual(r.status_code, 200)
+            self.assertFalse((self.tmp_dir / ".env").exists(), bad)
+            self.assertIsNone(os.environ.get("IDEOGRAM_API_KEY"), bad)
+        page = r.get_data(as_text=True)
+        self.assertIn("look like an Ideogram API key", page)

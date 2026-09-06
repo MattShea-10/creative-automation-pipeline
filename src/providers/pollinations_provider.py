@@ -45,6 +45,7 @@ class PollinationsProvider(ImageProvider):
         width: int = 1024,
         height: int = 1024,
         negative_prompt: str = None,
+        style_reference: bytes = None,  # not supported here; described in words by the caller
     ) -> Image.Image:
         # The endpoint is a plain GET with no exclusion field, so the
         # only place an exclusion can go is the prompt itself. Weaker

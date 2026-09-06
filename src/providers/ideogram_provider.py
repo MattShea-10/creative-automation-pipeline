@@ -60,6 +60,7 @@ def _closest_aspect(width: int, height: int) -> str:
 class IdeogramProvider(ImageProvider):
     name = "ideogram"
     supports_negative_prompt = True
+    supports_style_reference = True
 
     def __init__(
         self,
@@ -108,6 +109,7 @@ class IdeogramProvider(ImageProvider):
         width: int = 1024,
         height: int = 1024,
         negative_prompt: str = None,
+        style_reference: bytes = None,
     ) -> Image.Image:
         url = f"{API_BASE}/v1/{self.model}/generate"
         headers = {"Api-Key": self.api_token}
@@ -129,17 +131,28 @@ class IdeogramProvider(ImageProvider):
             fields["negative_prompt"] = negative_prompt
 
         try:
-            resp = requests.post(url, headers=headers, json=fields, timeout=self.timeout)
-            # This endpoint takes reference image files, so it speaks
-            # multipart/form-data, and has been seen to reject a JSON
-            # body outright. Retry the same fields as real multipart --
-            # the (None, value) tuple is what makes requests send
-            # multipart rather than urlencoded, which is a different
-            # content type again and gets rejected just the same.
-            if resp.status_code in (400, 415, 422):
-                self._last_json_error = resp.text[:300]
-                multipart = {k: (None, str(v)) for k, v in fields.items()}
+            if style_reference:
+                # A style reference is a file, so the request has to be
+                # multipart from the start. The image is sent as-is: the
+                # API accepts JPEG, PNG and WebP up to 25 MB, and the
+                # form already limits uploads to those types.
+                multipart = [(k, (None, str(v))) for k, v in fields.items()]
+                multipart.append(
+                    ("style_reference_images", ("reference.png", style_reference, "application/octet-stream"))
+                )
                 resp = requests.post(url, headers=headers, files=multipart, timeout=self.timeout)
+            else:
+                resp = requests.post(url, headers=headers, json=fields, timeout=self.timeout)
+                # This endpoint takes reference image files, so it speaks
+                # multipart/form-data, and has been seen to reject a JSON
+                # body outright. Retry the same fields as real multipart --
+                # the (None, value) tuple is what makes requests send
+                # multipart rather than urlencoded, which is a different
+                # content type again and gets rejected just the same.
+                if resp.status_code in (400, 415, 422):
+                    self._last_json_error = resp.text[:300]
+                    multipart = {k: (None, str(v)) for k, v in fields.items()}
+                    resp = requests.post(url, headers=headers, files=multipart, timeout=self.timeout)
         except Exception as exc:  # noqa: BLE001
             raise ImageProviderError(f"Ideogram request failed: {exc}") from exc
 
