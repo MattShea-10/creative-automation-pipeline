@@ -690,8 +690,82 @@ def _build_full_ad_prompt(
 FULL_AD_NEGATIVE_CLAUSE = (
     "extra text, additional words, audience description as text, demographic text, "
     "fine print, small print, disclaimer, legal text, footnote, lorem ipsum, "
-    "gibberish lettering, misspelled words, duplicated words"
+    "gibberish lettering, misspelled words, duplicated words, "
+    "cropped text, cut-off letters, elements touching the edge of the frame"
 )
+
+
+# The margin every whole-ad size is asked to keep, in pixels of the
+# final creative -- on top of whatever the provider's crop takes.
+FULL_AD_EDGE_PADDING_PX = 10
+
+# The same breathing room for text the app draws itself into a
+# template's layer boxes. A designer's box that runs to the canvas edge
+# (the skyscraper's description starts at x=0) would otherwise put the
+# first letter of every line against the edge.
+TEXT_EDGE_PADDING_PX = 10
+
+
+def _inset_boxes_to_canvas(boxes: dict, canvas: tuple, pad: int = TEXT_EDGE_PADDING_PX) -> dict:
+    """Copies of the text-layer boxes clamped to sit at least `pad`
+    pixels inside the canvas. Boxes already inside are untouched; a box
+    that reaches an edge is trimmed, never moved, so the designer's
+    alignment survives. Only the layers the app sets type in."""
+    width, height = canvas
+    out = dict(boxes)
+    for name in ("header", "description", "legal", "cta"):
+        box = boxes.get(name)
+        if not box:
+            continue
+        left, top, right, bottom = box
+        left2, top2 = max(left, pad), max(top, pad)
+        right2, bottom2 = min(right, width - pad), min(bottom, height - pad)
+        if right2 - left2 >= 8 and bottom2 - top2 >= 8:
+            out[name] = (left2, top2, right2, bottom2)
+    return out
+
+
+
+def _full_ad_safe_area(width: int, height: int, provider_name: str) -> tuple:
+    """How far in from each edge, as a fraction of the FINAL creative,
+    the model has to keep everything for none of it to be cut off.
+
+    Ideogram renders a fixed set of ratios and the app centre-crops the
+    nearest one to the size asked for -- a 160x600 skyscraper comes
+    back as 1:3 and loses 10% off each side, which is exactly the
+    margin the model gave the headline. The model can't know that, so
+    the crop is worked out here and said in the prompt, plus
+    FULL_AD_EDGE_PADDING_PX of breathing room.
+
+    Returns (left_right_fraction, top_bottom_fraction).
+    """
+    crop_x = crop_y = 0.0
+    if provider_name == "ideogram":
+        from src.providers.ideogram_provider import _closest_aspect
+
+        aw, ah = (int(v) for v in _closest_aspect(width, height).split("x"))
+        rendered = aw / ah
+        wanted = width / height
+        if rendered > wanted:
+            # Wider than needed: the sides go. Fraction of the final
+            # width lost on EACH side.
+            crop_x = (rendered / wanted - 1) / 2
+        elif rendered < wanted:
+            crop_y = (wanted / rendered - 1) / 2
+    pad_x = FULL_AD_EDGE_PADDING_PX / max(width, 1)
+    pad_y = FULL_AD_EDGE_PADDING_PX / max(height, 1)
+    return crop_x + pad_x, crop_y + pad_y
+
+
+def _full_ad_margin_clause(width: int, height: int, provider_name: str) -> str:
+    lr, tb = _full_ad_safe_area(width, height, provider_name)
+    # Never less than a designer's margin, however big the canvas.
+    lr_pct, tb_pct = max(3, round(lr * 100)), max(3, round(tb * 100))
+    return (
+        f"every element -- text, product, logo -- kept at least {lr_pct}% of the width "
+        f"in from the left and right edges and {tb_pct}% of the height in from the top "
+        "and bottom, with nothing touching or cut off by an edge"
+    )
 
 
 IDEOGRAM_SPEED_CHOICES = (
@@ -2983,7 +3057,7 @@ def generate():
         for width, height in sizes:
             try:
                 ad_image = provider_for_ads.generate(
-                    full_ad_prompt,
+                    f"{full_ad_prompt}, {_full_ad_margin_clause(width, height, upload_ai_provider)}",
                     width=width,
                     height=height,
                     negative_prompt=", ".join(
@@ -3183,6 +3257,11 @@ def generate():
             ) and (width, height) in size_template_paths:
                 psd_path_for_size = size_template_paths.get((width, height))
                 layer_boxes = get_psd_layer_boxes(psd_path_for_size)
+                # Where the type is DRAWN: the same boxes, kept
+                # TEXT_EDGE_PADDING_PX in from the canvas edge. The
+                # originals stay for cleaning, since the designer's own
+                # pixels reach wherever the designer's box did.
+                draw_boxes = _inset_boxes_to_canvas(layer_boxes, (width, height))
                 applied_layers = []
                 # Each overridden layer's own isolated RGBA patch (box-
                 # positioned, transparent everywhere else) -- keyed by
@@ -3566,7 +3645,7 @@ def generate():
                     # other than the named layer's own box -- the CTA
                     # group's label sits inside the group's box, not at
                     # it.
-                    box = box_override or layer_boxes.get(layer_key)
+                    box = box_override or draw_boxes.get(layer_key)
                     if box is None:
                         return
                     if not text:
@@ -4704,6 +4783,10 @@ def generate():
         # Never fail a finished batch over its own logging.
         pass
 
+    approvals = load_approvals(job_id)
+    for creative in creatives:
+        creative["approved"] = bool(approvals.get(creative["label"], {}).get("approved"))
+
     return render_template(
         "result.html",
         job_id=job_id,
@@ -4782,6 +4865,68 @@ def download_campaigns(session_id):
         as_attachment=True,
         download_name="campaigns.zip",
     )
+
+
+def _approvals_path(job_id: str) -> Path:
+    return JOBS_DIR / secure_filename(job_id) / "approvals.json"
+
+
+def load_approvals(job_id: str) -> dict:
+    """{size label: {"approved": bool, "at": iso time}} for a run --
+    what was ticked in the preview. Empty when nothing has been."""
+    try:
+        data = json.loads(_approvals_path(job_id).read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+@app.route("/approve/<job_id>", methods=["POST"])
+def approve(job_id):
+    """Tick or untick one size as approved. Called by the preview's
+    checkbox; the state lives in the run's folder so it survives the
+    page, and the approved set can be downloaded on its own."""
+    job_id = secure_filename(job_id)
+    job_dir = JOBS_DIR / job_id
+    if not job_dir.is_dir():
+        abort(404)
+    payload = request.get_json(silent=True) or request.form
+    label = (payload.get("label") or "").strip()
+    if not label or not re.fullmatch(r"\d{2,5}x\d{2,5}", label):
+        abort(400)
+    approved = str(payload.get("approved", "")).lower() in ("1", "true", "yes", "on")
+    approvals = load_approvals(job_id)
+    if approved:
+        approvals[label] = {"approved": True, "at": _datetime.datetime.now().isoformat(timespec="seconds")}
+    else:
+        approvals.pop(label, None)
+    try:
+        _approvals_path(job_id).write_text(json.dumps(approvals, indent=2))
+    except OSError:
+        abort(500)
+    return {"label": label, "approved": approved, "approved_count": len(approvals)}
+
+
+@app.route("/download/<job_id>/approved")
+def download_approved(job_id):
+    """A zip of only the sizes ticked as approved -- the PNG and any
+    PSDs for each -- plus approvals.json saying who approved what when."""
+    job_id = secure_filename(job_id)
+    job_dir = JOBS_DIR / job_id
+    approvals = load_approvals(job_id)
+    if not job_dir.is_dir() or not approvals:
+        abort(404)
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for path in sorted(job_dir.iterdir()):
+            if path.suffix.lower() not in (".png", ".psd"):
+                continue
+            if any(f"_{label}" in path.stem for label in approvals):
+                zf.write(path, path.name)
+        zf.writestr("approvals.json", json.dumps(approvals, indent=2))
+    buf.seek(0)
+    stem = next((z.stem for z in job_dir.glob("*.zip")), f"{job_id[:6]}_creatives")
+    return send_file(buf, as_attachment=True, download_name=f"{stem}_approved.zip", mimetype="application/zip")
 
 
 @app.route("/download/<job_id>")

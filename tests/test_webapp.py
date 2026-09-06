@@ -2518,6 +2518,24 @@ class PaidProviderTest(unittest.TestCase):
         self.assertIn("UK market (not written on the ad)", prompt)
         self.assertIn("only the quoted words appear as text", prompt)
 
+    def test_whole_ad_sizes_are_told_their_real_safe_area(self):
+        # A 160x600 skyscraper comes back from Ideogram as 1:3 and is
+        # centre-cropped, losing 12.5% off each side -- the model's own
+        # margin, which is how "HYDRO BOOST" lost its H. The prompt now
+        # says how far in to stay, per size, plus 10px of breathing room.
+        import webapp
+
+        lr, tb = webapp._full_ad_safe_area(160, 600, "ideogram")
+        self.assertAlmostEqual(lr, 0.125 + 10 / 160, places=3)
+        self.assertAlmostEqual(tb, 10 / 600, places=3)
+        clause = webapp._full_ad_margin_clause(160, 600, "ideogram")
+        self.assertIn("at least 19% of the width", clause)
+        # A square renders as a square: only the 10px, floored at a real margin.
+        self.assertIn("at least 3% of the width", webapp._full_ad_margin_clause(1080, 1080, "ideogram"))
+        # A provider that renders the exact size has no crop to allow for.
+        self.assertAlmostEqual(webapp._full_ad_safe_area(160, 600, "pollinations")[0], 10 / 160, places=3)
+        self.assertIn("cut-off letters", webapp.FULL_AD_NEGATIVE_CLAUSE)
+
     def test_full_ad_prompt_carries_the_ticked_brand_colours(self):
         # A hex triplet alone reads to an image model as text rather than
         # as a colour, so each one goes in with a word beside it.
@@ -6818,6 +6836,45 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         page = r.get_data(as_text=True)
         self.assertIn("isn&#39;t a supported file type", page.replace("&#x27;", "&#39;"))
         self.assertIn(">Keep me</textarea>", page)
+
+    def test_a_size_can_be_approved_from_the_preview_and_it_sticks(self):
+        # The preview's checkbox posts to /approve; the tick lives in the
+        # run's folder, the card gets its green outline and badge, and
+        # the approved sizes can be downloaded on their own.
+        import zipfile as _zipfile
+
+        self._stage_real_template()
+        r = self.client.post("/generate", data={
+            "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_provider": "mock",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        page = r.data.decode()
+        job_id = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+        label = re.search(r'data-label="(\d+x\d+)"', page).group(1)
+        self.assertIn('data-role="lightbox-approve-box"', page)
+        self.assertNotIn("card is-approved", page)
+
+        a = self.client.post(f"/approve/{job_id}", json={"label": label, "approved": True})
+        self.assertEqual(a.status_code, 200)
+        self.assertEqual(a.get_json()["approved_count"], 1)
+        saved = json.loads((webapp.JOBS_DIR / job_id / "approvals.json").read_text())
+        self.assertTrue(saved[label]["approved"])
+
+        z = self.client.get(f"/download/{job_id}/approved")
+        self.assertEqual(z.status_code, 200)
+        names = _zipfile.ZipFile(io.BytesIO(z.data)).namelist()
+        self.assertIn("approvals.json", names)
+        self.assertTrue(any(n.endswith(f"_{label}.png") for n in names), names)
+        self.assertTrue(all(f"_{label}" in n or n == "approvals.json" for n in names), "only approved sizes")
+
+        # Untick: gone from the store, and nothing left to download.
+        a = self.client.post(f"/approve/{job_id}", json={"label": label, "approved": False})
+        self.assertEqual(a.get_json()["approved_count"], 0)
+        self.assertEqual(self.client.get(f"/download/{job_id}/approved").status_code, 404)
+        # Junk labels are refused, unknown runs too.
+        self.assertEqual(self.client.post(f"/approve/{job_id}", json={"label": "../etc", "approved": True}).status_code, 400)
+        self.assertEqual(self.client.post("/approve/nope", json={"label": label, "approved": True}).status_code, 404)
 
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp

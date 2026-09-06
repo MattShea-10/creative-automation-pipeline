@@ -31,7 +31,24 @@
       grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
       @apply gap-5;
     }
-    .card { @apply bg-slate-900 border border-slate-700 rounded-[10px] overflow-hidden; }
+    .card { @apply bg-slate-900 border border-slate-700 rounded-[10px] overflow-hidden relative; }
+    /* Approved: a green outline you can see across the room, and a badge
+       on the tile. Toggled from the preview's checkbox and remembered
+       with the run. */
+    .card.is-approved { @apply border-emerald-500; box-shadow: 0 0 0 2px #10b981; }
+    .approved-badge {
+      @apply absolute top-2 left-2 bg-emerald-600 text-white text-[0.72rem] font-bold uppercase tracking-wide px-2 py-[0.15rem] rounded-md z-10;
+    }
+    .approved-badge[hidden] { display: none; }
+    .approval-summary { @apply text-emerald-300 text-[0.9rem] mb-4; }
+    .approval-summary[hidden] { display: none; }
+    .approval-summary a { @apply text-emerald-200 underline font-semibold; }
+    .lightbox-approve {
+      @apply flex items-center gap-2 text-slate-100 text-[0.95rem] font-semibold cursor-pointer select-none;
+      @apply border border-slate-600 rounded-md px-3 py-1.5 bg-slate-800;
+    }
+    .lightbox-approve input { @apply w-4 h-4 accent-emerald-500 cursor-pointer; }
+    .lightbox-approve.is-on { @apply border-emerald-500 text-emerald-200; }
     .card .thumb {
       background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 16px 16px;
       @apply flex items-center justify-center min-h-[140px] p-2;
@@ -188,9 +205,17 @@
       the zip</a> always gets you the real image either way.
     </div>
 
+    {% set approved_count = creatives | selectattr("approved") | list | length %}
+    <p class="approval-summary" data-role="approval-summary" {% if not approved_count %}hidden{% endif %}>
+      <span data-role="approval-count">{{ approved_count }}</span> of {{ creatives | length }} approved --
+      <a href="{{ url_for('download_approved', job_id=job_id) }}">download the approved sizes</a>
+      (PNG and PSDs, with an approvals.json). Open a preview to approve or unapprove a size.
+    </p>
+
     <div class="grid">
       {% for c in creatives %}
-        <div class="card">
+        <div class="card{% if c.approved %} is-approved{% endif %}" data-label="{{ c.label }}">
+          <span class="approved-badge" data-role="approved-badge" {% if not c.approved %}hidden{% endif %}>&#10003; Approved</span>
           <button type="button" class="thumb" data-role="zoom" data-label="{{ c.label }}" title="Click to view {{ c.label }} larger">
             <img src="{{ url_for('serve_output', job_id=job_id, filename=c.filename) }}" alt="{{ c.label }}">
           </button>
@@ -220,6 +245,10 @@
     <div class="lightbox-stage">
       <img data-role="lightbox-image" src="" alt="">
       <div class="lightbox-caption" data-role="lightbox-caption"></div>
+      <label class="lightbox-approve" data-role="lightbox-approve">
+        <input type="checkbox" data-role="lightbox-approve-box">
+        <span data-role="lightbox-approve-text">Approve this size</span>
+      </label>
     </div>
   </div>
 
@@ -235,6 +264,45 @@
       var closeBtn = document.querySelector('[data-role="lightbox-close"]');
       if (!box || !image || !caption) return;
       var lastFocused = null;
+      var currentCard = null;
+      var approveLabel = document.querySelector('[data-role="lightbox-approve"]');
+      var approveBox = document.querySelector('[data-role="lightbox-approve-box"]');
+      var approveText = document.querySelector('[data-role="lightbox-approve-text"]');
+      var summary = document.querySelector('[data-role="approval-summary"]');
+      var summaryCount = document.querySelector('[data-role="approval-count"]');
+
+      function paintApproval(card, approved) {
+        card.classList.toggle("is-approved", approved);
+        var badge = card.querySelector('[data-role="approved-badge"]');
+        if (badge) badge.hidden = !approved;
+        if (approveLabel) approveLabel.classList.toggle("is-on", approved);
+        if (approveText) approveText.textContent = approved ? "Approved" : "Approve this size";
+        var count = document.querySelectorAll(".card.is-approved").length;
+        if (summaryCount) summaryCount.textContent = count;
+        if (summary) summary.hidden = count === 0;
+      }
+
+      if (approveBox) {
+        approveBox.addEventListener("change", function () {
+          if (!currentCard) return;
+          var label = currentCard.dataset.label;
+          var approved = approveBox.checked;
+          paintApproval(currentCard, approved);
+          fetch("{{ url_for('approve', job_id=job_id) }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: label, approved: approved })
+          }).then(function (r) {
+            if (!r.ok) throw new Error(r.status);
+          }).catch(function () {
+            // Put it back the way it was and say so, rather than show a
+            // tick the server never recorded.
+            approveBox.checked = !approved;
+            paintApproval(currentCard, !approved);
+            caption.textContent = (label || "") + "  --  couldn't save the approval; try again";
+          });
+        });
+      }
 
       function open(trigger) {
         // The trigger is either the preview or its size label, so the
@@ -244,6 +312,12 @@
         var img = card ? card.querySelector("img") : trigger.querySelector("img");
         if (!img) return;
         lastFocused = trigger;
+        currentCard = card;
+        if (approveBox && card) {
+          approveBox.checked = card.classList.contains("is-approved");
+          if (approveLabel) approveLabel.classList.toggle("is-on", approveBox.checked);
+          if (approveText) approveText.textContent = approveBox.checked ? "Approved" : "Approve this size";
+        }
         image.src = img.src;
         image.alt = img.alt;
         var describe = function () {
