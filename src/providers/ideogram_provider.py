@@ -155,9 +155,15 @@ class IdeogramProvider(ImageProvider):
                 # API accepts JPEG, PNG and WebP up to 25 MB, and the
                 # form already limits uploads to those types.
                 multipart = [(k, (None, str(v))) for k, v in fields.items()]
-                multipart.append(
-                    ("style_reference_images", ("reference.png", style_reference, "application/octet-stream"))
+                # One picture or a mood board of several: each goes in
+                # as its own style_reference_images part.
+                references = (
+                    [style_reference] if isinstance(style_reference, (bytes, bytearray)) else list(style_reference)
                 )
+                for i, blob in enumerate(references):
+                    multipart.append(
+                        ("style_reference_images", (f"reference{i + 1}.png", bytes(blob), "application/octet-stream"))
+                    )
                 resp = requests.post(url, headers=headers, files=multipart, timeout=self.timeout)
             else:
                 resp = requests.post(url, headers=headers, json=fields, timeout=self.timeout)

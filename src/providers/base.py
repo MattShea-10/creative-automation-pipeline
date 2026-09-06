@@ -55,7 +55,8 @@ class ImageProvider(ABC):
 
         `negative_prompt` describes what to keep OUT of the image.
         `style_reference` is the bytes of a JPEG/PNG/WebP whose palette,
-        lighting and mood the result should share.
+        lighting and mood the result should share -- or a list of them,
+        a mood board.
 
         Implementations should raise ImageProviderError on failure so the
         pipeline can decide whether to fall back to another provider.

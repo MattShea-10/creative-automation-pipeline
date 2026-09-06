@@ -980,36 +980,31 @@
             <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
 
             <div class="field" style="margin-top: 0.7rem; margin-bottom: 0;">
-              <label for="upload_ai_reference" style="font-weight: 400;">Reference image <span style="font-weight: 400; color: var(--muted);">(optional -- make the backdrop look like this)</span></label>
+              <label for="upload_ai_reference" style="font-weight: 400;">Reference images <span style="font-weight: 400; color: var(--muted);">(optional -- a mood board of up to {{ reference_limit }}: make the backdrop look like these)</span></label>
               <div class="drop-zone" data-role="reference-drop-zone">
-                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
-                <input type="text" name="upload_ai_reference_url" data-role="reference-url" placeholder="...or drag a picture in from a web page, or paste an image address" value="" style="margin-top: 0.4rem;">
-                <div class="layer-image-cached" data-role="reference-url-preview" hidden style="margin-top: 0.4rem;">
-                  <img alt="Web image" data-role="reference-url-thumb">
-                  <div class="layer-image-cached-meta">
-                    <strong>From the web</strong>
-                    <span class="layer-image-cached-name" data-role="reference-url-name"></span>
-                  </div>
-                  <button type="button" class="clear-btn" data-role="reference-url-clear" title="Drop this web image">&times;</button>
-                </div>
-                <div class="hint" style="margin: 0.3rem 0 0;">Drop a picture here, choose a file, or drag one straight off a web page. Its palette, lighting and mood are matched -- not its subject; the scene still comes from the brief.</div>
+                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept=".png,.webp,.jpg,.jpeg" multiple data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
+                <input type="text" data-role="reference-url" placeholder="...or drag pictures in from web pages, or paste an image address and press Enter" style="margin-top: 0.4rem;">
+                <div data-role="reference-url-list"></div>
+                <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures here, choose files, or drag them straight off web pages -- up to {{ reference_limit }} together. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
               </div>
-              {% if prefill_files.get('upload_ai_reference') %}
-                <div class="layer-image-cached" data-role="layer-cached-upload_ai_reference" data-prefill-hint style="margin-top: 0.4rem;">
-                  {% if edit_job_id %}
-                    <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get('upload_ai_reference')) }}" alt="Reference image">
-                  {% endif %}
-                  <div class="layer-image-cached-meta">
-                    <strong>Kept from your last run</strong>
-                    <span class="layer-image-cached-name" title="{{ prefill_files.get('upload_ai_reference') }}">{{ prefill_files.get('upload_ai_reference') }}</span>
+              {% for slot in reference_slots %}
+                {% if prefill_files.get(slot) %}
+                  <div class="layer-image-cached" data-role="layer-cached-{{ slot }}" data-prefill-hint style="margin-top: 0.4rem;">
+                    {% if edit_job_id %}
+                      <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get(slot)) }}" alt="Reference image">
+                    {% endif %}
+                    <div class="layer-image-cached-meta">
+                      <strong>Kept from your last run</strong>
+                      <span class="layer-image-cached-name" title="{{ prefill_files.get(slot) }}">{{ prefill_files.get(slot) }}</span>
+                    </div>
+                    <button type="button" class="clear-btn" data-role="layer-clear-btn-{{ slot }}" title="Drop this reference image">&times;</button>
+                    <input type="hidden" name="{{ slot }}_clear" value="">
                   </div>
-                  <button type="button" class="clear-btn" data-role="layer-clear-btn-upload_ai_reference" title="Drop this reference image">&times;</button>
-                  <input type="hidden" name="upload_ai_reference_clear" value="">
-                </div>
-              {% endif %}
+                {% endif %}
+              {% endfor %}
               <div class="hint" data-role="reference-provider-note" style="margin-top: 0.3rem;">
-                With Ideogram the picture itself is sent as a style reference. With Pollinations it can't be
-                (that service only takes web addresses), so the app describes its colours and lighting in
+                With Ideogram the pictures themselves are sent as style references. With Pollinations they can't be
+                (that service only takes web addresses), so the app describes their colours and lighting in
                 the prompt instead -- a similar feel rather than a close match.
               </div>
             </div>
@@ -1301,27 +1296,41 @@
       }
 
       var refInput = root.querySelector('[name="upload_ai_reference"]');
-      var refChip = root.querySelector('[data-role="layer-cached-upload_ai_reference"]');
-      if (refInput && refChip) {
-        // The (x) itself is handled with every other kept-file chip below.
-        refInput.addEventListener("change", function () { refChip.hidden = !!refInput.value; });
-      }
       var refZone = root.querySelector('[data-role="reference-drop-zone"]');
-      if (refZone) {
+      if (refZone && refInput) {
         var refUrl = refZone.querySelector('[data-role="reference-url"]');
-        var refPreview = refZone.querySelector('[data-role="reference-url-preview"]');
-        var refThumb = refZone.querySelector('[data-role="reference-url-thumb"]');
-        var refName = refZone.querySelector('[data-role="reference-url-name"]');
-        var showWebImage = function (url) {
-          refUrl.value = url;
-          if (refThumb) refThumb.src = url;
-          if (refName) refName.textContent = url.replace(/^https?:\/\//, "").slice(0, 60);
-          if (refPreview) refPreview.hidden = !url;
-          // One reference at a time: a web picture replaces a chosen file.
-          if (url && refInput) { refInput.value = ""; if (refChip) refChip.hidden = true; }
+        var refList = refZone.querySelector('[data-role="reference-url-list"]');
+        var webUrls = [];
+        var keptChips = function () {
+          return Array.prototype.slice.call(root.querySelectorAll('[data-role^="layer-cached-upload_ai_reference"]'))
+            .filter(function (c) { return !c.hidden && !c.classList.contains("is-cleared"); }).length;
+        };
+        var total = function () { return (refInput.files ? refInput.files.length : 0) + webUrls.length + keptChips(); };
+        var renderWeb = function () {
+          refList.innerHTML = "";
+          webUrls.forEach(function (url, i) {
+            var chip = document.createElement("div");
+            chip.className = "layer-image-cached";
+            chip.style.marginTop = "0.4rem";
+            chip.innerHTML = '<img alt="Web image"><div class="layer-image-cached-meta"><strong>From the web</strong>' +
+              '<span class="layer-image-cached-name"></span></div>' +
+              '<button type="button" class="clear-btn" title="Drop this web image">&times;</button>' +
+              '<input type="hidden" name="upload_ai_reference_url">';
+            chip.querySelector("img").src = url;
+            chip.querySelector(".layer-image-cached-name").textContent = url.replace(/^https?:\/\//, "").slice(0, 60);
+            chip.querySelector("input").value = url;
+            chip.querySelector("button").addEventListener("click", function () { webUrls.splice(i, 1); renderWeb(); });
+            refList.appendChild(chip);
+          });
+        };
+        var addWeb = function (url) {
+          if (!/^https?:\/\//i.test(url) || webUrls.indexOf(url) !== -1) return;
+          if (total() >= {{ reference_limit }}) { window.alert("A mood board holds up to {{ reference_limit }} pictures. Remove one first."); return; }
+          webUrls.push(url); renderWeb();
         };
         // A picture dragged off a web page arrives as its address, not a
-        // file -- a file input ignores it. Both kinds land on the zone.
+        // file -- a file input ignores it. Both kinds land on the zone,
+        // and several at once are fine.
         ["dragenter", "dragover"].forEach(function (evt) {
           refZone.addEventListener(evt, function (e) { e.preventDefault(); refZone.classList.add("is-dragover"); });
         });
@@ -1330,29 +1339,34 @@
           refZone.classList.remove("is-dragover");
           var dt = e.dataTransfer;
           if (!dt) return;
-          if (dt.files && dt.files.length && refInput) {
+          if (dt.files && dt.files.length) {
             e.preventDefault();
-            refInput.files = dt.files;
+            var merged = new DataTransfer();
+            Array.prototype.forEach.call(refInput.files || [], function (f) { merged.items.add(f); });
+            Array.prototype.forEach.call(dt.files, function (f) { merged.items.add(f); });
+            refInput.files = merged.files;
             refInput.dispatchEvent(new Event("change"));
-            showWebImage("");
             return;
           }
           var url = (dt.getData("text/uri-list") || dt.getData("text/plain") || "").split("\n")[0].trim();
           if (!url) {
-            // Some browsers only give the <img> markup.
             var html = dt.getData("text/html") || "";
             var m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
             if (m) url = m[1];
           }
-          if (/^https?:\/\//i.test(url)) { e.preventDefault(); showWebImage(url); }
+          if (url) { e.preventDefault(); addWeb(url); }
         });
         if (refUrl) {
-          refUrl.addEventListener("change", function () { showWebImage(refUrl.value.trim()); });
-          refUrl.addEventListener("paste", function () { setTimeout(function () { showWebImage(refUrl.value.trim()); }, 0); });
+          var takeUrl = function () { var u = refUrl.value.trim(); if (u) { addWeb(u); refUrl.value = ""; } };
+          refUrl.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); takeUrl(); } });
+          refUrl.addEventListener("change", takeUrl);
+          refUrl.addEventListener("paste", function () { setTimeout(takeUrl, 0); });
         }
-        var refUrlClear = refZone.querySelector('[data-role="reference-url-clear"]');
-        if (refUrlClear) refUrlClear.addEventListener("click", function () { showWebImage(""); });
-        if (refInput) refInput.addEventListener("change", function () { if (refInput.value) showWebImage(""); });
+        refInput.addEventListener("change", function () {
+          if (total() > {{ reference_limit }}) {
+            window.alert("A mood board holds up to {{ reference_limit }} pictures; only the first {{ reference_limit }} will be used.");
+          }
+        });
       }
 
       var customHeroToggle = root.querySelector('[data-role="custom-hero-toggle"]');

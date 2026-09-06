@@ -2318,6 +2318,35 @@ class PaidProviderTest(unittest.TestCase):
                     pass
         return seeds
 
+    def test_ideogram_sends_a_mood_board_as_several_style_reference_parts(self):
+        from unittest import mock
+        from src.providers.ideogram_provider import IdeogramProvider
+
+        provider = IdeogramProvider(api_token="k" * 32)
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            text = ""
+            content = b""
+
+            def json(self):
+                return {"data": [{"url": "http://example.invalid/i.png"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None, files=None):
+            if "generate" in url:
+                seen["files"] = files
+            return _Resp()
+
+        with mock.patch("requests.post", fake_post), mock.patch("requests.get", fake_post):
+            try:
+                provider.generate("x", style_reference=[b"ONE", b"TWO", b"THREE"])
+            except Exception:
+                pass
+        parts = [v for k, v in seen["files"] if k == "style_reference_images"]
+        self.assertEqual([p[1] for p in parts], [b"ONE", b"TWO", b"THREE"])
+        self.assertEqual(len({p[0] for p in parts}), 3, "each part needs its own filename")
+
     def test_ideogram_rendering_speed_is_a_knob_with_a_price(self):
         from src.providers.ideogram_provider import IdeogramProvider
         from src.providers import get_provider
@@ -6612,6 +6641,73 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         preview = _Image.open(psds[0]).convert("RGB")
         w, h = preview.size
         self.assertEqual(preview.getpixel((int(w * 0.5), int(h * 0.6)))[:3][2] < 100, True)  # the dark hero, not template art
+
+    def test_a_mood_board_of_several_pictures_all_reach_ideogram(self):
+        # Ideogram takes up to three style references for one style, so
+        # the drop zone takes up to three pictures: files, web images or
+        # a mix. All of them go, each remembered in its own slot on Edit,
+        # and one (x) drops one.
+        from unittest import mock
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Ideogramish:
+            name = "stub"
+            supports_style_reference = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, style_reference=None):
+                from PIL import Image as _Image
+                sent.append(style_reference)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        blue = self._reference_png((8, 14, 40))
+        red = self._reference_png((160, 20, 20))
+        web = self._reference_png((20, 120, 20))
+
+        class _Resp:
+            status_code = 200
+            headers = {"Content-Type": "image/png"}
+
+            def iter_content(self, n):
+                yield web
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Ideogramish()
+        try:
+            with mock.patch("requests.get", lambda url, **kw: _Resp()):
+                r = self.client.post("/generate", data={
+                    "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                    "upload_ai_reference": [(io.BytesIO(blue), "blue.png"), (io.BytesIO(red), "red.png")],
+                    "upload_ai_reference_url": "https://example.com/green.png",
+                }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(sent[-1], [blue, red, web])
+            page = r.data.decode()
+            self.assertIn("Styled after the reference images blue.png, red.png, green.png", page)
+            self.assertIn("sent to Ideogram as style references", page)
+            job_id = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+            edit_page = self.client.get(f"/edit/{job_id}").get_data(as_text=True)
+            for slot in ("upload_ai_reference", "upload_ai_reference_2", "upload_ai_reference_3"):
+                self.assertIn(f'data-role="layer-cached-{slot}"', edit_page)
+            # Drop just the middle one on a re-run.
+            r2 = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "edit_job_id": job_id, "upload_ai_reference_2_clear": "1",
+            }, content_type="multipart/form-data")
+            self.assertEqual(sent[-1], [blue, web])
+            self.assertIn("blue.png, green.png", r2.data.decode())
+            # A fourth is refused politely and the first three are used.
+            r3 = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "upload_ai_reference": [(io.BytesIO(blue), "a.png"), (io.BytesIO(red), "b.png"),
+                                        (io.BytesIO(blue), "c.png"), (io.BytesIO(red), "d.png")],
+            }, content_type="multipart/form-data")
+            self.assertEqual(len(sent[-1]), 3)
+            self.assertIn("A mood board can hold 3 pictures", r3.data.decode())
+        finally:
+            _webapp.get_provider = original
 
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp

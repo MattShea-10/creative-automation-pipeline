@@ -513,6 +513,31 @@ def _backdrop_scene(product_name, campaign_message, audience, rng=None) -> str:
     return ", ".join(parts)
 
 
+# How many pictures a mood board holds: Ideogram takes up to three
+# style references for one style.
+REFERENCE_LIMIT = 3
+REFERENCE_SLOTS = ("upload_ai_reference", "upload_ai_reference_2", "upload_ai_reference_3")
+
+
+def _mood_board(images) -> Image.Image:
+    """The reference pictures side by side at equal height, so one
+    description (reference_look_phrase) covers the board as a whole --
+    its palette is the palette of all of them, weighted by area."""
+    if len(images) == 1:
+        return images[0]
+    height = 256
+    tiles = []
+    for im in images:
+        w = max(1, round(im.width * height / max(im.height, 1)))
+        tiles.append(im.convert("RGB").resize((w, height)))
+    board = Image.new("RGB", (sum(t.width for t in tiles), height))
+    x = 0
+    for t in tiles:
+        board.paste(t, (x, 0))
+        x += t.width
+    return board
+
+
 def reference_look_phrase(image) -> str:
     """A dropped reference picture described in words -- its dominant
     colours, brightness, warmth, saturation and contrast -- as art
@@ -1388,6 +1413,8 @@ def _inject_settings():
         "env_file": str(ENV_FILE),
         "ideogram_speeds": IDEOGRAM_SPEED_CHOICES,
         "default_ideogram_speed": DEFAULT_IDEOGRAM_SPEED,
+        "reference_limit": REFERENCE_LIMIT,
+        "reference_slots": REFERENCE_SLOTS,
     }
 
 
@@ -1937,48 +1964,68 @@ def generate():
         except Exception as exc:  # noqa: BLE001
             flash(f"Couldn't read the campaign hero image: {exc}")
             return redirect(url_for("index"))
+        # Like a content PSD upload, this drives a templated batch: the
+        # sizes come from default_templates/, not from the size pickers.
+        sizes = []
 
-    # A reference picture for the AI backdrop: "make it look like this".
-    # Sent to Ideogram as a style reference file, and described in words
-    # in the prompt for every provider (see reference_look_phrase()).
-    # Carried forward on Edit like the other uploads.
-    upload_ai_reference_file = request.files.get("upload_ai_reference")
-    upload_ai_reference_url = (request.form.get("upload_ai_reference_url") or "").strip()
-    if upload_ai_reference_file is not None and upload_ai_reference_file.filename:
-        if not _allowed(upload_ai_reference_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
+    # Reference pictures for the AI backdrop -- a mood board of up to
+    # REFERENCE_LIMIT: files, pictures dragged off web pages, or both.
+    # Sent to Ideogram together as style references, and described in
+    # words in the prompt for every provider (see reference_look_phrase()).
+    # Kept as numbered slots (upload_ai_reference, _2, _3) so Edit carries
+    # each forward like any other upload, and one (x) drops one picture.
+    upload_ai_reference_paths = []
+    fresh_files = [
+        f for f in request.files.getlist("upload_ai_reference") if f is not None and f.filename
+    ]
+    for upload in fresh_files:
+        if not _allowed(upload.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
             flash(
-                f"Reference image: '{upload_ai_reference_file.filename}' isn't a supported file type. "
+                f"Reference image: '{upload.filename}' isn't a supported file type. "
                 "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
             )
             return redirect(url_for("index"))
-        upload_ai_reference_path = _save_upload(upload_ai_reference_file, uploads_dir)
-    elif upload_ai_reference_url:
+        upload_ai_reference_paths.append(_save_upload(upload, uploads_dir))
+    for url in (u.strip() for u in request.form.getlist("upload_ai_reference_url")):
+        if not url:
+            continue
         # Dragged from a web page, or an address pasted in. Fetched now
         # and kept as a file from here on, so Edit carries it forward
         # like any upload and the page never has to fetch it twice.
         try:
-            upload_ai_reference_path = _fetch_web_image(upload_ai_reference_url, uploads_dir)
+            upload_ai_reference_paths.append(_fetch_web_image(url, uploads_dir))
         except ValueError as exc:
             flash(str(exc))
             return redirect(url_for("index"))
-    elif request.form.get("upload_ai_reference_clear"):
-        upload_ai_reference_path = None
-    else:
-        upload_ai_reference_path = _carry_forward_upload(
-            "upload_ai_reference", uploads_dir, prior_job_dir, prior_form_state
+    for slot in REFERENCE_SLOTS:
+        if request.form.get(f"{slot}_clear"):
+            continue
+        carried = _carry_forward_upload(slot, uploads_dir, prior_job_dir, prior_form_state)
+        if carried is not None and carried not in upload_ai_reference_paths:
+            upload_ai_reference_paths.append(carried)
+    reference_overflow_warning = None
+    if len(upload_ai_reference_paths) > REFERENCE_LIMIT:
+        reference_overflow_warning = (
+            f"A mood board can hold {REFERENCE_LIMIT} pictures (Ideogram's limit for a style); "
+            f"{len(upload_ai_reference_paths)} were given -- the first {REFERENCE_LIMIT} were used."
         )
-    upload_ai_reference_image = None
-    upload_ai_reference_bytes = None
-    if upload_ai_reference_path is not None:
+        upload_ai_reference_paths = upload_ai_reference_paths[:REFERENCE_LIMIT]
+    upload_ai_reference_path = upload_ai_reference_paths[0] if upload_ai_reference_paths else None
+    upload_ai_reference_images = []
+    upload_ai_reference_bytes_list = []
+    for path in upload_ai_reference_paths:
         try:
-            upload_ai_reference_image = Image.open(upload_ai_reference_path).convert("RGB")
-            upload_ai_reference_bytes = upload_ai_reference_path.read_bytes()
+            upload_ai_reference_images.append(Image.open(path).convert("RGB"))
+            upload_ai_reference_bytes_list.append(path.read_bytes())
         except Exception as exc:  # noqa: BLE001
-            flash(f"Couldn't read the reference image: {exc}")
+            flash(f"Couldn't read the reference image {path.name}: {exc}")
             return redirect(url_for("index"))
-        # Like a content PSD upload, this drives a templated batch: the
-        # sizes come from default_templates/, not from the size pickers.
-        sizes = []
+    upload_ai_reference_image = _mood_board(upload_ai_reference_images) if upload_ai_reference_images else None
+    # One picture goes as bytes, a board as a list -- the provider takes either.
+    upload_ai_reference_bytes = (
+        upload_ai_reference_bytes_list[0] if len(upload_ai_reference_bytes_list) == 1
+        else upload_ai_reference_bytes_list or None
+    )
 
     # The Upload Creative generator makes the campaign's backdrop.
     # Generated at the content PSD's own size, since it plays that role:
@@ -2157,10 +2204,11 @@ def generate():
             )
             if upload_ai_reference_path is not None:
                 sent_as_file = getattr(_provider(upload_ai_provider), "supports_style_reference", False)
+                names = ", ".join(p.name for p in upload_ai_reference_paths)
                 background_notes_pending += (
-                    f" Styled after the reference image {upload_ai_reference_path.name}"
+                    f" Styled after the reference image{'s' if len(upload_ai_reference_paths) > 1 else ''} {names}"
                     + (
-                        " (sent to Ideogram as a style reference, and described in the prompt)."
+                        f" (sent to Ideogram as {'style references' if len(upload_ai_reference_paths) > 1 else 'a style reference'}, and described in the prompt)."
                         if sent_as_file
                         else f" (described in the prompt -- {upload_ai_provider} can't take the picture itself)."
                     )
@@ -2264,6 +2312,8 @@ def generate():
 
     background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
+    if reference_overflow_warning:
+        background_warnings.append(reference_overflow_warning)
     if background_notes_pending:
         background_notes.append(background_notes_pending)
     background_warnings.extend(background_warnings_pending)
@@ -4494,7 +4544,7 @@ def generate():
         "hero_image": hero_path if hero_provided else None,
         "content_psd": content_psd_path if content_psd_provided else None,
         "upload_hero_image": upload_hero_path,
-        "upload_ai_reference": upload_ai_reference_path,
+        **{slot: (upload_ai_reference_paths[i] if i < len(upload_ai_reference_paths) else None) for i, slot in enumerate(REFERENCE_SLOTS)},
         # Under a key of its own, never a user-upload key -- see the
         # "Keep this image" branch in the generator block above.
         "upload_ai_generated": upload_ai_path,
