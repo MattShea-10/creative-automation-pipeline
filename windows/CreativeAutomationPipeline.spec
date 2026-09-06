@@ -32,6 +32,16 @@ hiddenimports = (
     + collect_submodules("skimage")
     + ["PIL._tkinter_finder", "psd_tools", "aggdraw", "cv2", "pytesseract", "deep_translator", "dotenv"]
 )
+# Background removal for the whole-ad layer split. Optional at runtime
+# (src/ad_split.py falls back to GrabCut on ImportError), so a build
+# without it still works -- but when the packages are present they and
+# their native bits come along.
+for optional in ("rembg", "onnxruntime", "pymatting", "numba", "llvmlite", "pooch", "scipy"):
+    try:
+        hiddenimports += collect_submodules(optional)
+        datas += collect_data_files(optional)
+    except Exception:
+        pass
 
 a = Analysis(
     [str(ROOT / "webapp.py")],

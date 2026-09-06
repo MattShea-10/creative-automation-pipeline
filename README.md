@@ -145,6 +145,31 @@ Each result has **Download layered PSD** (opens looking exactly like the
 preview) and **Download live-text PSD** (the same, with the text still
 editable in Photoshop).
 
+**Whole-ad runs and layers.** With **Generate the whole ad** ticked the
+model paints the entire creative as one picture, so there are no layers
+to begin with. The **split PSD** each size gets is a reconstruction after
+the fact: an inpainted **background**, the **subject** cut out (with a
+background-removal model when `rembg` is installed -- the default install
+includes it and it fetches its 176 MB model on first use; OpenCV's rougher
+GrabCut otherwise), and the painted headline as a **text** layer (a
+picture of text -- movable, not retypeable). Beneath them, switched off,
+sit the size's real logo, product and live header / description / CTA
+type retyped to the brief, so a designer can hide the painted text and
+switch the real elements on. A painted logo can't be told from the
+artwork and stays wherever it fell. For clean, editable layers from the
+start, use the normal mode: the model makes only the backdrop and the
+real elements go on top.
+
+**What Ideogram costs.** It bills per image: Turbo $0.03, Default $0.06,
+Quality $0.09 -- the **Rendering** dropdown under the provider picks
+which, and Turbo is the default. A normal run is *one* image (the backdrop
+is generated once and reused across every size), so a Turbo run is 3
+cents. **Generate the whole ad** is one image *per size*. If the no-text
+check finds lettering in a backdrop the app regenerates once, never more,
+on a paid provider. Tick **Keep this image** while adjusting text and
+styling and nothing is billed. Every results page has an amber line
+saying exactly what that run spent.
+
 ### If something goes wrong
 
 The message on screen normally says exactly what. The two common ones:

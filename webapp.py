@@ -61,7 +61,9 @@ from werkzeug.utils import secure_filename
 from src.creative_render import render_creative, render_creative_layers
 from psd_tools import PSDImage
 
+from src.ad_split import split_ad
 from src.psd_export import (
+    write_whole_ad_psd,
     save_layered_psd,
     save_layered_psd_preserving_type,
     replace_pixel_layers,
@@ -2825,6 +2827,7 @@ def generate():
     # backdrop can -- cropping is what takes the right-hand third off a
     # headline. It is also why this is the expensive option, and why the
     # count is said out loud rather than discovered on the bill.
+    full_ad_templates = {}
     if upload_ai_full_ad and sizes:
         full_ad_prompt = _build_full_ad_prompt(
             product_name,
@@ -2880,8 +2883,11 @@ def generate():
             size_templates[(width, height)] = ad_image
             # No path for it, so no layer override, no PSD rebuild, and
             # no text drawn over the model's own -- see the
-            # size_template_paths lookups in the render loop.
-            size_template_paths.pop((width, height), None)
+            # size_template_paths lookups in the render loop. The
+            # template is remembered separately: the whole-ad PSD
+            # written in the render loop carries its real elements
+            # hidden beneath the model's picture.
+            full_ad_templates[(width, height)] = size_template_paths.pop((width, height), None)
 
     creatives = []
     for width, height in sizes:
@@ -2951,6 +2957,48 @@ def generate():
                     psd_filename = psd_candidate_filename
                 except Exception:
                     psd_filename = None
+            elif upload_ai_full_ad and (width, height) in full_ad_templates:
+                # A whole-ad generation is one flat picture. The PSD for
+                # it is a reconstruction -- background, subject and
+                # painted text pulled apart after the fact -- with the
+                # size's real logo, product and live type hidden beneath
+                # for retouching. See src/ad_split.py for what that can
+                # and can't do.
+                try:
+                    split = split_ad(background_image)
+                    psd_candidate_filename = f"{file_name_prefix}_{size_label(width, height)}.psd"
+                    written = write_whole_ad_psd(
+                        background_image,
+                        split.layers(),
+                        job_dir / psd_candidate_filename,
+                        template_path=full_ad_templates.get((width, height)),
+                        copy={
+                            "header": upload_ai_headline or layer_header_text or campaign_message,
+                            "description": layer_description_text or campaign_message,
+                            "cta": layer_cta_text,
+                        },
+                    )
+                    if written:
+                        psd_filename = psd_candidate_filename
+                        real = [n for n in written if n not in {name for name, _ in split.layers()}]
+                        background_notes.append(
+                            f"{size_label(width, height)}: whole-ad PSD -- layers {', '.join(written)}. "
+                            + " ".join(split.notes)
+                            + (
+                                f" The template's own {', '.join(real)} are in the file switched off, "
+                                "the type retyped to this brief's copy, for retouching."
+                                if real else ""
+                            )
+                        )
+                    else:
+                        background_warnings.append(
+                            f"{size_label(width, height)}: couldn't write the whole-ad PSD; the PNG is unaffected."
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    background_warnings.append(
+                        f"{size_label(width, height)}: couldn't split the generated ad into layers ({exc}); "
+                        "the PNG is unaffected."
+                    )
 
             # A PSD template is a complete, already-designed creative for
             # this exact size (headline, logo, CTA, etc. all baked into
@@ -4360,6 +4408,7 @@ def generate():
                 "name": size_name(width, height),
                 "psd_filename": psd_filename,
                 "source_psd_filename": source_psd_filename,
+                "whole_ad": bool(upload_ai_full_ad and (width, height) in full_ad_templates),
             }
         )
 

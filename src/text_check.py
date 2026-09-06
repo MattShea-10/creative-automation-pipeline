@@ -100,8 +100,12 @@ def ocr_available() -> bool:
     return shutil.which("tesseract") is not None
 
 
-def find_text(image: Image.Image) -> TextCheckResult:
+def find_text(image: Image.Image, min_confidence: float = None) -> TextCheckResult:
     """Words the OCR engine is confident it can read in `image`.
+
+    `min_confidence` overrides MIN_CONFIDENCE for callers that want the
+    doubtful words too (the whole-ad layer split accepts a low-scoring
+    word when it sits on the same line as a confident one).
 
     Returns an empty result (available=False) when Tesseract isn't
     installed, so a caller can tell "checked, clean" from "couldn't
@@ -114,34 +118,41 @@ def find_text(image: Image.Image) -> TextCheckResult:
 
     # Greyscale: colour carries nothing for OCR and the conversion makes
     # the engine's own preprocessing more predictable.
-    prepared = image.convert("L")
+    # Both polarities: Tesseract is trained on dark-on-light and reads
+    # light lettering on a darker backdrop -- the usual case for a
+    # headline over a photograph -- far better with the image inverted.
+    from PIL import ImageOps
+
+    grey = image.convert("L")
     pages = []
-    for mode in PAGE_SEGMENTATION_MODES:
-        try:
-            pages.append(
-                pytesseract.image_to_data(
-                    prepared,
-                    config=f"--psm {mode}",
-                    output_type=pytesseract.Output.DICT,
+    for prepared in (grey, ImageOps.invert(grey)):
+        for mode in PAGE_SEGMENTATION_MODES:
+            try:
+                pages.append(
+                    pytesseract.image_to_data(
+                        prepared,
+                        config=f"--psm {mode}",
+                        output_type=pytesseract.Output.DICT,
+                    )
                 )
-            )
-        except Exception:  # noqa: BLE001
-            # A broken or half-installed Tesseract reports as "can't
-            # check" rather than failing the render around it.
-            continue
+            except Exception:  # noqa: BLE001
+                # A broken or half-installed Tesseract reports as "can't
+                # check" rather than failing the render around it.
+                continue
     if not pages:
         return TextCheckResult(available=False)
 
     min_height = max(1.0, image.height * MIN_HEIGHT_FRACTION)
     findings = []
     seen_boxes = set()
+    threshold = MIN_CONFIDENCE if min_confidence is None else float(min_confidence)
     for data in pages:
-        findings.extend(_findings_from(data, min_height, seen_boxes))
+        findings.extend(_findings_from(data, min_height, seen_boxes, threshold))
     findings.sort(key=lambda f: -f.confidence)
     return TextCheckResult(available=True, findings=findings)
 
 
-def _findings_from(data, min_height, seen_boxes):
+def _findings_from(data, min_height, seen_boxes, min_confidence=None):
     """The words in one OCR pass that clear every filter.
 
     `seen_boxes` is shared across passes: the modes overlap heavily and
@@ -158,7 +169,7 @@ def _findings_from(data, min_height, seen_boxes):
             confidence = float(data["conf"][i])
         except (TypeError, ValueError):
             continue
-        if confidence < MIN_CONFIDENCE:
+        if confidence < (MIN_CONFIDENCE if min_confidence is None else min_confidence):
             continue
         height = int(data["height"][i])
         if height < min_height:

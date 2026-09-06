@@ -198,7 +198,11 @@
             <button type="button" class="size size-zoom" data-role="zoom" data-label="{{ c.label }}" title="View {{ c.label }} larger">{{ c.label }}</button>
             <div class="name">{{ c.ratio }}{% if c.name != c.ratio %} -- {{ c.name }}{% endif %}</div>
             {% if c.psd_filename %}
+              {% if c.whole_ad %}
+              <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}" title="The generated ad pulled apart after the fact: an inpainted background, the subject cut out, and the painted text as its own pixel layer -- rough where the reconstruction had to guess. Beneath them, switched off: the template's real logo and product, and live header / description / CTA type carrying this brief's copy, for retouching.">Download split PSD (reconstructed layers)</a>
+              {% else %}
               <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}" title="This creative, as layers -- it opens looking exactly like the preview above, with the background, logo, product, text and CTA each on their own layer. Everything is pixels, so nothing shifts when it opens; for retypeable text use the source PSD below.">Download layered PSD</a>
+              {% endif %}
             {% endif %}
             {% if c.source_psd_filename %}
               <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.source_psd_filename) }}" title="This creative with every text layer live: header, description, legal and the CTA label are all editable type layers carrying this run's copy, colour and effects. The renderer's own pixels sit hidden beside each as '(rendered)', in case your Photoshop shows a type layer's cached picture instead of recomposing it. The CTA is a live group whose button carries your fill, stroke and corner radius as shape properties.">Download live-text PSD (editable)</a>

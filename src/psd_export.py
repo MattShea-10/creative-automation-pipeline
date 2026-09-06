@@ -1295,3 +1295,87 @@ def save_layered_psd_preserving_type(
     except Exception:
         save_layered_psd(layers, size, dest_path, layer_names=layer_names)
         return []
+
+
+def write_whole_ad_psd(
+    ad_image: Image.Image,
+    split_layers: List[Tuple[str, Image.Image]],
+    dest_path,
+    *,
+    template_path=None,
+    copy: Optional[dict] = None,
+) -> list:
+    """The PSD for a whole-ad generation: the reconstructed layers of the
+    model's picture, and -- when this size has a saved template -- the
+    template's own real elements hidden beneath them for retouching.
+
+    `split_layers` is AdSplit.layers(): ("background", ...) first, then
+    the painted subject and text. With a template, the file IS the
+    template: its background pixels become the reconstructed background,
+    the painted layers go directly above it, and every other layer (the
+    real logo and product, the live header / description / CTA type,
+    retyped to `copy`) is switched off -- present, editable, one click
+    from visible. Without a template it is just the reconstructed stack.
+
+    Returns the top-level layer names in the file, bottom to top, or []
+    when nothing could be written.
+    """
+    import shutil
+
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return []
+
+    if template_path is None:
+        try:
+            build_layered_psd(split_layers, ad_image.size, layer_names={}).save(dest_path)
+            set_flattened_preview(dest_path, ad_image)
+            return [name for name, _ in split_layers]
+        except Exception:  # noqa: BLE001
+            return []
+
+    try:
+        shutil.copy(template_path, dest_path)
+        background = dict(split_layers).get("background")
+        if background is not None:
+            if replace_pixel_layers(dest_path, {"background": background}) == []:
+                # No pixel layer called background to swap: put one in
+                # at the bottom instead.
+                psd = PSDImage.open(dest_path)
+                rgba = background if background.mode == "RGBA" else background.convert("RGBA")
+                if rgba.size != (psd.width, psd.height):
+                    rgba = rgba.resize((psd.width, psd.height), Image.LANCZOS)
+                cropped, left, top = _tight_bbox_crop(rgba)
+                made = psd.create_pixel_layer(cropped, name="background", top=top, left=left)
+                psd.remove(made)
+                psd.insert(0, made)
+                psd.save(dest_path)
+        if copy:
+            set_type_layer_text(dest_path, {k: v for k, v in copy.items() if v})
+
+        psd = PSDImage.open(dest_path)
+        canvas = (psd.width, psd.height)
+        for layer in psd:
+            layer.visible = (layer.name or "").strip().lower() == "background"
+        index = next(
+            (i for i, layer in enumerate(psd) if (layer.name or "").strip().lower() == "background"),
+            -1,
+        )
+        for name, rgba in split_layers:
+            if name == "background":
+                continue
+            if rgba.mode != "RGBA":
+                rgba = rgba.convert("RGBA")
+            if rgba.size != canvas:
+                rgba = rgba.resize(canvas, Image.LANCZOS)
+            cropped, left, top = _tight_bbox_crop(rgba)
+            made = psd.create_pixel_layer(cropped, name=name, top=top, left=left)
+            psd.remove(made)
+            index += 1
+            psd.insert(index, made)
+        psd.save(dest_path)
+        set_flattened_preview(dest_path, ad_image)
+        return [layer.name for layer in PSDImage.open(dest_path)]
+    except Exception:  # noqa: BLE001
+        return []

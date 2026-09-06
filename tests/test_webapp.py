@@ -16,6 +16,7 @@ import tempfile
 import unittest
 import zipfile
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -6548,6 +6549,70 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         finally:
             _webapp.get_provider = original
 
+    def test_a_whole_ad_run_gets_a_split_psd_with_the_real_elements_hidden_beneath(self):
+        # A whole-ad generation is one flat picture and used to come
+        # back as a PNG and nothing else. Now it is pulled apart into
+        # background / subject / painted-text layers, and the size's
+        # template supplies the real logo, product and live type --
+        # switched off, retyped to the brief -- underneath.
+        from psd_tools import PSDImage
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Painter:
+            name = "stub"
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, **kw):
+                # A "generated ad": a warm sky, a dark rectangle "hero"
+                # in the middle and a headline in white.
+                from PIL import Image as _Image, ImageDraw as _Draw
+                from src.image_ops import _load_font
+                im = _Image.new("RGB", (width, height), (235, 200, 150))
+                d = _Draw.Draw(im)
+                d.rectangle((width * 0.3, height * 0.25, width * 0.7, height * 0.9), fill=(30, 40, 60))
+                d.text((int(width * 0.05), int(height * 0.06)), "REHYDRATE NOW", fill=(255, 255, 255), font=_load_font(int(height * 0.09)))
+                sent.append(prompt)
+                return im
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Painter()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "campaign_message": "Rehydrate now", "upload_ai_enabled": "1",
+                "upload_ai_full_ad": "1", "layer_cta_text": "Shop now", "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        page = r.data.decode()
+        self.assertIn("Download split PSD (reconstructed layers)", page)
+        self.assertIn("whole-ad PSD -- layers background, ", page)
+        job_id = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+        psds = sorted((webapp.JOBS_DIR / job_id).glob("*.psd"))
+        self.assertTrue(psds, "no PSD was written for the whole-ad size")
+        psd = PSDImage.open(psds[0])
+        names = [layer.name for layer in psd]
+        self.assertEqual(names[0], "background")
+        self.assertIn("subject (painted)", names)
+        painted = [n for n in names if "(painted)" in n]
+        real = [layer for layer in psd if layer.name not in painted and layer.name != "background"]
+        self.assertTrue(real, "the template's own layers should be in the file")
+        self.assertTrue(all(not layer.visible for layer in real), "real elements must start switched off")
+        self.assertTrue(all(layer.visible for layer in psd if layer.name in painted or layer.name == "background"))
+        # The live type carries the brief, ready to switch on.
+        by_name = {layer.name: layer for layer in psd.descendants()}
+        self.assertEqual(by_name["header"].text.strip(), "Rehydrate now")
+        cta_type = [l for l in psd.descendants() if l.kind == "type" and l.parent is not psd and (l.parent.name or "").lower() == "cta"]
+        if cta_type:
+            self.assertEqual(cta_type[0].text.strip(), "Shop now")
+        # And the file opens looking like the generated ad, not the template.
+        from PIL import Image as _Image
+        preview = _Image.open(psds[0]).convert("RGB")
+        w, h = preview.size
+        self.assertEqual(preview.getpixel((int(w * 0.5), int(h * 0.6)))[:3][2] < 100, True)  # the dark hero, not template art
+
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp
 
@@ -7557,3 +7622,61 @@ class IdeogramKeyBoxTest(unittest.TestCase):
             self.assertIsNone(os.environ.get("IDEOGRAM_API_KEY"), bad)
         page = r.get_data(as_text=True)
         self.assertIn("look like an Ideogram API key", page)
+
+
+class AdSplitTest(unittest.TestCase):
+    """src/ad_split.py: pulling a flat picture apart, and saying what it
+    could and couldn't do."""
+
+    def _ad(self, w=320, h=240):
+        from PIL import ImageDraw
+        from src.image_ops import _load_font
+        im = Image.new("RGB", (w, h), (230, 210, 170))
+        d = ImageDraw.Draw(im)
+        d.ellipse((w * 0.35, h * 0.3, w * 0.65, h * 0.9), fill=(20, 30, 50))
+        d.text((10, 8), "REHYDRATE NOW", fill=(255, 255, 255), font=_load_font(int(h * 0.11)))
+        return im
+
+    def test_layers_recompose_to_the_original(self):
+        from src.ad_split import split_ad
+
+        im = self._ad()
+        split = split_ad(im)
+        names = [n for n, _ in split.layers()]
+        self.assertEqual(names[0], "background")
+        self.assertIn("subject (painted)", names, split.notes)
+        stack = Image.new("RGBA", im.size)
+        for _, layer in split.layers():
+            stack.alpha_composite(layer)
+        # Stacked back up, the layers are the picture again (allowing for
+        # the feathered edges) -- the reconstruction is a split, not a redraw.
+        import numpy as np
+        diff = np.abs(np.array(stack.convert("RGB")).astype(int) - np.array(im).astype(int))
+        self.assertLess(float((diff > 40).mean()), 0.03)
+        # And the background has the subject painted out.
+        cx, cy = im.width // 2, int(im.height * 0.6)
+        self.assertGreater(sum(split.background.getpixel((cx, cy))[:3]), 300, "subject still in the background")
+
+    def test_without_opencv_the_picture_stays_one_layer(self):
+        import builtins
+        from src import ad_split
+
+        real_import = builtins.__import__
+
+        def no_cv2(name, *a, **k):
+            if name == "cv2":
+                raise ImportError("no cv2")
+            return real_import(name, *a, **k)
+
+        with mock.patch.object(builtins, "__import__", no_cv2):
+            split = ad_split.split_ad(self._ad())
+        self.assertEqual([n for n, _ in split.layers()], ["background"])
+        self.assertTrue(any("OpenCV" in n for n in split.notes))
+
+    def test_the_grabcut_fallback_still_finds_the_subject(self):
+        from src import ad_split
+
+        with mock.patch.object(ad_split, "_find_subject_rembg", lambda image: (None, "rembg isn't installed")):
+            split = ad_split.split_ad(self._ad())
+        self.assertIn("subject (painted)", [n for n, _ in split.layers()], split.notes)
+        self.assertTrue(any("GrabCut" in n and "install rembg" in n for n in split.notes))
