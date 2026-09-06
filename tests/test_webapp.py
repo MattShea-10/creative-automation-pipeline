@@ -2681,6 +2681,64 @@ class PollinationsSeedTest(unittest.TestCase):
             mod.requests.get = original
         return captured
 
+    def test_a_server_error_is_retried_once_then_reported_plainly(self):
+        # Three runs in a row came back as "500 Server Error" from
+        # image.pollinations.ai -- their side, intermittent. One more go
+        # usually works; past that it's an outage and the message should
+        # say what to do rather than paste a 300-character URL.
+        import src.providers.pollinations_provider as mod
+        from src.providers.base import ImageProviderError
+
+        calls = []
+
+        class _Resp:
+            status_code = 500
+            content = b""
+
+            def raise_for_status(self):
+                raise RuntimeError("500")
+
+        original = mod.requests.get
+        mod.requests.get = lambda url, params=None, timeout=None: (calls.append(dict(params)), _Resp())[1]
+        try:
+            with self.assertRaises(ImageProviderError) as caught:
+                mod.PollinationsProvider().generate("a runner", 1024, 1024)
+        finally:
+            mod.requests.get = original
+        self.assertEqual(len(calls), 2, "expected exactly one retry")
+        self.assertNotEqual(calls[0]["seed"], calls[1]["seed"], "the retry should be a fresh take")
+        self.assertIn("after 2 attempts", str(caught.exception))
+        self.assertIn("switch the provider to Ideogram", str(caught.exception))
+
+    def test_oversized_requests_are_asked_for_at_a_size_the_service_will_render(self):
+        # It returns 768x768 whatever is asked; a 1920x1920 request only
+        # made the job heavier, which is where the timeouts came from.
+        from src.providers.pollinations_provider import PollinationsProvider
+
+        p = self._params(PollinationsProvider())
+        self.assertEqual((p["width"], p["height"]), (1024, 1024))
+
+        captured = {}
+
+        class _Resp:
+            status_code = 200
+            content = b""
+
+            def raise_for_status(self):
+                raise RuntimeError("stop")
+
+        import src.providers.pollinations_provider as mod
+        original = mod.requests.get
+        mod.requests.get = lambda url, params=None, timeout=None: (captured.update(params), _Resp())[1]
+        try:
+            try:
+                PollinationsProvider().generate("x", 1920, 1080)
+            except Exception:
+                pass
+        finally:
+            mod.requests.get = original
+        self.assertEqual((captured["width"], captured["height"]), (1024, 576))
+
     def test_the_same_prompt_gets_a_new_seed_each_time(self):
         # It used to derive the seed from the prompt, so re-running the
         # same prompt returned a byte-identical image and the generator
@@ -2699,6 +2757,9 @@ class PollinationsSeedTest(unittest.TestCase):
         self.assertEqual(self._params(provider).get("seed"), 4242)
 
     def test_the_requested_size_is_passed_through(self):
+        # ...up to the edge the service will actually render. Bigger
+        # requests are asked for at 1024 on the long edge -- see
+        # test_oversized_requests_are_asked_for_at_a_size_the_service_will_render.
         from src.providers.pollinations_provider import PollinationsProvider
 
         captured = {}
@@ -2717,12 +2778,12 @@ class PollinationsSeedTest(unittest.TestCase):
         )[1]
         try:
             try:
-                PollinationsProvider().generate("x", width=1920, height=1920)
+                PollinationsProvider().generate("x", width=800, height=600)
             except Exception:
                 pass
         finally:
             mod.requests.get = original
-        self.assertEqual((captured.get("width"), captured.get("height")), (1920, 1920))
+        self.assertEqual((captured.get("width"), captured.get("height")), (800, 600))
 
 
 class GeneratedBackgroundFidelityTest(unittest.TestCase):

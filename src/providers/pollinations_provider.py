@@ -21,6 +21,20 @@ from .base import ImageProvider, ImageProviderError
 
 BASE_URL = "https://image.pollinations.ai/prompt/{prompt}"
 
+# The largest edge worth asking for. The default model returns 768x768
+# whatever size is requested, so a 1920x1920 request buys nothing but a
+# heavier job on a free, oversubscribed service -- and that is where the
+# 500s and 40-second timeouts were coming from. Anything larger is asked
+# for at this size (shape kept) and upscaled afterwards, which is what
+# happened anyway.
+MAX_REQUEST_EDGE = 1024
+
+# One more go after a server-side failure (5xx, timeout, dropped
+# connection). The service fails intermittently rather than for long, so
+# a second request a moment later usually goes through; anything past
+# one retry is just waiting on an outage.
+RETRIES = 1
+
 
 class PollinationsProvider(ImageProvider):
     name = "pollinations"
@@ -56,6 +70,10 @@ class PollinationsProvider(ImageProvider):
             prompt = f"{prompt}, {negative_prompt}"
         encoded = urllib.parse.quote(prompt)
         url = BASE_URL.format(prompt=encoded)
+        longest = max(width, height)
+        if longest > MAX_REQUEST_EDGE:
+            scale = MAX_REQUEST_EDGE / longest
+            width, height = max(64, round(width * scale)), max(64, round(height * scale))
         params = {
             "width": width,
             "height": height,
@@ -70,9 +88,28 @@ class PollinationsProvider(ImageProvider):
         }
         if self.model:
             params["model"] = self.model
-        try:
-            resp = requests.get(url, params=params, timeout=self.timeout)
-            resp.raise_for_status()
-            return Image.open(io.BytesIO(resp.content)).convert("RGB")
-        except Exception as exc:  # noqa: BLE001 - deliberately broad, wrapped below
-            raise ImageProviderError(f"Pollinations request failed: {exc}") from exc
+        last_exc = None
+        for attempt in range(RETRIES + 1):
+            try:
+                resp = requests.get(url, params=params, timeout=self.timeout)
+                if getattr(resp, "status_code", 200) >= 500:
+                    # Their side, not ours: try once more with a new seed.
+                    last_exc = f"HTTP {resp.status_code} from image.pollinations.ai"
+                    if self.seed is None:
+                        params["seed"] = random.randrange(10**6)
+                    continue
+                resp.raise_for_status()
+                return Image.open(io.BytesIO(resp.content)).convert("RGB")
+            except ImageProviderError:
+                raise
+            except (requests.Timeout, requests.ConnectionError) as exc:
+                last_exc = exc
+                if attempt < RETRIES:
+                    continue
+            except Exception as exc:  # noqa: BLE001 - deliberately broad, wrapped below
+                raise ImageProviderError(f"Pollinations request failed: {exc}") from exc
+        raise ImageProviderError(
+            f"Pollinations request failed after {RETRIES + 1} attempts: {last_exc}. The service "
+            "is free and goes down intermittently -- try again in a minute, or switch the "
+            "provider to Ideogram."
+        )
