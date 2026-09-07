@@ -8585,6 +8585,20 @@ class TextFreeRenderModeTest(unittest.TestCase):
         self.assertEqual(fields["style_type"], "REALISTIC")
         self.assertEqual(fields["magic_prompt"], "OFF")
         self.assertTrue(provider.supports_render_mode)
+        # With a mood board attached the API only accepts AUTO/GENERAL
+        # (HTTP 400 otherwise), so the style switch stays out of that
+        # call and MagicPrompt-off still goes.
+        sent.clear()
+        with mock.patch("requests.post", fake_post), mock.patch("requests.get", fake_post):
+            try:
+                provider.generate(
+                    "beach", 1024, 1024, photographic=True, rewrite_prompt=False, style_reference=b"PNG"
+                )
+            except Exception:
+                pass
+        fields = dict((k, v[1]) for k, v in sent["files"] if k != "style_reference_images")
+        self.assertNotIn("style_type", fields)
+        self.assertEqual(fields["magic_prompt"], "OFF")
 
     def test_a_text_free_run_asks_for_a_photograph_and_a_whole_ad_does_not(self):
         calls = []

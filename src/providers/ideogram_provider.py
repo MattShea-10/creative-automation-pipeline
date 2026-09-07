@@ -156,7 +156,11 @@ class IdeogramProvider(ImageProvider):
         }
         if negative_prompt:
             fields["negative_prompt"] = negative_prompt
-        if photographic is not None:
+        # The API refuses REALISTIC/DESIGN alongside style reference
+        # images ("Please use AUTO or GENERAL style type with
+        # style_reference_images"): the references set the style there,
+        # so the switch is dropped for that call rather than failing it.
+        if photographic is not None and not style_reference:
             fields["style_type"] = "REALISTIC" if photographic else "DESIGN"
         if rewrite_prompt is not None:
             fields["magic_prompt"] = "ON" if rewrite_prompt else "OFF"
