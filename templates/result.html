@@ -343,7 +343,7 @@
           var make = motionBox.checked;
           motionBox.disabled = true;
           if (motionLabel) motionLabel.classList.add("is-busy");
-          if (motionNote) { motionNote.hidden = false; motionNote.textContent = make ? "Rendering an 8-second loop for " + label + "... (a few seconds)" : "Removing the video..."; }
+          if (motionNote) { motionNote.hidden = false; motionNote.textContent = make ? "Rendering an 8-second loop for " + label + "... (a few seconds; the first time may install the video encoder, about a minute)" : "Removing the video..."; }
           fetch("{{ url_for('motion', job_id=job_id) }}", {
             method: "POST",
             headers: { "Content-Type": "application/json" },

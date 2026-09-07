@@ -59,6 +59,38 @@ def ffmpeg_path() -> Optional[str]:
         return shutil.which("ffmpeg")
 
 
+def ensure_ffmpeg(log=None) -> Optional[str]:
+    """ffmpeg's path, installing the imageio-ffmpeg package into THIS
+    interpreter first if nothing is available.
+
+    The package bundles a static ffmpeg, and installing it from inside
+    the running app means it lands in the Python the app actually uses
+    -- the thing that goes wrong when someone runs `pip install` in a
+    terminal whose `pip` belongs to a different Python. One-time, a
+    few seconds, needs the network.
+    """
+    import importlib
+    import sys
+
+    found = ffmpeg_path()
+    if found:
+        return found
+    if log:
+        log("installing imageio-ffmpeg into " + sys.executable)
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "pip", "install", "--quiet", "imageio-ffmpeg"],
+            check=True, capture_output=True, timeout=300,
+        )
+    except Exception as exc:  # noqa: BLE001
+        detail = getattr(exc, "stderr", b"") or b""
+        if log:
+            log(f"install failed: {detail.decode(errors='replace')[-300:] or exc}")
+        return None
+    importlib.invalidate_caches()
+    return ffmpeg_path()
+
+
 def layers_from_psd(psd_path) -> Tuple[List[Tuple[str, Image.Image]], Tuple[int, int]]:
     """The visible top-level pixel layers of a PSD as (name, full-canvas
     RGBA) pairs, bottom to top -- the layered PSD the app saves per size
@@ -166,9 +198,14 @@ def render_motion_clip(
 ) -> dict:
     """Write the MP4 for one size. Returns {"path", "seconds", "frames",
     "layers"}; raises RuntimeError with a plain reason when it can't."""
-    exe = ffmpeg_path()
+    exe = ensure_ffmpeg()
     if not exe:
-        raise RuntimeError("ffmpeg isn't available (pip install imageio-ffmpeg, or install ffmpeg).")
+        import sys
+
+        raise RuntimeError(
+            "ffmpeg isn't available and couldn't be installed automatically. In the terminal you "
+            f"start the app from, run:  {sys.executable} -m pip install imageio-ffmpeg   then try again."
+        )
     layers, canvas = ([], None)
     if psd_path is not None and Path(psd_path).is_file():
         try:
