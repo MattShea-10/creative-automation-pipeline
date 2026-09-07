@@ -38,6 +38,14 @@ class ImageProvider(ABC):
     # reference_look_phrase() in src/image_ops.py).
     supports_style_reference: bool = False
 
+    # Whether the vendor can be told to render a plain photograph rather
+    # than a designed layout (Ideogram's style_type), and to leave the
+    # prompt alone rather than rewriting it (its MagicPrompt). Both
+    # matter for a text-free backdrop: a "design" render is a poster
+    # with words on it, and a rewritten prompt is one the app can no
+    # longer vouch for.
+    supports_render_mode: bool = False
+
     # What one image costs in USD, so the app can say what a run spent.
     # Zero for the free and offline providers.
     cost_per_image: float = 0.0

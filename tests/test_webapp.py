@@ -8547,3 +8547,74 @@ class TextlessReferenceTest(unittest.TestCase):
         out, note = webapp._textless_reference(poster, "photo.jpg")
         self.assertIs(out, poster)
         self.assertIsNone(note)
+
+
+class TextFreeRenderModeTest(unittest.TestCase):
+    """What a text-free backdrop run sends Ideogram, after a run whose
+    prompt asked for "space for overlaid text" and named the campaign
+    message as a sentence came back with a caption in the sky and the
+    message lettered across the bottle."""
+
+    def test_ideogram_gets_a_photograph_with_the_prompt_unrewritten(self):
+        from unittest import mock
+        from src.providers.ideogram_provider import IdeogramProvider
+
+        provider = IdeogramProvider(api_token="k" * 32)
+        sent = {}
+
+        class _Resp:
+            status_code = 200
+            text = ""
+            content = b""
+
+            def json(self):
+                return {"data": [{"url": "http://example.invalid/i.png"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None, files=None):
+            if "generate" in url and "json" not in sent:
+                sent["json"] = json
+                sent["files"] = files
+            return _Resp()
+
+        with mock.patch("requests.post", fake_post), mock.patch("requests.get", fake_post):
+            try:
+                provider.generate("beach", 1024, 1024, photographic=True, rewrite_prompt=False)
+            except Exception:
+                pass
+        fields = sent["json"] or dict((k, v[1]) for k, v in sent["files"])
+        self.assertEqual(fields["style_type"], "REALISTIC")
+        self.assertEqual(fields["magic_prompt"], "OFF")
+        self.assertTrue(provider.supports_render_mode)
+
+    def test_a_text_free_run_asks_for_a_photograph_and_a_whole_ad_does_not(self):
+        calls = []
+
+        class _Provider:
+            name = "stub"
+            supports_negative_prompt = True
+            supports_render_mode = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, **kw):
+                calls.append(kw)
+                return Image.new("RGB", (64, 64), (10, 20, 30))
+
+        webapp._generate_text_free(_Provider(), "beach", 64, 64, allow_text=False)
+        self.assertEqual(calls[-1], {"photographic": True, "rewrite_prompt": False})
+        webapp._generate_text_free(_Provider(), "beach", 64, 64, allow_text=True)
+        self.assertEqual(calls[-1], {})
+
+    def test_the_automatic_backdrop_prompt_never_says_text_or_sets_a_sentence(self):
+        scene = webapp._backdrop_scene(
+            "Hydro Boost", "Rehydrate with a refreshing summer drink", "Active Adults 18-34", textless=True
+        )
+        self.assertNotIn("Rehydrate with a refreshing summer drink", scene)
+        self.assertIn("mood: rehydrate, refreshing, summer, drink", scene)
+        self.assertIn("plain blank unprinted label", scene)
+        for phrase in (scene, webapp.BACKGROUND_PROMPT_GUIDANCE):
+            self.assertNotRegex(phrase.lower(), r"\btext\b", phrase)
+        # The whole-ad prompt still carries the message whole: there it
+        # IS the copy to set.
+        self.assertIn(
+            "on the theme of Rehydrate with a refreshing summer drink",
+            webapp._backdrop_scene("Hydro Boost", "Rehydrate with a refreshing summer drink", "runners"),
+        )

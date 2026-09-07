@@ -68,6 +68,7 @@ class IdeogramProvider(ImageProvider):
     name = "ideogram"
     supports_negative_prompt = True
     supports_style_reference = True
+    supports_render_mode = True
 
     def __init__(
         self,
@@ -128,7 +129,15 @@ class IdeogramProvider(ImageProvider):
         height: int = 1024,
         negative_prompt: str = None,
         style_reference: bytes = None,
+        photographic: bool = None,
+        rewrite_prompt: bool = None,
     ) -> Image.Image:
+        """`photographic=True` asks for a photograph (style_type
+        REALISTIC) rather than a designed layout; False asks for a design
+        (DESIGN); None leaves the service to choose. `rewrite_prompt`
+        maps to MagicPrompt: False sends the prompt exactly as written,
+        which is what a text-free run needs -- the rewrite likes to add
+        a caption."""
         url = f"{API_BASE}/v1/{self.model}/generate"
         headers = {"Api-Key": self.api_token}
         # A NEW seed per request, the same way the Pollinations provider
@@ -147,6 +156,10 @@ class IdeogramProvider(ImageProvider):
         }
         if negative_prompt:
             fields["negative_prompt"] = negative_prompt
+        if photographic is not None:
+            fields["style_type"] = "REALISTIC" if photographic else "DESIGN"
+        if rewrite_prompt is not None:
+            fields["magic_prompt"] = "ON" if rewrite_prompt else "OFF"
 
         try:
             if style_reference:

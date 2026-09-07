@@ -486,10 +486,13 @@ def _env_int(name: str, default: int) -> int:
 # warning in place.
 AI_TEXT_RETRY_LIMIT = max(0, _env_int("AI_TEXT_RETRIES", 2))
 
+# Not a word about text in here, even to ask for room for it: "space
+# for overlaid text" reads to a typography model as "put text here",
+# and one run came back with a caption sitting in exactly that space.
 BACKGROUND_PROMPT_GUIDANCE = (
     "sharp focus, crisp fine detail, high resolution, professional photography, "
     "no faces, no logos, "
-    "even lighting, plenty of empty space for overlaid text"
+    "even lighting, plenty of clean empty negative space, uncluttered composition"
 )
 
 # The same guidance for a run that WANTS type in the picture. The
@@ -562,7 +565,28 @@ BACKDROP_SCENES = (
 )
 
 
-def _backdrop_scene(product_name, campaign_message, audience, rng=None) -> str:
+# Words that carry no picture. What is left of a campaign message once
+# these are gone is its subject matter -- which is the part a backdrop
+# can use, without the sentence a typography model would want to set.
+_THEME_STOPWORDS = {
+    "a", "an", "the", "and", "or", "of", "to", "in", "on", "for", "with", "your",
+    "you", "our", "we", "is", "are", "be", "it", "its", "this", "that", "new",
+    "now", "get", "at", "by", "from", "into", "as", "up", "out", "all", "every",
+}
+
+
+def _theme_keywords(message: str, limit: int = 5) -> str:
+    words = re.findall(r"[A-Za-z][A-Za-z'-]+", message or "")
+    kept = []
+    for word in words:
+        low = word.lower()
+        if low in _THEME_STOPWORDS or low in kept:
+            continue
+        kept.append(low)
+    return ", ".join(kept[:limit])
+
+
+def _backdrop_scene(product_name, campaign_message, audience, rng=None, textless=False) -> str:
     """One composition for this run's automatic backdrop, with the brief
     folded into it.
 
@@ -579,15 +603,29 @@ def _backdrop_scene(product_name, campaign_message, audience, rng=None) -> str:
     scene = scene.replace("the audience", who)
     parts = [scene]
     if product_name:
-        parts.append(f"featuring {product_name}")
+        # For a text-free backdrop the product is there as a shape, not
+        # a wordmark: a named product invites its name on the label.
+        parts.append(
+            f"featuring the {product_name} product with a plain blank unprinted label"
+            if textless else f"featuring {product_name}"
+        )
     if audience and not pictured:
         # A scene without people in it still has an audience: it sets
         # the styling, so the brief's audience always reaches Ideogram.
         parts.append(f"styled for {audience}")
     if campaign_message:
-        # Unquoted on purpose. Quoted text in an Ideogram prompt is a
-        # request to letter it; this is a theme, not copy to set.
-        parts.append(f"on the theme of {campaign_message.rstrip('.')}")
+        if textless:
+            # The message's subject matter as keywords, not as the
+            # sentence: an unquoted sentence is still a sentence, and a
+            # typography model sets sentences. "Rehydrate with a
+            # refreshing summer drink" came back lettered across the sky.
+            keywords = _theme_keywords(campaign_message)
+            if keywords:
+                parts.append(f"mood: {keywords}")
+        else:
+            # Unquoted on purpose. Quoted text in an Ideogram prompt is a
+            # request to letter it; this is a theme, not copy to set.
+            parts.append(f"on the theme of {campaign_message.rstrip('.')}")
     return ", ".join(parts)
 
 
@@ -1018,6 +1056,12 @@ def _generate_text_free(
         if style_reference and getattr(provider, "supports_style_reference", False)
         else {}
     )
+    if not allow_text and getattr(provider, "supports_render_mode", False):
+        # A photograph, not a design -- Ideogram's design mode is a
+        # poster generator and sets type on principle -- and the prompt
+        # exactly as written: its MagicPrompt rewrite has been seen to
+        # add a caption to a prompt that asked for none.
+        extra.update({"photographic": True, "rewrite_prompt": False})
     if allow_text:
         # One call, taken as it comes: nothing to verify, so the retry
         # budget stays unspent. Lettering is wanted here, so the no-text
@@ -2669,8 +2713,8 @@ def generate():
             )
         else:
             upload_ai_prompt_text = upload_ai_prompt or (
-                f"{_backdrop_scene(product_name, campaign_message, audience)}, "
-                "unbranded, room for text, soft lighting"
+                f"{_backdrop_scene(product_name, campaign_message, audience, textless=True)}, "
+                "unbranded, open uncluttered space, soft lighting"
             )
         # The ticked brand colours, whichever prompt is in play. This
         # went only into the full-ad prompt, so a backdrop generated
