@@ -6876,6 +6876,125 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(self.client.post(f"/approve/{job_id}", json={"label": "../etc", "approved": True}).status_code, 400)
         self.assertEqual(self.client.post("/approve/nope", json={"label": label, "approved": True}).status_code, 404)
 
+    def test_an_approved_size_is_kept_untouched_and_pins_the_backdrop_for_the_rest(self):
+        # Approve a size, then Edit and regenerate: that size comes over
+        # byte-for-byte (no render, no bill), the other sizes are
+        # re-rendered against the SAME backdrop (no fresh generation),
+        # and the approval carries into the new run.
+        import hashlib
+        import webapp as _webapp
+
+        size, staged = self._stage_real_template()
+        # A second template size so there is something to re-render: the
+        # same file under a second size name (it is fitted to the size).
+        second = "160x600" if size != (160, 600) else "300x250"
+        (Path(webapp.DEFAULT_TEMPLATES_DIR) / f"staged-{second}.psd").write_bytes(staged.read_bytes())
+        calls = []
+
+        class _Paid:
+            name = "stub"
+            cost_per_image = 0.09
+            rendering_speed = "QUALITY"
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, **kw):
+                from PIL import Image as _Image
+                calls.append(prompt)
+                return _Image.new("RGB", (768, 768), (200, 30, 30))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Paid()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_provider": "ideogram",
+                "header": "", "description": "", "layer_cta_text": "Version one",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            page = r.data.decode()
+            job1 = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+            labels = list(dict.fromkeys(re.findall(r'<div class="card[^"]*" data-label="(\d+x\d+)"', page)))
+            self.assertGreaterEqual(len(labels), 2, labels)
+            approved, other = labels[0], labels[1]
+            self.assertEqual(self.client.post(f"/approve/{job1}", json={"label": approved, "approved": True}).status_code, 200)
+            approved_png = next((webapp.JOBS_DIR / job1).glob(f"*_{approved}.png"))
+            before = hashlib.md5(approved_png.read_bytes()).hexdigest()
+            self.assertEqual(len(calls), 1)
+
+            # Edit: change the header, regenerate.
+            r2 = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_provider": "ideogram",
+                "header": "", "description": "", "layer_cta_text": "Version two", "edit_job_id": job1,
+            }, content_type="multipart/form-data")
+            self.assertEqual(r2.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        page2 = r2.data.decode()
+        job2 = re.search(r'/edit/([0-9a-f]+)', page2).group(1)
+        # No new generation: the approved size pinned the backdrop.
+        self.assertEqual(len(calls), 1, "the backdrop must not be regenerated while a size is approved")
+        self.assertIn("an approved size pins its backdrop", page2)
+        self.assertNotIn("spend this run", page2)
+        # The approved size is the same file, and still approved.
+        kept_png = next((webapp.JOBS_DIR / job2).glob(f"*_{approved}.png"))
+        self.assertEqual(hashlib.md5(kept_png.read_bytes()).hexdigest(), before)
+        self.assertIn(f"{approved}: kept exactly as approved", page2)
+        self.assertIn("card is-approved", page2)
+        self.assertTrue(json.loads((webapp.JOBS_DIR / job2 / "approvals.json").read_text())[approved]["approved"])
+        # The other size was re-rendered (new header) -- a different file.
+        other_before = next((webapp.JOBS_DIR / job1).glob(f"*_{other}.png")).read_bytes()
+        other_after = next((webapp.JOBS_DIR / job2).glob(f"*_{other}.png")).read_bytes()
+        self.assertNotEqual(hashlib.md5(other_before).hexdigest(), hashlib.md5(other_after).hexdigest())
+        # And every size is still on the page, in order, in the zip.
+        self.assertEqual(re.findall(r'<div class="card[^"]*" data-label="(\d+x\d+)"', page2), labels)
+        import zipfile as _zipfile
+        names = _zipfile.ZipFile(next((webapp.JOBS_DIR / job2).glob("*.zip"))).namelist()
+        self.assertTrue(any(f"_{approved}.png" in n for n in names))
+
+    def test_in_whole_ad_mode_an_approved_size_is_not_generated_again(self):
+        # Whole-ad mode bills one image per size, so this is where a kept
+        # approval saves real money: only the unapproved sizes go back
+        # to the model.
+        import webapp as _webapp
+
+        size, staged = self._stage_real_template()
+        second = "160x600" if size != (160, 600) else "300x250"
+        (Path(webapp.DEFAULT_TEMPLATES_DIR) / f"staged-{second}.psd").write_bytes(staged.read_bytes())
+        sizes_asked = []
+
+        class _Paid:
+            name = "stub"
+            cost_per_image = 0.03
+            rendering_speed = "TURBO"
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, **kw):
+                from PIL import Image as _Image
+                sizes_asked.append(f"{width}x{height}")
+                return _Image.new("RGB", (width, height), (40, 90, 200))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Paid()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_full_ad": "1",
+                "upload_ai_provider": "ideogram", "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            page = r.data.decode()
+            job1 = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+            labels = list(dict.fromkeys(re.findall(r'<div class="card[^"]*" data-label="(\d+x\d+)"', page)))
+            self.assertEqual(sorted(sizes_asked), sorted(labels))
+            self.client.post(f"/approve/{job1}", json={"label": labels[0], "approved": True})
+            sizes_asked.clear()
+            r2 = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_full_ad": "1",
+                "upload_ai_provider": "ideogram", "header": "", "description": "", "edit_job_id": job1,
+            }, content_type="multipart/form-data")
+            self.assertEqual(r2.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        self.assertEqual(sizes_asked, [l for l in labels if l != labels[0]])
+        page2 = r2.data.decode()
+        self.assertIn(f"{labels[0]}: kept exactly as approved", page2)
+        self.assertIn(f"about ${0.03 * (len(labels) - 1):.2f}", page2)
+
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp
 

@@ -148,7 +148,12 @@ editable in Photoshop). Click a preview to see it at full size; the
 **Approve this size** box there marks it -- the card gets a green outline
 and badge, the tick is saved with the run, and a link at the top of the
 page downloads just the approved sizes (PNG and PSDs, with an
-`approvals.json` saying what was approved when).
+`approvals.json` saying what was approved when). Approval also changes
+what **Edit** does next: an approved size is carried into the new run
+exactly as it is -- not re-rendered, not regenerated, not billed -- and
+in normal mode its backdrop is pinned, so the other sizes are updated
+against the same picture rather than a fresh generation. Unapprove a
+size to put it back in play.
 
 **Whole-ad runs and layers.** With **Generate the whole ad** ticked the
 model paints the entire creative as one picture, so there are no layers

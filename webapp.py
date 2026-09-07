@@ -1726,6 +1726,18 @@ def generate():
                 prior_form_state = {}
             else:
                 prior_job_dir = candidate_dir
+    # Sizes ticked as approved in the run being edited. An approved
+    # creative is finished: it is carried over untouched rather than
+    # regenerated, and in normal mode its backdrop is pinned for the
+    # other sizes -- see approved_prior_sizes below.
+    approved_prior_sizes = set()
+    if prior_job_dir is not None and not prior_job_dir.name.startswith("draft_"):
+        for label, entry in load_approvals(prior_job_dir.name).items():
+            if not (isinstance(entry, dict) and entry.get("approved")):
+                continue
+            match = re.fullmatch(r"(\d+)x(\d+)", label)
+            if match and any(prior_job_dir.glob(f"*_{label}.png")):
+                approved_prior_sizes.add((int(match.group(1)), int(match.group(2))))
 
     hero_file = request.files.get("hero_image")
     hero_fresh = hero_file is not None and bool(hero_file.filename)
@@ -1755,6 +1767,19 @@ def generate():
     # the backdrop you were adjusting it against -- and paying for the
     # replacement.
     upload_ai_keep = bool(request.form.get("upload_ai_keep"))
+    approval_pinned_backdrop = False
+    if (
+        approved_prior_sizes
+        and not upload_ai_keep
+        and (prior_form_state.get("files") or {}).get("upload_ai_generated")
+        and not request.form.get("upload_ai_full_ad")
+    ):
+        # Someone approved a size in the last run. The backdrop in it is
+        # the backdrop they approved, so the other sizes are updated
+        # against that same picture rather than a fresh generation that
+        # would make the set inconsistent (and cost an image).
+        upload_ai_keep = True
+        approval_pinned_backdrop = True
     # Let the model set type. Off by default: a generated backdrop sits
     # under the template's own header, description and CTA, and lettering
     # there is noise competing with them. Ticked, the picture is being
@@ -2232,6 +2257,10 @@ def generate():
             upload_ai_path = uploads_dir / AI_GENERATED_CAMPAIGN_FILENAME
             upload_ai_image.save(upload_ai_path)
             background_notes_pending = (
+                "Campaign artwork: reused the image from the previous run -- an approved size "
+                "pins its backdrop, so the other sizes were updated against the same picture and "
+                "no new one was generated. Unapprove every size to generate a fresh one."
+                if approval_pinned_backdrop else
                 "Campaign artwork: reused the image from the previous run -- \"Keep this image\" "
                 "is ticked, so no new one was generated. Untick it to generate a fresh one."
             )
@@ -2829,6 +2858,12 @@ def generate():
         sizes = sorted(set(size_templates.keys()))
     else:
         sizes = sorted(set(sizes) | set(size_templates.keys()))
+    # Approved sizes are carried over from the previous run as they are
+    # -- not regenerated, not re-rendered, not billed -- and put back in
+    # their place among the results below.
+    display_sizes = list(sizes)
+    kept_sizes = [size for size in sizes if size in approved_prior_sizes]
+    sizes = [size for size in sizes if size not in approved_prior_sizes]
 
     # AI-generated hero image, if the box was checked and there's an
     # actual gap for it to fill (a hero image was uploaded, or every
@@ -4614,6 +4649,57 @@ def generate():
                 "whole_ad": bool(upload_ai_full_ad and (width, height) in full_ad_templates),
             }
         )
+
+    carried_approvals = {}
+    for width, height in kept_sizes:
+        label = size_label(width, height)
+        copied = {}
+        for prior_file in sorted(prior_job_dir.glob(f"*_{label}*")):
+            if prior_file.suffix.lower() not in (".png", ".psd"):
+                continue
+            try:
+                shutil.copy2(prior_file, job_dir / prior_file.name)
+            except OSError:
+                continue
+            stem = prior_file.stem
+            if prior_file.suffix.lower() == ".png":
+                copied["png"] = prior_file.name
+            elif stem.endswith("_source-template"):
+                copied["source_psd"] = prior_file.name
+            elif stem.endswith(f"_{label}"):
+                copied["psd"] = prior_file.name
+        if "png" not in copied:
+            background_warnings.append(
+                f"{label} was approved in the previous run but its file couldn't be found to carry over."
+            )
+            continue
+        creatives.append(
+            {
+                "filename": copied["png"],
+                "label": label,
+                "ratio": ratio_label(width, height),
+                "name": size_name(width, height),
+                "psd_filename": copied.get("psd"),
+                "source_psd_filename": copied.get("source_psd"),
+                "whole_ad": bool((prior_form_state.get("fields") or {}).get("upload_ai_full_ad")),
+                "kept": True,
+            }
+        )
+        carried_approvals[label] = {
+            "approved": True,
+            "at": _datetime.datetime.now().isoformat(timespec="seconds"),
+            "carried_from": prior_job_dir.name,
+        }
+        background_notes.append(
+            f"{label}: kept exactly as approved in run {prior_job_dir.name[:6]} -- not regenerated."
+        )
+    if kept_sizes:
+        order = {size_label(w, h): i for i, (w, h) in enumerate(display_sizes)}
+        creatives.sort(key=lambda c: order.get(c["label"], len(order)))
+        try:
+            _approvals_path(job_id).write_text(json.dumps(carried_approvals, indent=2))
+        except OSError:
+            pass
 
     zip_stem = (
         f"{product_name_slug}_{campaign_label}_creatives"
