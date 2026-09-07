@@ -8142,6 +8142,42 @@ class ReferenceThumbTest(unittest.TestCase):
         self.assertEqual(r.status_code, 422)
 
 
+class MotionClipTest(unittest.TestCase):
+    """src/motion.py: real layers arrive one by one; a reconstruction is
+    shown only whole, coming into focus -- its inpainted backdrop must
+    never be on screen by itself."""
+
+    def _layers(self, painted):
+        w, h = 200, 120
+        bg = Image.new("RGBA", (w, h), (40, 90, 200, 255))
+        sub = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        sub.paste((230, 40, 40, 255), (80, 30, 120, 100))
+        txt = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+        txt.paste((255, 255, 255, 255), (10, 10, 70, 25))
+        names = ("subject (painted)", "text (painted)") if painted else ("product", "header")
+        return [("background", bg), (names[0], sub), (names[1], txt)], (w, h)
+
+    def test_real_layers_are_absent_at_the_start_and_present_once_arrived(self):
+        from src.motion import render_frames
+
+        layers, canvas = self._layers(painted=False)
+        frames = list(render_frames(layers, canvas, duration=4.0, fps=10, loop=False))
+        first, later = frames[0], frames[30]
+        self.assertLess(first.getpixel((100, 65))[0], 100, "product must not be there at t=0")
+        self.assertGreater(later.getpixel((100, 65))[0], 180, "product must have arrived by t=3s")
+
+    def test_a_reconstruction_is_always_shown_whole(self):
+        from src.motion import render_frames
+
+        layers, canvas = self._layers(painted=True)
+        frames = list(render_frames(layers, canvas, duration=4.0, fps=10, loop=False))
+        # Even at t=0 (soft focus) the subject's colour is there -- the
+        # backdrop alone (blue) is never what the viewer sees.
+        r, g, b = frames[0].getpixel((100, 65))
+        self.assertGreater(r, b, "the subject is missing from the first frame: the inpainted backdrop is showing")
+        self.assertGreater(frames[30].getpixel((100, 65))[0], 180)
+
+
 class IdeogramKeyBoxTest(unittest.TestCase):
     """The key box at the top of the form: how someone running the
     packaged app gets the Ideogram key in without finding a dotfile. The

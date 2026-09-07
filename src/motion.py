@@ -41,6 +41,8 @@ DEFAULT_ENTRANCE = (1.0, 1.7, 0.02)
 LOOP_FADE_OUT = 0.5
 # How much the backdrop pushes in over the clip (1.0 = none).
 BACKDROP_ZOOM = 1.06
+# Whole-ad (reconstructed) sizes: the picture comes into focus over this long.
+REVEAL_SECONDS = 1.2
 
 
 def _ease(t: float) -> float:
@@ -157,6 +159,27 @@ def render_frames(layers, canvas, duration: float = DEFAULT_DURATION, fps: int =
     else:
         overlays = [(n, i) for n, i in layers if n != "background"]
     background = background.convert("RGBA")
+    # Reconstructed layers (a whole-ad split: "subject (painted)", "text
+    # (painted)") are cut-outs of ONE picture, not real layers -- the
+    # text box carries the sky around the words, the subject sits over
+    # an inpainted patch. Slide them or zoom the backdrop under them and
+    # the seams show as doubled sky and ghosts. So they move as one
+    # picture (same zoom on every layer) and arrive by fading only.
+    painted = any("(painted)" in name for name, _ in overlays)
+    if painted:
+        # A reconstruction's background is an inpainted guess and must
+        # never be seen on its own. The whole picture, flattened, is the
+        # backdrop; it arrives from soft focus (a blurred copy of itself
+        # crossfading to sharp over REVEAL_SECONDS) and pushes in. No
+        # layers arrive separately -- there are no seams to show.
+        from PIL import ImageFilter
+
+        flat = background.copy()
+        for _, layer in overlays:
+            flat.alpha_composite(layer)
+        background = flat
+        soft = flat.filter(ImageFilter.GaussianBlur(max(2, int(round(max(canvas) * 0.012)))))
+        overlays = []
     total = max(1, int(round(duration * fps)))
     for index in range(total):
         t = index / fps
@@ -166,6 +189,12 @@ def render_frames(layers, canvas, duration: float = DEFAULT_DURATION, fps: int =
         if loop:
             phase = _ease(2 * t / duration if t < duration / 2 else 2 - 2 * t / duration)
         frame = _backdrop_frame(background, canvas, phase)
+        if painted:
+            reveal = _ease(t / REVEAL_SECONDS)
+            if loop and t > duration - LOOP_FADE_OUT:
+                reveal = min(reveal, max(0.0, (duration - t) / LOOP_FADE_OUT))
+            if reveal < 1.0:
+                frame = Image.blend(_backdrop_frame(soft, canvas, phase), frame, reveal)
         # Overlays: arrive, hold, and (when looping) leave together.
         tail = 1.0
         if loop and t > duration - LOOP_FADE_OUT:
