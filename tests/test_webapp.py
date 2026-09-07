@@ -3957,6 +3957,66 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         with Image.open(art) as saved:
             self.assertEqual(saved.convert("RGB").getpixel((5, 5)), (12, 200, 64))
 
+    def test_an_exclusion_typed_into_the_prompt_goes_to_the_negative_channel(self):
+        # "excluded: no text, no words" typed into the Image prompt -- as
+        # copied from a results page, say -- must not reach Ideogram as
+        # the prompt: there it letters the picture with those words. It
+        # comes out, goes on negative_prompt, and the whole-ad tick that
+        # would have suppressed every no-text defence is stood down.
+        import src.providers.ideogram_provider as ideogram
+
+        rendered = Image.new("RGB", (1536, 864), (12, 200, 64))
+        buffer = io.BytesIO()
+        rendered.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            content = image_bytes
+
+            def json(self):
+                return {"data": [{"url": "https://example.invalid/generated.png"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None, files=None):
+            seen["prompt"] = json["prompt"]
+            seen["negative"] = json.get("negative_prompt")
+            return _Resp()
+
+        original_post, original_get = ideogram.requests.post, ideogram.requests.get
+        ideogram.requests.post = fake_post
+        ideogram.requests.get = lambda url, timeout=None: _Resp()
+        os.environ["IDEOGRAM_API_KEY"] = "test-key"
+        try:
+            self._write_template_with_a_background_layer("ideo-300x250.psd", (300, 250))
+            r = self.client.post(
+                "/generate",
+                data={
+                    "upload_ai_enabled": "1",
+                    "upload_ai_provider": "ideogram",
+                    "upload_ai_full_ad": "1",
+                    "upload_ai_prompt": "a stadium at dusk, excluded: no text, no words",
+                    "product_name": "HydroBoost",
+                    "header": "",
+                    "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        finally:
+            ideogram.requests.post, ideogram.requests.get = original_post, original_get
+            os.environ.pop("IDEOGRAM_API_KEY", None)
+
+        self.assertEqual(r.status_code, 200, r.data[:500])
+        self.assertTrue(seen["prompt"].startswith("a stadium at dusk"), seen["prompt"])
+        self.assertNotIn("excluded", seen["prompt"])
+        self.assertNotIn("no text", seen["prompt"])
+        self.assertIn("no text, no words", seen["negative"] or "")
+        # Text-free run, whatever the box said: the no-text clause went too.
+        self.assertIn("no lettering", seen["negative"])
+        page = r.get_data(as_text=True)
+        self.assertIn("taken out of it and sent as a negative prompt", page)
+        self.assertIn("whole-ad box was ignored", page)
+
     def test_upload_ai_stands_in_for_a_missing_content_psd(self):
         # No flagship PSD designed yet, so the Upload Creative generator
         # makes the campaign artwork instead. That still counts as a
@@ -8298,3 +8358,45 @@ class AdSplitTest(unittest.TestCase):
             split = ad_split.split_ad(self._ad())
         self.assertIn("subject (painted)", [n for n, _ in split.layers()], split.notes)
         self.assertTrue(any("GrabCut" in n and "install rembg" in n for n in split.notes))
+
+
+class PromptNegationGuardTest(unittest.TestCase):
+    """split_prompt_negations(): the exclusions someone types into the
+    Image prompt, found and lifted out so they can go where they work."""
+
+    def test_plain_english_and_copied_result_lines_are_both_caught(self):
+        split = webapp.split_prompt_negations
+        self.assertEqual(split("excluded: no text, no words "), (None, ["no text, no words"], True))
+        self.assertEqual(
+            split("sunlit gym, athletes stretching [excluded: no text, no words, no lettering]"),
+            ("sunlit gym, athletes stretching", ["no text, no words, no lettering"], True),
+        )
+        self.assertEqual(
+            split("close-up of a chilled bottle on wet slate, no text, no words, no logos"),
+            ("close-up of a chilled bottle on wet slate", ["no text, no words, no logos"], True),
+        )
+        self.assertEqual(
+            split("misty forest at dawn without any text or lettering, soft light"),
+            ("misty forest at dawn, soft light", ["without any text or lettering"], True),
+        )
+        self.assertEqual(
+            split("a textless product shot of a can, studio lighting"),
+            ("a product shot of a can, studio lighting", ["no text"], True),
+        )
+
+    def test_ordinary_prompts_pass_through_untouched(self):
+        split = webapp.split_prompt_negations
+        self.assertEqual(split("beach at sunset, warm tones"), ("beach at sunset, warm tones", [], False))
+        # A negation that isn't about lettering is left for the model --
+        # it may be a scene note, and it doesn't cause the lettering bug.
+        self.assertEqual(split("no people, empty street at night"), ("no people, empty street at night", [], False))
+        self.assertEqual(split(None), (None, [], False))
+        self.assertEqual(split(""), (None, [], False))
+
+    def test_an_exclusion_that_is_not_about_text_still_moves_but_keeps_the_boxes(self):
+        positive, negations, about_text = webapp.split_prompt_negations(
+            "bright kitchen scene. Avoid: clutter and steam."
+        )
+        self.assertEqual(positive, "bright kitchen scene.")
+        self.assertEqual(negations, ["clutter and steam"])
+        self.assertFalse(about_text)

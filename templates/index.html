@@ -979,7 +979,8 @@
 
             <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
             <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
-            <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Leave blank to auto-build from the product name" value="{{ prefill.get('upload_ai_prompt', '') }}">
+            <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Describe the scene only, e.g. chilled bottle on wet slate, morning light" value="{{ prefill.get('upload_ai_prompt', '') }}">
+            <p class="hint" style="margin-top: 0.3rem;">Describe what you want to see. Leave the exclusions out -- "no text" is already sent as a negative prompt on every backdrop run, and typed here it makes the model paint those words. If you do type one, it is moved out of the prompt for you.</p>
 
             <div class="field" style="margin-top: 0.7rem; margin-bottom: 0;">
               <label for="upload_ai_reference" style="font-weight: 400;">Reference images <span style="font-weight: 400; color: var(--muted);">(optional -- a mood board of up to {{ reference_limit }}: make the backdrop look like these)</span></label>

@@ -141,6 +141,14 @@ message). Then either:
   references; with Pollinations, which only accepts web addresses for a
   reference, the app describes the board's look in words in the prompt
   instead, so expect a similar feel rather than a close match.
+  Write the prompt as a description of the scene only. "No text" is
+  already sent as a negative prompt on every backdrop run, and typing
+  it into the prompt does the opposite of what you mean -- the model
+  reads "text" and "words" as things to paint. If you do type an
+  exclusion ("no text", "excluded: no logos", "without lettering"), the
+  app lifts it out of the prompt and sends it as a negative prompt, and
+  says so on the results page; a "no text" typed with the whole-ad box
+  ticked also turns that box off for the run, since the two contradict.
 
 Each result has **Download layered PSD** (opens looking exactly like the
 preview) and **Download live-text PSD** (the same, with the text still

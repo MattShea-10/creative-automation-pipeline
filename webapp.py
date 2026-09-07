@@ -391,6 +391,80 @@ NO_TEXT_ESCALATION = (
     "a completely textless photographic background"
 )
 
+# Things a prompt author types to say what they DON'T want. In the
+# positive prompt they do the opposite of what was meant: "no text, no
+# words" hands the model the tokens "text" and "words" to steer by, and
+# it letters the picture (one run came back with "NEVFT WORDS" painted
+# across it). The results page shows the prompt it used as
+# `... [excluded: no text, no words]`, which is exactly the sort of line
+# that gets copied back into the box, so the guard has to recognise its
+# own output as well as plain English.
+_NEGATION_TERM = (
+    r"(?:text|words?|letters?|lettering|typography|type|writing|captions?|"
+    r"labels?|numbers?|digits?|watermarks?|signage|signs?|posters?|logos?|"
+    r"wordmarks?|brand(?:ing|\s*names?)?|titles?|headlines?|slogans?|taglines?|"
+    r"copy|characters?|fonts?|packaging text)"
+)
+_NEGATION_QUALIFIER = r"(?:any\s+|visible\s+|written\s+|painted\s+|rendered\s+)?"
+PROMPT_NEGATION_LEAD = re.compile(
+    r"\[?\s*\b(?:excluded?|exclusions?|negatives?(?:\s+prompt)?|avoid|"
+    r"do\s+not\s+include|don'?t\s+include|not\s+allowed|never)\s*[:=\-\u2013\u2014]\s*([^.\n\]]+?)\.?\s*\]?\s*$",
+    re.IGNORECASE | re.DOTALL,
+)
+PROMPT_NEGATION_PHRASE = re.compile(
+    r"\b(?:no|without|free\s+of|zero|not\s+any|absolutely\s+no)\s+" + _NEGATION_QUALIFIER + _NEGATION_TERM
+    + r"(?:\s*(?:,|/|&|\bor\b|\band\b|\bnor\b)\s*(?:no\s+)?" + _NEGATION_QUALIFIER + _NEGATION_TERM + r")*"
+    + r"(?:\s+(?:anywhere|at\s+all|in\s+the\s+(?:image|picture|frame|shot)|on\s+(?:it|the\s+image|the\s+picture)))?\b",
+    re.IGNORECASE,
+)
+PROMPT_TEXTLESS_WORD = re.compile(r"\b(?:text-?free|textless|wordless|un-?lettered)\b", re.IGNORECASE)
+_TEXT_NEGATION_TERMS = (
+    "text", "word", "letter", "typograph", "type", "writing", "caption",
+    "label", "number", "digit", "sign", "wordmark", "title", "headline",
+    "slogan", "tagline", "copy", "character", "font", "packaging",
+)
+
+
+def split_prompt_negations(prompt):
+    """Take the exclusions out of a typed Image prompt.
+
+    Returns (positive, negations, about_text): `positive` is the prompt
+    with every "no text", "without words", "excluded: ..." clause
+    removed (None if nothing is left), `negations` the clauses as typed,
+    for the negative channel and the results-page note, and
+    `about_text` whether any of them was about lettering -- in which
+    case the run wants a text-free picture whatever the checkboxes say.
+    """
+    if not prompt:
+        return None, [], False
+    text = prompt
+    negations = []
+    lead = PROMPT_NEGATION_LEAD.search(text)
+    if lead:
+        tail = lead.group(1).strip().strip("[]").strip()
+        if tail:
+            negations.append(tail)
+        text = text[: lead.start()]
+    for match in PROMPT_NEGATION_PHRASE.finditer(text):
+        negations.append(match.group(0).strip())
+    text = PROMPT_NEGATION_PHRASE.sub(" ", text)
+    if PROMPT_TEXTLESS_WORD.search(text):
+        negations.append("no text")
+        text = PROMPT_TEXTLESS_WORD.sub(" ", text)
+    # Tidy what the removals left behind: doubled commas, an orphaned
+    # "and", empty brackets, stray spaces.
+    text = re.sub(r"\(\s*\)|\[\s*\]", " ", text)
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s*([,;])\s*(?:[,;]\s*)+", r"\1 ", text)
+    text = re.sub(r"(?:^|[,;])\s*(?:and|or|nor|with|but)\s*(?=[,;]|$)", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\s*([,;])\s*(?:[,;]\s*)+", r"\1 ", text)
+    text = text.strip(" ,;:-\u2013\u2014\t\n")
+    text = re.sub(r"\s+([,;.])", r"\1", text)
+    lowered = " ".join(negations).lower()
+    about_text = any(term in lowered for term in _TEXT_NEGATION_TERMS)
+    return (text or None), negations, about_text
+
+
 def _env_int(name: str, default: int) -> int:
     """An integer setting from the environment, falling back to `default`
     for anything unusable. `or default` on the raw value, not a get()
@@ -1951,6 +2025,37 @@ def generate():
     if upload_ai_full_ad:
         upload_ai_allow_text = True
     upload_ai_prompt = (request.form.get("upload_ai_prompt") or "").strip() or None
+    # Exclusions typed into the prompt ("no text", "excluded: no words")
+    # come out of it here and go on the negative channel instead, where
+    # they work; see split_prompt_negations(). A "no text" typed with the
+    # whole-ad or allow-text box ticked is the more specific instruction
+    # of the two, so the run becomes a text-free backdrop -- with the
+    # no-text clause, the OCR check and the retry back on -- rather
+    # than an ad with the words "no text" set in it.
+    upload_ai_prompt, upload_ai_prompt_negations, upload_ai_prompt_no_text = (
+        split_prompt_negations(upload_ai_prompt)
+    )
+    upload_ai_prompt_notes = []
+    if upload_ai_prompt_negations:
+        upload_ai_prompt_notes.append(
+            "The exclusion you typed into the Image prompt ("
+            + "; ".join(f'"{n}"' for n in upload_ai_prompt_negations)
+            + ") was taken out of it and sent as a negative prompt instead -- "
+            "in the prompt itself, those words tell the model what to paint."
+        )
+        if upload_ai_prompt_no_text and (upload_ai_allow_text or upload_ai_full_ad):
+            upload_ai_prompt_notes.append(
+                "Because it asks for no text, the "
+                + ("whole-ad" if upload_ai_full_ad else "allow-text")
+                + " box was ignored for this run: the picture was generated as a "
+                "text-free backdrop and checked for lettering."
+            )
+            upload_ai_allow_text = False
+            upload_ai_full_ad = False
+        if upload_ai_prompt is None:
+            upload_ai_prompt_notes.append(
+                "Nothing else was in the prompt, so the scene came from the campaign brief."
+            )
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
     upload_ai_speed = (request.form.get("upload_ai_speed") or DEFAULT_IDEOGRAM_SPEED).upper()
     if upload_ai_speed not in dict(IDEOGRAM_SPEED_CHOICES):
@@ -2516,6 +2621,7 @@ def generate():
                     clause for clause in (
                         PALETTE_NEGATIVE_CLAUSE if brand_colors else None,
                         LOGO_NEGATIVE_CLAUSE if upload_ai_allow_text else None,
+                        ", ".join(upload_ai_prompt_negations) or None,
                     ) if clause
                 ) or None,
                 style_reference=upload_ai_reference_bytes,
@@ -2525,6 +2631,8 @@ def generate():
                 f"{upload_ai_image.width}x{upload_ai_image.height} -- prompt: "
                 f"\"{upload_ai_prompt_used}\"."
             )
+            if upload_ai_prompt_notes:
+                background_notes_pending += " " + " ".join(upload_ai_prompt_notes)
             if upload_ai_reference_path is not None:
                 sent_as_file = getattr(_provider(upload_ai_provider), "supports_style_reference", False)
                 names = ", ".join(p.name for p in upload_ai_reference_paths)
