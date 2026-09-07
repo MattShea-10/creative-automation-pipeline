@@ -7991,6 +7991,59 @@ if __name__ == "__main__":
     unittest.main()
 
 
+class ReferenceThumbTest(unittest.TestCase):
+    """The mood board's web thumbnails come through the app, not the
+    browser -- hotlink-blocking sites left the chip broken."""
+
+    def setUp(self):
+        webapp.app.config["TESTING"] = True
+        self.client = webapp.app.test_client()
+
+    def test_a_web_picture_comes_back_as_a_small_jpeg(self):
+        from unittest import mock
+        buf = io.BytesIO()
+        Image.new("RGB", (640, 480), (30, 90, 200)).save(buf, "PNG")
+        png = buf.getvalue()
+
+        class _Resp:
+            status_code = 200
+            headers = {"Content-Type": "image/png"}
+
+            def iter_content(self, n):
+                yield png
+
+        seen = {}
+
+        def fake_get(url, **kw):
+            seen["ua"] = kw.get("headers", {}).get("User-Agent", "")
+            return _Resp()
+
+        with mock.patch("requests.get", fake_get):
+            r = self.client.get("/reference-thumb?url=https://example.com/a.png")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.mimetype, "image/jpeg")
+        self.assertLessEqual(max(Image.open(io.BytesIO(r.data)).size), 160)
+        self.assertIn("Mozilla/5.0", seen["ua"])  # some hosts 400 anything else
+
+    def test_a_page_or_a_local_path_is_refused_with_a_reason(self):
+        from unittest import mock
+
+        class _Html:
+            status_code = 200
+            headers = {"Content-Type": "text/html"}
+
+            def iter_content(self, n):
+                yield b"<html>"
+
+        with mock.patch("requests.get", lambda url, **kw: _Html()):
+            r = self.client.get("/reference-thumb?url=https://example.com/page")
+        self.assertEqual(r.status_code, 422)
+        self.assertIn("isn't a PNG, JPEG or WebP", r.get_json()["error"])
+        with mock.patch("requests.get", lambda url, **kw: self.fail("must not fetch")):
+            r = self.client.get("/reference-thumb?url=file:///etc/passwd")
+        self.assertEqual(r.status_code, 422)
+
+
 class IdeogramKeyBoxTest(unittest.TestCase):
     """The key box at the top of the form: how someone running the
     packaged app gets the Ideogram key in without finding a dotfile. The

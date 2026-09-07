@@ -1322,7 +1322,20 @@
             chip.innerHTML = '<img alt=""><div class="layer-image-cached-meta"><strong></strong>' +
               '<span class="layer-image-cached-name"></span></div>' +
               '<button type="button" class="clear-btn" title="Remove this picture">&times;</button>';
-            chip.querySelector("img").src = item.preview;
+            var thumb = chip.querySelector("img");
+            if (item.kind === "web") {
+              // Fetched by the app, not the browser: sites that block
+              // hotlinking left this as a broken image.
+              thumb.src = "{{ url_for('reference_thumb') }}?url=" + encodeURIComponent(item.value);
+              thumb.addEventListener("error", function () {
+                chip.classList.add("is-cleared");
+                chip.querySelector("strong").textContent = "Couldn't fetch this picture";
+                chip.querySelector(".layer-image-cached-name").textContent =
+                  "not an image address, or the site refused -- save the picture and drop the file instead";
+              });
+            } else {
+              thumb.src = item.preview;
+            }
             chip.querySelector("strong").textContent =
               item.kind === "web" ? "From the web" : "On the board";
             chip.querySelector(".layer-image-cached-name").textContent = item.name.slice(0, 60);

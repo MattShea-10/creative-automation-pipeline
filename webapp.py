@@ -1321,7 +1321,15 @@ def _fetch_web_image(url: str, dest_dir: Path) -> Path:
     try:
         resp = requests.get(
             url, timeout=20, stream=True,
-            headers={"User-Agent": "Mozilla/5.0 (creative-automation-pipeline)"},
+            # A browser's own user agent: some image hosts (Wikimedia
+            # among them) answer anything else with a 400 or 403.
+            headers={
+                "User-Agent": (
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
+                    "(KHTML, like Gecko) Chrome/128.0 Safari/537.36"
+                ),
+                "Accept": "image/avif,image/webp,image/png,image/jpeg,*/*;q=0.8",
+            },
         )
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Couldn't fetch the reference image: {exc}") from exc
@@ -1564,6 +1572,31 @@ def save_env_value(name: str, value: str, env_file: Path = None) -> Path:
     env_file.write_text("\n".join(lines) + "\n")
     os.environ[name] = value
     return env_file
+
+
+@app.route("/reference-thumb")
+def reference_thumb():
+    """A small preview of a web picture on the mood board, fetched by
+    the app rather than the browser. Sites that block hotlinking (and
+    browsers that block cross-site images) left the chip with a broken
+    image; this way the thumbnail comes from here, and a bad address
+    shows as one straight away instead of at Generate time."""
+    import tempfile
+
+    url = (request.args.get("url") or "").strip()
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            path = _fetch_web_image(url, Path(tmp))
+            image = Image.open(path).convert("RGB")
+        except Exception as exc:  # noqa: BLE001
+            return {"error": str(exc)}, 422
+        image.thumbnail((160, 160))
+        buf = io.BytesIO()
+        image.save(buf, format="JPEG", quality=85)
+    buf.seek(0)
+    response = send_file(buf, mimetype="image/jpeg")
+    response.headers["Cache-Control"] = "private, max-age=3600"
+    return response
 
 
 @app.route("/settings/ideogram-key", methods=["POST"])
