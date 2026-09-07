@@ -149,6 +149,14 @@ message). Then either:
   app lifts it out of the prompt and sends it as a negative prompt, and
   says so on the results page; a "no text" typed with the whole-ad box
   ticked also turns that box off for the run, since the two contradict.
+  The same goes for the mood board: a style reference carries layout
+  and typography as much as palette, so a finished ad with a headline
+  across it comes back as a backdrop with a headline across it,
+  whatever the negative prompt says. On a text-free run the app reads
+  each reference for lettering first and paints small words out, or
+  crops a headline band off and sends only the picture part; the
+  results page says which. A photo with no words on it is still the
+  best reference.
 
 Each result has **Download layered PSD** (opens looking exactly like the
 preview) and **Download live-text PSD** (the same, with the text still

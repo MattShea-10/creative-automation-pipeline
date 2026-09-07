@@ -4017,6 +4017,65 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertIn("taken out of it and sent as a negative prompt", page)
         self.assertIn("whole-ad box was ignored", page)
 
+    def test_the_cleaned_copy_is_what_goes_to_the_provider(self):
+        from src.text_check import ocr_available
+        if not ocr_available():
+            self.skipTest("Tesseract isn't installed")
+        import src.providers.ideogram_provider as ideogram
+
+        rendered = Image.new("RGB", (1024, 1024), (12, 200, 64))
+        buffer = io.BytesIO()
+        rendered.save(buffer, format="PNG")
+        image_bytes = buffer.getvalue()
+        seen = {}
+
+        class _Resp:
+            status_code = 200
+            content = image_bytes
+            text = ""
+
+            def json(self):
+                return {"data": [{"url": "https://example.invalid/generated.png"}]}
+
+        def fake_post(url, headers=None, json=None, timeout=None, files=None):
+            if files:
+                seen["parts"] = [v for k, v in files if k == "style_reference_images"]
+            return _Resp()
+
+        poster = io.BytesIO()
+        TextlessReferenceTest._poster(self).save(poster, format="JPEG")
+        poster.seek(0)
+        original_post, original_get = ideogram.requests.post, ideogram.requests.get
+        ideogram.requests.post = fake_post
+        ideogram.requests.get = lambda url, timeout=None: _Resp()
+        os.environ["IDEOGRAM_API_KEY"] = "test-key"
+        try:
+            self._write_template_with_a_background_layer("ideo-300x250.psd", (300, 250))
+            r = self.client.post(
+                "/generate",
+                data={
+                    "upload_ai_enabled": "1",
+                    "upload_ai_provider": "ideogram",
+                    "upload_ai_prompt": "a bottle on wet slate",
+                    "upload_ai_reference": (poster, "ad.jpg"),
+                    "product_name": "HydroBoost",
+                    "market": "UK",
+                    "audience": "runners",
+                    "campaign_message": "Stay charged",
+                    "header": "",
+                    "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        finally:
+            ideogram.requests.post, ideogram.requests.get = original_post, original_get
+            os.environ.pop("IDEOGRAM_API_KEY", None)
+        self.assertEqual(r.status_code, 200, r.data[:800])
+        self.assertIn("parts", seen, "the reference should have gone to Ideogram")
+        sent = Image.open(io.BytesIO(seen["parts"][0][1]))
+        self.assertLess(sent.height, 640 * 0.8, "the headline band must be cropped off")
+        self.assertIn("had a headline across it", r.get_data(as_text=True))
+
     def test_upload_ai_stands_in_for_a_missing_content_psd(self):
         # No flagship PSD designed yet, so the Upload Creative generator
         # makes the campaign artwork instead. That still counts as a
@@ -8400,3 +8459,41 @@ class PromptNegationGuardTest(unittest.TestCase):
         self.assertEqual(positive, "bright kitchen scene.")
         self.assertEqual(negations, ["clutter and steam"])
         self.assertFalse(about_text)
+
+
+class TextlessReferenceTest(unittest.TestCase):
+    """_textless_reference(): a finished ad dropped on the mood board
+    loses its lettering before Ideogram sees it as a style reference,
+    since a style reference carries typography as much as palette."""
+
+    def _poster(self, w=480, h=640, headline=True):
+        from PIL import ImageDraw
+        from src.image_ops import _load_font
+
+        im = Image.new("RGB", (w, h), (40, 120, 200))
+        d = ImageDraw.Draw(im)
+        d.ellipse((w * 0.3, h * 0.15, w * 0.7, h * 0.6), fill=(240, 60, 60))
+        if headline:
+            font = _load_font(int(h * 0.12))
+            d.text((20, int(h * 0.72)), "UNLEASH", fill=(255, 255, 255), font=font)
+            d.text((20, int(h * 0.85)), "ENERGY", fill=(255, 255, 255), font=font)
+        return im
+
+    def test_a_headline_is_cropped_off_and_the_rest_kept(self):
+        from src.text_check import ocr_available
+        if not ocr_available():
+            self.skipTest("Tesseract isn't installed")
+        poster = self._poster()
+        out, note = webapp._textless_reference(poster, "ad.jpg")
+        self.assertIsNotNone(note, "a headline across a reference must be reported")
+        self.assertEqual(out.width, poster.width)
+        self.assertLess(out.height, poster.height * 0.8)
+        # The picture part -- the red subject on blue -- is what survives.
+        self.assertGreater(out.height, poster.height * 0.5)
+        self.assertEqual(out.getpixel((out.width // 2, int(out.height * 0.5)))[0] > 200, True)
+
+    def test_a_clean_reference_is_left_alone(self):
+        poster = self._poster(headline=False)
+        out, note = webapp._textless_reference(poster, "photo.jpg")
+        self.assertIs(out, poster)
+        self.assertIsNone(note)

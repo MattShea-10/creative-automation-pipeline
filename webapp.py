@@ -402,8 +402,9 @@ NO_TEXT_ESCALATION = (
 _NEGATION_TERM = (
     r"(?:text|words?|letters?|lettering|typography|type|writing|captions?|"
     r"labels?|numbers?|digits?|watermarks?|signage|signs?|posters?|logos?|"
-    r"wordmarks?|brand(?:ing|\s*names?)?|titles?|headlines?|slogans?|taglines?|"
-    r"copy|characters?|fonts?|packaging text)"
+    r"wordmarks?|brand(?:ing|\s*names?)?|titles?|headlines?|headers?|headings?|"
+    r"slogans?|taglines?|copy|characters?|fonts?|packaging text|"
+    r"ctas?|call[- ]to[- ]actions?|buttons?|badges?|stickers?|price tags?|prices?)"
 )
 _NEGATION_QUALIFIER = r"(?:any\s+|visible\s+|written\s+|painted\s+|rendered\s+)?"
 PROMPT_NEGATION_LEAD = re.compile(
@@ -421,7 +422,9 @@ PROMPT_TEXTLESS_WORD = re.compile(r"\b(?:text-?free|textless|wordless|un-?letter
 _TEXT_NEGATION_TERMS = (
     "text", "word", "letter", "typograph", "type", "writing", "caption",
     "label", "number", "digit", "sign", "wordmark", "title", "headline",
-    "slogan", "tagline", "copy", "character", "font", "packaging",
+    "header", "heading", "slogan", "tagline", "copy", "character", "font",
+    "packaging", "cta", "call to action", "call-to-action", "button",
+    "badge", "sticker", "price",
 )
 
 
@@ -610,6 +613,76 @@ def _mood_board(images) -> Image.Image:
         board.paste(t, (x, 0))
         x += t.width
     return board
+
+
+# A finished ad dropped on the mood board is the commonest reference
+# there is -- and the worst one to hand Ideogram whole. A style
+# reference carries layout and typography as much as palette, so a
+# reference with a headline across it comes back as a backdrop with a
+# headline across it, in a language of the model's own; the
+# no-text clause loses to the picture every time. For a text-free run
+# the words are cut out of the reference first: painted out when they
+# are small, cropped away when a headline is too big to paint out
+# convincingly. The look survives; the lettering does not.
+REFERENCE_CROP_MIN_FRACTION = 0.35
+
+
+def _textless_reference(image, name: str):
+    """(image, note): `image` with its lettering painted out or cropped
+    off, and a sentence saying what was done -- or (image, None) when
+    there was nothing to do or no way to check."""
+    from src.text_check import (
+        MAX_REMOVABLE_AREA_FRACTION, build_text_mask, masked_area_fraction, remove_text,
+    )
+
+    found = find_text(image)
+    if not found.available or not found.found_text:
+        return image, None
+    mask = build_text_mask(image, found)
+    if masked_area_fraction(image, mask) <= MAX_REMOVABLE_AREA_FRACTION:
+        cleaned, count, reason = remove_text(image, found)
+        if reason is None:
+            return cleaned, (
+                f"{name} had text in it ({count} word{'s' if count != 1 else ''}), "
+                "painted out before it went to the model as a style reference."
+            )
+        return image, None
+    # Too much to paint: a headline, a lockup. Keep the tallest band of
+    # rows with no text in it, if that is enough of the picture to be
+    # worth matching.
+    try:
+        import numpy as np
+    except ImportError:
+        return image, None
+    rows = np.asarray(mask).max(axis=1) > 0
+    best = (0, 0)
+    start = None
+    for y, has_text in enumerate(list(rows) + [True]):
+        if not has_text and start is None:
+            start = y
+        elif has_text and start is not None:
+            if y - start > best[1] - best[0]:
+                best = (start, y)
+            start = None
+    top, bottom = best
+    if bottom - top < image.height * REFERENCE_CROP_MIN_FRACTION:
+        return image, (
+            f"{name} is mostly text ({masked_area_fraction(image, mask):.0%} of it), "
+            "which couldn't be taken out -- expect the model to copy its lettering. "
+            "A photo without a headline works better as a reference."
+        )
+    cropped = image.crop((0, top, image.width, bottom))
+    # Anything small that survived in the band goes the cheap way.
+    leftover = find_text(cropped)
+    if leftover.found_text:
+        painted, _, reason = remove_text(cropped, leftover)
+        if reason is None:
+            cropped = painted
+    return cropped, (
+        f"{name} had a headline across it, so only the text-free band "
+        f"({(bottom - top) / image.height:.0%} of its height) went to the model as a "
+        "style reference."
+    )
 
 
 def reference_look_phrase(image) -> str:
@@ -2438,10 +2511,27 @@ def generate():
     upload_ai_reference_path = upload_ai_reference_paths[0] if upload_ai_reference_paths else None
     upload_ai_reference_images = []
     upload_ai_reference_bytes_list = []
+    upload_ai_reference_notes = []
     for path in upload_ai_reference_paths:
         try:
-            upload_ai_reference_images.append(Image.open(path).convert("RGB"))
-            upload_ai_reference_bytes_list.append(path.read_bytes())
+            reference = Image.open(path).convert("RGB")
+            reference_bytes = path.read_bytes()
+            if not upload_ai_allow_text:
+                # See _textless_reference(): a reference with words on it
+                # is a request for words, whatever the negative prompt says.
+                textless, note = _textless_reference(reference, path.name)
+                if note:
+                    upload_ai_reference_notes.append(note)
+                if textless is not reference:
+                    reference = textless
+                    buffer = io.BytesIO()
+                    reference.save(buffer, format="PNG")
+                    reference_bytes = buffer.getvalue()
+                    # Kept beside the original so the results page can
+                    # show what the model was actually given.
+                    (path.parent / f"{path.stem}_textless.png").write_bytes(reference_bytes)
+            upload_ai_reference_images.append(reference)
+            upload_ai_reference_bytes_list.append(reference_bytes)
         except Exception as exc:  # noqa: BLE001
             return _keep_submission(f"Couldn't read the reference image {path.name}: {exc}")
     upload_ai_reference_image = _mood_board(upload_ai_reference_images) if upload_ai_reference_images else None
@@ -2633,6 +2723,8 @@ def generate():
             )
             if upload_ai_prompt_notes:
                 background_notes_pending += " " + " ".join(upload_ai_prompt_notes)
+            if upload_ai_reference_notes:
+                background_notes_pending += " " + " ".join(upload_ai_reference_notes)
             if upload_ai_reference_path is not None:
                 sent_as_file = getattr(_provider(upload_ai_provider), "supports_style_reference", False)
                 names = ", ".join(p.name for p in upload_ai_reference_paths)
