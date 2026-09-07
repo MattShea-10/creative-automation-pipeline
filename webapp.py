@@ -1284,16 +1284,27 @@ def _save_data_url_image(data_url: str, name: str, dest_dir: Path) -> Path:
     Raises ValueError with a message fit for the form."""
     import base64
 
-    match = re.match(r"data:(image/(png|jpeg|jpg|webp));base64,(.+)$", data_url or "", re.S)
+    match = re.match(r"data:([a-z]+/[a-z0-9.+-]+)?;base64,(.+)$", data_url or "", re.S)
     if not match:
-        raise ValueError(f"Reference image '{name or 'dropped picture'}' isn't a PNG, JPEG or WebP.")
-    ext = {"png": ".png", "jpeg": ".jpg", "jpg": ".jpg", "webp": ".webp"}[match.group(2)]
+        raise ValueError(f"Reference image '{name or 'dropped picture'}' couldn't be read from the drop.")
+    mime = (match.group(1) or "").lower()
+    ext_by_mime = {
+        "image/png": ".png", "image/jpeg": ".jpg", "image/jpg": ".jpg", "image/webp": ".webp",
+        "image/heic": ".heic", "image/heif": ".heif", "image/tiff": ".tif", "image/gif": ".gif", "image/bmp": ".bmp",
+        "video/mp4": ".mp4", "video/quicktime": ".mov", "video/x-m4v": ".m4v", "video/webm": ".webm",
+    }
+    ext = ext_by_mime.get(mime) or (Path(name or "").suffix.lower() if Path(name or "").suffix.lower() in REFERENCE_EXTENSIONS else None)
+    if ext is None:
+        raise ValueError(
+            f"Reference image '{name or 'dropped picture'}' isn't a picture or video the board can use "
+            f"(it came in as {mime or 'an unknown type'})."
+        )
     try:
-        data = base64.b64decode(match.group(3), validate=False)
+        data = base64.b64decode(match.group(2), validate=False)
     except Exception as exc:  # noqa: BLE001
         raise ValueError(f"Couldn't read the dropped picture '{name}': {exc}") from exc
-    if len(data) > REFERENCE_FETCH_LIMIT:
-        raise ValueError(f"'{name}' is over 25 MB, which is more than Ideogram accepts.")
+    if len(data) > REFERENCE_FETCH_LIMIT * 4:
+        raise ValueError(f"'{name}' is over 100 MB -- choose it with Choose Files instead of dropping it.")
     stem = secure_filename(Path(name or "dropped").stem) or "dropped"
     dest = dest_dir / f"{stem}{ext}"
     counter = 2
@@ -1301,7 +1312,54 @@ def _save_data_url_image(data_url: str, name: str, dest_dir: Path) -> Path:
         dest = dest_dir / f"{stem}-{counter}{ext}"
         counter += 1
     dest.write_bytes(data)
-    return dest
+    return _normalise_reference(dest)
+
+
+# What the mood board takes, beyond the PNG/JPEG/WebP Ideogram itself
+# accepts: a video (its middle frame is the reference), iPhone HEIC,
+# TIFF, GIF, BMP -- converted to PNG on the way in.
+REFERENCE_EXTRA_EXTENSIONS = (".heic", ".heif", ".tif", ".tiff", ".gif", ".bmp") + VIDEO_EXTENSIONS
+REFERENCE_EXTENSIONS = ALLOWED_LAYER_IMAGE_EXTENSIONS + REFERENCE_EXTRA_EXTENSIONS
+
+
+def _normalise_reference(path: Path) -> Path:
+    """Turn a reference picture the board accepted into a PNG/JPEG/WebP
+    Ideogram will take, in place. A video becomes its middle frame; a
+    HEIC (an iPhone photo) or TIFF/GIF/BMP is converted. Returns the
+    path to use. Raises ValueError with a message fit for the form."""
+    suffix = path.suffix.lower()
+    if suffix in ALLOWED_LAYER_IMAGE_EXTENSIONS:
+        return path
+    try:
+        if suffix in VIDEO_EXTENSIONS:
+            from src.image_ops import extract_video_frame
+
+            image = extract_video_frame(path)  # the middle frame
+        else:
+            if suffix in (".heic", ".heif"):
+                try:
+                    import pillow_heif
+
+                    pillow_heif.register_heif_opener()
+                except ImportError as exc:
+                    raise ValueError(
+                        f"'{path.name}' is an iPhone HEIC photo; converting it needs the pillow-heif "
+                        "package (pip install pillow-heif), or export it as JPEG first."
+                    ) from exc
+            image = Image.open(path)
+            image.load()
+            image = image.convert("RGB")
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Couldn't read '{path.name}' as a picture or video: {exc}") from exc
+    out = path.with_suffix(".png")
+    image.save(out)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return out
 
 
 def _fetch_web_image(url: str, dest_dir: Path) -> Path:
@@ -2229,12 +2287,16 @@ def generate():
         f for f in request.files.getlist("upload_ai_reference") if f is not None and f.filename
     ]
     for upload in fresh_files:
-        if not _allowed(upload.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
+        if not _allowed(upload.filename, REFERENCE_EXTENSIONS):
             return _keep_submission(
                 f"Reference image: '{upload.filename}' isn't a supported file type. "
-                "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
+                "Accepted: pictures (" + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS + (".heic", ".tif", ".gif"))
+                + ") and videos (" + ", ".join(VIDEO_EXTENSIONS) + " -- the middle frame is used)."
             )
-        upload_ai_reference_paths.append(_save_upload(upload, uploads_dir))
+        try:
+            upload_ai_reference_paths.append(_normalise_reference(_save_upload(upload, uploads_dir)))
+        except ValueError as exc:
+            return _keep_submission(str(exc))
     dropped_names = request.form.getlist("upload_ai_reference_data_name")
     for i, data_url in enumerate(request.form.getlist("upload_ai_reference_data")):
         if not data_url.strip():
@@ -4953,8 +5015,11 @@ def generate():
         pass
 
     approvals = load_approvals(job_id)
+    videos = load_videos(job_id)
     for creative in creatives:
         creative["approved"] = bool(approvals.get(creative["label"], {}).get("approved"))
+        entry = videos.get(creative["label"])
+        creative["video_filename"] = entry["filename"] if entry and (job_dir / entry["filename"]).is_file() else None
 
     return render_template(
         "result.html",
@@ -5076,6 +5141,88 @@ def approve(job_id):
     return {"label": label, "approved": approved, "approved_count": len(approvals)}
 
 
+def _videos_path(job_id: str) -> Path:
+    return JOBS_DIR / secure_filename(job_id) / "videos.json"
+
+
+def load_videos(job_id: str) -> dict:
+    """{size label: {"filename": ..., "seconds": ..., "at": ...}} -- the
+    motion versions made for a run from the preview."""
+    try:
+        data = json.loads(_videos_path(job_id).read_text())
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+@app.route("/motion/<job_id>", methods=["POST"])
+def motion(job_id):
+    """Make (or drop) the motion version of one size -- the preview's
+    "Make a video of this size" box. Rendered from the size's layered
+    PSD by src/motion.py: a looping MP4, no model, no spend."""
+    from src.motion import DEFAULT_DURATION, render_motion_clip
+
+    job_id = secure_filename(job_id)
+    job_dir = JOBS_DIR / job_id
+    if not job_dir.is_dir():
+        abort(404)
+    payload = request.get_json(silent=True) or request.form
+    label = (payload.get("label") or "").strip()
+    if not re.fullmatch(r"\d{2,5}x\d{2,5}", label):
+        abort(400)
+    make = str(payload.get("make", "1")).lower() in ("1", "true", "yes", "on")
+    videos = load_videos(job_id)
+    if not make:
+        entry = videos.pop(label, None)
+        if entry:
+            try:
+                (job_dir / entry["filename"]).unlink()
+            except OSError:
+                pass
+        _videos_path(job_id).write_text(json.dumps(videos, indent=2))
+        return {"label": label, "video": None}
+    png = next(iter(sorted(job_dir.glob(f"*_{label}.png"))), None)
+    if png is None:
+        abort(404)
+    # The layered PSD carries the stack; the flat PNG is the fallback
+    # (backdrop drift only) for a size that has no layers.
+    psd = job_dir / f"{png.stem}.psd"
+    out = job_dir / f"{png.stem}.mp4"
+    try:
+        info = render_motion_clip(psd if psd.is_file() else None, out, fallback_image=png)
+    except RuntimeError as exc:
+        return {"error": str(exc)}, 500
+    videos[label] = {
+        "filename": out.name,
+        "seconds": info["seconds"],
+        "layers": info["layers"],
+        "at": _datetime.datetime.now().isoformat(timespec="seconds"),
+    }
+    _videos_path(job_id).write_text(json.dumps(videos, indent=2))
+    return {
+        "label": label,
+        "video": {
+            "url": url_for("serve_output", job_id=job_id, filename=out.name),
+            "download": url_for("download_video", job_id=job_id, filename=out.name),
+            "seconds": info["seconds"],
+            "layers": info["layers"],
+        },
+    }
+
+
+@app.route("/download-video/<job_id>/<filename>")
+def download_video(job_id, filename):
+    job_id = secure_filename(job_id)
+    filename = secure_filename(filename)
+    if not filename.lower().endswith(".mp4"):
+        abort(404)
+    file_path = JOBS_DIR / job_id / filename
+    if not file_path.is_file():
+        abort(404)
+    stamped = f"{file_path.stem}_{job_id[:6]}{file_path.suffix}"
+    return send_file(file_path, as_attachment=True, download_name=stamped, mimetype="video/mp4")
+
+
 @app.route("/download/<job_id>/approved")
 def download_approved(job_id):
     """A zip of only the sizes ticked as approved -- the PNG and any
@@ -5088,7 +5235,7 @@ def download_approved(job_id):
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         for path in sorted(job_dir.iterdir()):
-            if path.suffix.lower() not in (".png", ".psd"):
+            if path.suffix.lower() not in (".png", ".psd", ".mp4"):
                 continue
             if any(f"_{label}" in path.stem for label in approvals):
                 zf.write(path, path.name)

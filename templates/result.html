@@ -49,6 +49,16 @@
     }
     .lightbox-approve input { @apply w-4 h-4 accent-emerald-500 cursor-pointer; }
     .lightbox-approve.is-on { @apply border-emerald-500 text-emerald-200; }
+    .lightbox-controls { @apply flex flex-wrap items-center gap-3 justify-center; }
+    .lightbox-motion.is-busy { @apply opacity-70; }
+    .lightbox video { @apply block max-w-full max-h-[72vh] w-auto h-auto rounded-md; }
+    .lightbox video[hidden] { display: none; }
+    .lightbox img[hidden] { display: none; }
+    .lightbox-motion-note { @apply text-slate-400 text-[0.82rem] text-center; }
+    .video-badge {
+      @apply absolute top-2 right-2 bg-blue-600 text-white text-[0.72rem] font-bold uppercase tracking-wide px-2 py-[0.15rem] rounded-md z-10;
+    }
+    .video-badge[hidden] { display: none; }
     .card .thumb {
       background: repeating-conic-gradient(#1e293b 0% 25%, #0f172a 0% 50%) 50% / 16px 16px;
       @apply flex items-center justify-center min-h-[140px] p-2;
@@ -214,8 +224,9 @@
 
     <div class="grid">
       {% for c in creatives %}
-        <div class="card{% if c.approved %} is-approved{% endif %}" data-label="{{ c.label }}">
+        <div class="card{% if c.approved %} is-approved{% endif %}" data-label="{{ c.label }}"{% if c.video_filename %} data-video-url="{{ url_for('serve_output', job_id=job_id, filename=c.video_filename) }}" data-video-download="{{ url_for('download_video', job_id=job_id, filename=c.video_filename) }}"{% endif %}>
           <span class="approved-badge" data-role="approved-badge" {% if not c.approved %}hidden{% endif %}>&#10003; Approved</span>
+          <span class="video-badge" data-role="video-badge" {% if not c.video_filename %}hidden{% endif %}>&#9654; Video</span>
           <button type="button" class="thumb" data-role="zoom" data-label="{{ c.label }}" title="Click to view {{ c.label }} larger">
             <img src="{{ url_for('serve_output', job_id=job_id, filename=c.filename) }}" alt="{{ c.label }}">
           </button>
@@ -229,6 +240,7 @@
               <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.psd_filename) }}" title="This creative, as layers -- it opens looking exactly like the preview above, with the background, logo, product, text and CTA each on their own layer. Everything is pixels, so nothing shifts when it opens; for retypeable text use the source PSD below.">Download layered PSD</a>
               {% endif %}
             {% endif %}
+            <a class="psd-link" data-role="video-link" href="{% if c.video_filename %}{{ url_for('download_video', job_id=job_id, filename=c.video_filename) }}{% else %}#{% endif %}" {% if not c.video_filename %}hidden{% endif %} title="An 8-second looping MP4 of this size: the backdrop drifts, the product settles, the type and CTA arrive and hold. Made from this size's own layers -- no model, no cost.">Download video (MP4)</a>
             {% if c.source_psd_filename %}
               <a class="psd-link" href="{{ url_for('download_psd', job_id=job_id, filename=c.source_psd_filename) }}" title="This creative with every text layer live: header, description, legal and the CTA label are all editable type layers carrying this run's copy, colour and effects. The renderer's own pixels sit hidden beside each as '(rendered)', in case your Photoshop shows a type layer's cached picture instead of recomposing it. The CTA is a live group whose button carries your fill, stroke and corner radius as shape properties.">Download live-text PSD (editable)</a>
             {% endif %}
@@ -244,11 +256,19 @@
     <button type="button" class="lightbox-close" data-role="lightbox-close" aria-label="Close">&times;</button>
     <div class="lightbox-stage">
       <img data-role="lightbox-image" src="" alt="">
+      <video data-role="lightbox-video" hidden autoplay loop muted playsinline></video>
       <div class="lightbox-caption" data-role="lightbox-caption"></div>
-      <label class="lightbox-approve" data-role="lightbox-approve">
-        <input type="checkbox" data-role="lightbox-approve-box">
-        <span data-role="lightbox-approve-text">Approve this size</span>
-      </label>
+      <div class="lightbox-controls">
+        <label class="lightbox-approve" data-role="lightbox-approve">
+          <input type="checkbox" data-role="lightbox-approve-box">
+          <span data-role="lightbox-approve-text">Approve this size</span>
+        </label>
+        <label class="lightbox-approve lightbox-motion" data-role="lightbox-motion">
+          <input type="checkbox" data-role="lightbox-motion-box">
+          <span data-role="lightbox-motion-text">Make a video of this size</span>
+        </label>
+      </div>
+      <div class="lightbox-motion-note" data-role="lightbox-motion-note" hidden></div>
     </div>
   </div>
 
@@ -282,6 +302,69 @@
         if (summary) summary.hidden = count === 0;
       }
 
+      var video = document.querySelector('[data-role="lightbox-video"]');
+      var motionLabel = document.querySelector('[data-role="lightbox-motion"]');
+      var motionBox = document.querySelector('[data-role="lightbox-motion-box"]');
+      var motionText = document.querySelector('[data-role="lightbox-motion-text"]');
+      var motionNote = document.querySelector('[data-role="lightbox-motion-note"]');
+
+      function showVideo(card, url) {
+        // The clip plays in the preview in place of the still.
+        if (!video) return;
+        if (url) {
+          video.src = url;
+          video.hidden = false;
+          image.hidden = true;
+          video.play().catch(function () {});
+        } else {
+          video.pause();
+          video.removeAttribute("src");
+          video.hidden = true;
+          image.hidden = false;
+        }
+      }
+
+      function paintMotion(card, entry) {
+        // entry: {url, download} or null
+        var badge = card.querySelector('[data-role="video-badge"]');
+        var link = card.querySelector('[data-role="video-link"]');
+        if (badge) badge.hidden = !entry;
+        if (link) { link.hidden = !entry; if (entry) link.href = entry.download; }
+        card.dataset.videoUrl = entry ? entry.url : "";
+        card.dataset.videoDownload = entry ? entry.download : "";
+        if (motionLabel) motionLabel.classList.toggle("is-on", !!entry);
+        if (motionText) motionText.textContent = entry ? "Video made -- untick to remove" : "Make a video of this size";
+      }
+
+      if (motionBox) {
+        motionBox.addEventListener("change", function () {
+          if (!currentCard) return;
+          var label = currentCard.dataset.label;
+          var make = motionBox.checked;
+          motionBox.disabled = true;
+          if (motionLabel) motionLabel.classList.add("is-busy");
+          if (motionNote) { motionNote.hidden = false; motionNote.textContent = make ? "Rendering an 8-second loop for " + label + "... (a few seconds)" : "Removing the video..."; }
+          fetch("{{ url_for('motion', job_id=job_id) }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: label, make: make })
+          }).then(function (r) { return r.json().then(function (data) { if (!r.ok) throw new Error(data.error || r.status); return data; }); })
+            .then(function (data) {
+              paintMotion(currentCard, data.video || null);
+              showVideo(currentCard, data.video ? data.video.url : null);
+              if (motionNote) motionNote.textContent = data.video
+                ? "Looping " + data.video.seconds + "s clip, built from: " + (data.video.layers || []).join(", ") + ". Download it from the card."
+                : "";
+              if (motionNote && !data.video) motionNote.hidden = true;
+            })
+            .catch(function (err) {
+              motionBox.checked = !make;
+              if (motionNote) { motionNote.hidden = false; motionNote.textContent = "Couldn't make the video: " + err.message; }
+            })
+            .then(function () { motionBox.disabled = false; if (motionLabel) motionLabel.classList.remove("is-busy"); });
+        });
+      }
+
       if (approveBox) {
         approveBox.addEventListener("change", function () {
           if (!currentCard) return;
@@ -313,6 +396,14 @@
         if (!img) return;
         lastFocused = trigger;
         currentCard = card;
+        if (motionBox && card) {
+          var has = !!card.dataset.videoUrl;
+          motionBox.checked = has;
+          if (motionLabel) motionLabel.classList.toggle("is-on", has);
+          if (motionText) motionText.textContent = has ? "Video made -- untick to remove" : "Make a video of this size";
+          if (motionNote) motionNote.hidden = true;
+          showVideo(card, has ? card.dataset.videoUrl : null);
+        }
         if (approveBox && card) {
           approveBox.checked = card.classList.contains("is-approved");
           if (approveLabel) approveLabel.classList.toggle("is-on", approveBox.checked);
@@ -336,6 +427,7 @@
       function close() {
         box.hidden = true;
         image.src = "";
+        showVideo(null, null);
         if (lastFocused) lastFocused.focus();
       }
 

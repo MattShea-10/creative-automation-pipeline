@@ -31,3 +31,9 @@ scikit-image>=0.21
 # Optional -- without it OpenCV's GrabCut is used, which is rough at
 # hair and edges. Downloads its model (176 MB, once) on first use.
 rembg[cpu]>=2.0.60
+# ffmpeg for the motion versions (src/motion.py): a looping MP4 per size,
+# made from the size's own layers. Bundles a static ffmpeg binary, so
+# nothing else to install.
+imageio-ffmpeg>=0.5
+# iPhone HEIC photos on the mood board (converted to PNG on the way in).
+pillow-heif>=0.16

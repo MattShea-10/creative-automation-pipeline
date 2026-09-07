@@ -7039,7 +7039,105 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             "upload_ai_reference_data": "data:text/plain;base64,aGVsbG8=", "upload_ai_reference_data_name": "notes.txt",
         }, content_type="multipart/form-data", follow_redirects=True)
         page2 = r2.get_data(as_text=True)
-        self.assertIn("isn&#39;t a PNG, JPEG or WebP", page2.replace("&#x27;", "&#39;"))
+        self.assertIn("isn&#39;t a picture or video the board can use", page2.replace("&#x27;", "&#39;"))
+        self.assertIn(">Keep me</textarea>", page2)
+
+    def test_a_size_can_be_made_into_a_looping_video_from_the_preview(self):
+        # "Make a video of this size" in the preview: an 8-second looping
+        # MP4 rendered from that size's layered PSD, downloadable from the
+        # card, remembered with the run, in the approved zip, removable.
+        import zipfile as _zipfile
+        from src.motion import ffmpeg_path
+
+        if not ffmpeg_path():
+            self.skipTest("no ffmpeg available")
+        self._stage_real_template()
+        r = self.client.post("/generate", data={
+            "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_provider": "mock",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        page = r.data.decode()
+        job_id = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+        label = re.search(r'<div class="card[^"]*" data-label="(\d+x\d+)"', page).group(1)
+        self.assertIn('data-role="lightbox-motion-box"', page)
+
+        m = self.client.post(f"/motion/{job_id}", json={"label": label})
+        self.assertEqual(m.status_code, 200, m.data[:200])
+        info = m.get_json()["video"]
+        self.assertEqual(info["seconds"], 8.0)
+        self.assertIn("background", info["layers"])
+        mp4 = next((webapp.JOBS_DIR / job_id).glob("*.mp4"))
+        self.assertGreater(mp4.stat().st_size, 10_000)
+        # H.264 in an MP4 container: ftyp box near the start.
+        self.assertIn(b"ftyp", mp4.read_bytes()[:64])
+        d = self.client.get(info["download"])
+        self.assertEqual((d.status_code, d.mimetype), (200, "video/mp4"))
+        self.assertTrue(json.loads((webapp.JOBS_DIR / job_id / "videos.json").read_text())[label]["filename"].endswith(".mp4"))
+        # In the approved zip once the size is approved.
+        self.client.post(f"/approve/{job_id}", json={"label": label, "approved": True})
+        names = _zipfile.ZipFile(io.BytesIO(self.client.get(f"/download/{job_id}/approved").data)).namelist()
+        self.assertTrue(any(n.endswith(".mp4") for n in names), names)
+        # Untick: gone.
+        m2 = self.client.post(f"/motion/{job_id}", json={"label": label, "make": False})
+        self.assertIsNone(m2.get_json()["video"])
+        self.assertFalse(list((webapp.JOBS_DIR / job_id).glob("*.mp4")))
+
+    def test_a_video_or_tiff_on_the_mood_board_becomes_a_still_reference(self):
+        # The board takes more than Ideogram does: a video's middle frame,
+        # a TIFF (and HEIC, given pillow-heif) -- converted to PNG on the
+        # way in, so what reaches the model is a picture it accepts.
+        import subprocess
+        import webapp as _webapp
+        from src.motion import ffmpeg_path
+
+        if not ffmpeg_path():
+            self.skipTest("no ffmpeg to make a test clip")
+        self._stage_real_template()
+        clip = Path(self.tmp_dir) / "clip.mp4" if hasattr(self, "tmp_dir") else Path(tempfile.mkdtemp()) / "clip.mp4"
+        subprocess.run([ffmpeg_path(), "-v", "error", "-y", "-f", "lavfi", "-i", "color=c=orange:s=320x240:d=2",
+                        "-pix_fmt", "yuv420p", str(clip)], check=True)
+        tif = io.BytesIO()
+        Image.new("RGB", (50, 40), (10, 20, 200)).save(tif, "TIFF")
+        sent = []
+
+        class _Ideogramish:
+            name = "stub"
+            supports_style_reference = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, style_reference=None):
+                from PIL import Image as _Image
+                sent.append(style_reference)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Ideogramish()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "upload_ai_reference": [(io.BytesIO(clip.read_bytes()), "beach.mov"), (io.BytesIO(tif.getvalue()), "scan.tif")],
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200, r.data[:300])
+        finally:
+            _webapp.get_provider = original
+        refs = sent[-1]
+        self.assertEqual(len(refs), 2)
+        for blob in refs:
+            self.assertTrue(blob.startswith(b"\x89PNG"), "every reference reaches the model as a PNG")
+        page = r.data.decode()
+        self.assertIn("beach.png, scan.png", page)
+        # A frame of an orange clip is orange.
+        from PIL import Image as _Image
+        frame = _Image.open(io.BytesIO(refs[0])).convert("RGB")
+        r_, g_, b_ = frame.getpixel((160, 120))
+        self.assertTrue(r_ > 180 and b_ < 80, (r_, g_, b_))
+        # Something that is neither is still refused, brief kept.
+        r2 = self.client.post("/generate", data={
+            "product_name": "HydroBoost", "campaign_message": "Keep me", "upload_ai_enabled": "1",
+            "header": "", "description": "", "upload_ai_reference": (io.BytesIO(b"%PDF-1.4"), "deck.pdf"),
+        }, content_type="multipart/form-data", follow_redirects=True)
+        page2 = r2.get_data(as_text=True)
+        self.assertIn("isn&#39;t a supported file type", page2.replace("&#x27;", "&#39;"))
+        self.assertIn("the middle frame is used", page2)
         self.assertIn(">Keep me</textarea>", page2)
 
     def test_no_reference_means_no_reference_clause(self):

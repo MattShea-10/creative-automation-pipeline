@@ -148,7 +148,14 @@ editable in Photoshop). Click a preview to see it at full size; the
 **Approve this size** box there marks it -- the card gets a green outline
 and badge, the tick is saved with the run, and a link at the top of the
 page downloads just the approved sizes (PNG and PSDs, with an
-`approvals.json` saying what was approved when). Approval also changes
+`approvals.json` saying what was approved when). The preview also has
+**Make a video of this size**: the app renders an 8-second looping MP4
+from that size's own layers -- backdrop drifting, product settling, type
+and CTA arriving and holding, a short fade so it loops cleanly -- and
+plays it in the preview. No model is involved and nothing is billed; it
+takes a few seconds. The card gets a **Download video (MP4)** link, the
+clip is kept with the run and included in the approved zip, and unticking
+removes it. Approval also changes
 what **Edit** does next: an approved size is carried into the new run
 exactly as it is -- not re-rendered, not regenerated, not billed -- and
 in normal mode its backdrop is pinned, so the other sizes are updated

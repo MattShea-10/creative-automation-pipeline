@@ -984,10 +984,11 @@
             <div class="field" style="margin-top: 0.7rem; margin-bottom: 0;">
               <label for="upload_ai_reference" style="font-weight: 400;">Reference images <span style="font-weight: 400; color: var(--muted);">(optional -- a mood board of up to {{ reference_limit }}: make the backdrop look like these)</span></label>
               <div class="drop-zone" data-role="reference-drop-zone">
-                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept=".png,.webp,.jpg,.jpeg" multiple data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
+                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept="image/*,video/*,.png,.webp,.jpg,.jpeg,.heic,.heif,.tif,.tiff,.gif,.bmp,.mp4,.mov,.m4v,.webm" multiple data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
                 <input type="text" data-role="reference-url" placeholder="...or drag pictures in from web pages, or paste an image address and press Enter" style="margin-top: 0.4rem;">
                 <div data-role="reference-url-list"></div>
-                <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures here, choose files, or drag them straight off web pages -- up to {{ reference_limit }} together. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
+                <div class="hint" data-role="reference-status" hidden style="margin: 0.3rem 0 0; color: #fcd34d;"></div>
+                <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures or short videos here, choose files, or drag pictures straight off web pages -- up to {{ reference_limit }} together. PNG, JPEG, WebP, iPhone HEIC, TIFF, GIF; a video's middle frame is used. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
               </div>
               {% for slot in reference_slots %}
                 {% if prefill_files.get(slot) %}
@@ -1335,11 +1336,18 @@
                 chip.querySelector(".layer-image-cached-name").textContent =
                   "not an image address, or the site refused -- save the picture and drop the file instead";
               });
-            } else {
+            } else if (item.preview) {
               thumb.src = item.preview;
+            } else {
+              // A video or HEIC the browser can't draw: a labelled tile.
+              thumb.remove();
+              var tile = document.createElement("div");
+              tile.textContent = /video/.test(item.note || "") ? "VIDEO" : "IMG";
+              tile.style.cssText = "width:2.5rem;height:2.5rem;border-radius:4px;background:#1e293b;color:#94a3b8;font-size:0.6rem;display:flex;align-items:center;justify-content:center;font-weight:700;flex:none;";
+              chip.insertBefore(tile, chip.firstChild);
             }
             chip.querySelector("strong").textContent =
-              item.kind === "web" ? "From the web" : "On the board";
+              item.kind === "web" ? "From the web" : ("On the board" + (item.note ? " -- " + item.note : ""));
             chip.querySelector(".layer-image-cached-name").textContent = item.name.slice(0, 60);
             if (item.kind === "web") {
               var u = document.createElement("input"); u.type = "hidden"; u.name = "upload_ai_reference_url"; u.value = item.value; chip.appendChild(u);
@@ -1369,24 +1377,60 @@
           return false;
         };
         var addWeb = function (url) {
-          if (!/^https?:\/\//i.test(url)) return;
+          if (!/^https?:\/\//i.test(url)) { say("That isn't a web address: " + url.slice(0, 80)); return; }
           if (board.some(function (b) { return b.kind === "web" && b.value === url; })) return;
           if (tooMany(1)) return;
           board.push({ kind: "web", name: url.replace(/^https?:\/\//, ""), preview: url, value: url });
           render();
+          say("");
+        };
+        var status = refZone.querySelector('[data-role="reference-status"]');
+        var say = function (text) {
+          if (!status) return;
+          status.textContent = text || "";
+          status.hidden = !text;
+        };
+        var looksLikeImage = function (f) {
+          // Pictures and videos (a video's middle frame is the reference).
+          // The type is blank for files from some apps (Photos, Preview
+          // exports, some sites); the name is the fallback, and the
+          // server checks the bytes anyway.
+          return /^(image|video)\//.test(f.type || "") ||
+            /\.(png|jpe?g|webp|heic|heif|tiff?|gif|bmp|mp4|mov|m4v|webm)$/i.test(f.name || "");
         };
         var addDroppedFiles = function (files) {
-          var list = Array.prototype.filter.call(files, function (f) { return /^image\//.test(f.type); });
-          if (!list.length) return;
+          var all = Array.prototype.slice.call(files);
+          var list = all.filter(looksLikeImage);
+          if (!list.length) {
+            say("That drop had " + all.length + " file(s) but none looked like a picture or video: " +
+                all.map(function (f) { return (f.name || "?") + " (" + (f.type || "no type") + ")"; }).join(", "));
+            return;
+          }
           if (tooMany(list.length)) return;
+          say("Reading " + list.length + " picture(s)...");
           list.forEach(function (f) {
+            if (f.size > 100 * 1024 * 1024) { say((f.name || "That file") + " is over 100 MB -- use Choose Files for it."); return; }
             var reader = new FileReader();
             reader.onload = function () {
-              board.push({ kind: "data", name: f.name, preview: reader.result, value: reader.result });
+              var browserCanShow = /^image\/(png|jpeg|webp|gif|bmp)$/.test(f.type || "");
+              board.push({ kind: "data", name: f.name || "dropped picture", preview: browserCanShow ? reader.result : "", value: reader.result,
+                           note: browserCanShow ? "" : (/^video\//.test(f.type || "") || /\.(mp4|mov|m4v|webm)$/i.test(f.name || "") ? "video -- middle frame will be used" : "converted when you Generate") });
               render();
+              say("");
             };
+            reader.onerror = function () { say("Couldn't read " + (f.name || "that file") + ": " + (reader.error && reader.error.message)); };
             reader.readAsDataURL(f);
           });
+        };
+        var filesFromItems = function (dt) {
+          // Some browsers fill items but not files for certain sources.
+          var out = [];
+          if (dt.items) {
+            for (var i = 0; i < dt.items.length; i++) {
+              if (dt.items[i].kind === "file") { var f = dt.items[i].getAsFile(); if (f) out.push(f); }
+            }
+          }
+          return out;
         };
         var syncPicker = function () {
           // The picker's own files, shown as chips like everything else.
@@ -1396,28 +1440,54 @@
             window.alert("A mood board holds up to " + LIMIT + " pictures; only the first " + LIMIT + " will be used.");
           }
           files.forEach(function (f) {
-            board.push({ kind: "picker", name: f.name, preview: URL.createObjectURL(f), file: f });
+            var browserCanShow = /^image\/(png|jpeg|webp|gif|bmp)$/.test(f.type || "");
+            board.push({ kind: "picker", name: f.name, preview: browserCanShow ? URL.createObjectURL(f) : "", file: f,
+                         note: browserCanShow ? "" : (/^video\//.test(f.type || "") ? "video -- middle frame will be used" : "converted when you Generate") });
           });
           render();
         };
         // Files or web pictures can land anywhere on the zone.
         ["dragenter", "dragover"].forEach(function (evt) {
-          refZone.addEventListener(evt, function (e) { e.preventDefault(); refZone.classList.add("is-dragover"); });
+          refZone.addEventListener(evt, function (e) {
+            e.preventDefault();
+            if (e.dataTransfer) e.dataTransfer.dropEffect = "copy";
+            refZone.classList.add("is-dragover");
+            var kinds = e.dataTransfer ? Array.prototype.slice.call(e.dataTransfer.types || []).join(", ") : "?";
+            say("Drag detected (" + (kinds || "no types yet") + ") -- let go to add it.");
+          });
         });
         refZone.addEventListener("dragleave", function () { refZone.classList.remove("is-dragover"); });
         refZone.addEventListener("drop", function (e) {
           refZone.classList.remove("is-dragover");
           var dt = e.dataTransfer;
-          if (!dt) return;
-          e.preventDefault();
-          if (dt.files && dt.files.length) { addDroppedFiles(dt.files); return; }
-          var url = (dt.getData("text/uri-list") || dt.getData("text/plain") || "").split("\n")[0].trim();
-          if (!url) {
-            var html = dt.getData("text/html") || "";
-            var m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
-            if (m) url = m[1];
+          if (!dt) { say("Drop received, but the browser attached nothing to it."); return; }
+          // Dropped straight on the "Choose Files" control: let the
+          // browser do what it does natively (put the file in the
+          // picker), which then shows the chip through the picker path.
+          // Every browser supports that; not every one lets a script
+          // read a dropped file, which is the path below.
+          if (e.target === refInput && dt.files && dt.files.length) {
+            say("Drop received on the picker: " + dt.files.length + " file(s).");
+            return;
           }
-          if (url) addWeb(url);
+          e.preventDefault();
+          say("Drop received: " + (dt.files ? dt.files.length : 0) + " file(s), types " +
+              (Array.prototype.slice.call(dt.types || []).join(", ") || "none"));
+          try {
+            var files = (dt.files && dt.files.length) ? Array.prototype.slice.call(dt.files) : filesFromItems(dt);
+            if (files.length) { addDroppedFiles(files); return; }
+            var url = (dt.getData("text/uri-list") || dt.getData("text/plain") || "").split("\n")[0].trim();
+            if (!url) {
+              var html = dt.getData("text/html") || "";
+              var m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
+              if (m) url = m[1];
+            }
+            if (url) { addWeb(url); return; }
+            say("Nothing usable in that drop (types offered: " +
+                (Array.prototype.slice.call(dt.types || []).join(", ") || "none") + "). Try Choose Files, or drag the picture from Finder.");
+          } catch (err) {
+            say("The drop failed: " + (err && err.message ? err.message : err));
+          }
         });
         if (refUrl) {
           var takeUrl = function () { var u = refUrl.value.trim(); if (u) { addWeb(u); refUrl.value = ""; } };
