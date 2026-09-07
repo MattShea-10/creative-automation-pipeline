@@ -59,6 +59,8 @@
        lights up while something is being dragged over it. */
     .drop-zone { @apply border border-dashed border-slate-600 rounded-md px-3 py-2 bg-slate-900/40; }
     .drop-zone.is-dragover { @apply border-blue-400 bg-blue-950/40; }
+    input[type="file"].is-dragover { @apply border-blue-400 bg-blue-950/40; }
+    .upload-preview-chip[hidden] { display: none; }
     .drop-zone input[type="file"] { @apply border-0 bg-transparent px-0 py-1; }
     .layer-image-cached img { @apply w-10 h-10 object-contain rounded bg-slate-800; }
     .layer-image-cached-meta { @apply flex flex-col text-[0.78rem] leading-tight text-slate-300; }
@@ -1655,17 +1657,49 @@
       // on disk, for the same security reason the content-PSD comment
       // above mentions), so that's what shows here.
       root.querySelectorAll('input[type="file"]').forEach(function (fileInput) {
+        ["dragenter", "dragover"].forEach(function (evt) {
+          fileInput.addEventListener(evt, function () { fileInput.classList.add("is-dragover"); });
+        });
+        ["dragleave", "drop"].forEach(function (evt) {
+          fileInput.addEventListener(evt, function () { fileInput.classList.remove("is-dragover"); });
+        });
+      });
+      // ...and, for a picture, a thumbnail of it: the same chip the
+      // kept-file cards use, so what was just chosen or dropped is seen,
+      // not just named. The mood board draws its own chips.
+      root.querySelectorAll('input[type="file"]').forEach(function (fileInput) {
+        if (fileInput.name === "upload_ai_reference") return;
         var locationHint = document.createElement("div");
         locationHint.className = "hint upload-location-hint";
         locationHint.hidden = true;
         fileInput.insertAdjacentElement("afterend", locationHint);
+        var chip = document.createElement("div");
+        chip.className = "layer-image-cached upload-preview-chip";
+        chip.hidden = true;
+        chip.style.marginTop = "0.4rem";
+        chip.innerHTML = '<img alt=""><div class="layer-image-cached-meta"><strong>Chosen</strong>' +
+          '<span class="layer-image-cached-name"></span></div>';
+        locationHint.insertAdjacentElement("afterend", chip);
+        // Anything that isn't a picture (a PSD, a video) keeps the text line only.
         fileInput.addEventListener("change", function () {
           var file = fileInput.files && fileInput.files[0];
+          var old = chip.querySelector("img").src;
+          if (old && old.indexOf("blob:") === 0) URL.revokeObjectURL(old);
           if (file) {
             locationHint.textContent = "Location: " + file.name;
             locationHint.hidden = false;
+            if (/^image\//.test(file.type)) {
+              chip.querySelector("img").src = URL.createObjectURL(file);
+              chip.querySelector(".layer-image-cached-name").textContent = file.name;
+              chip.querySelector("strong").textContent =
+                fileInput.files.length > 1 ? "Chosen (" + fileInput.files.length + " files, first shown)" : "Chosen";
+              chip.hidden = false;
+            } else {
+              chip.hidden = true;
+            }
           } else {
             locationHint.hidden = true;
+            chip.hidden = true;
           }
         });
       });
