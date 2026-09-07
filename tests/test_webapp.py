@@ -8632,3 +8632,80 @@ class TextFreeRenderModeTest(unittest.TestCase):
             "on the theme of Rehydrate with a refreshing summer drink",
             webapp._backdrop_scene("Hydro Boost", "Rehydrate with a refreshing summer drink", "runners"),
         )
+
+
+class SceneTextDetectorTest(unittest.TestCase):
+    """src/text_check.py's detector: the check that has to see a
+    headline set over a photograph, which Tesseract does not."""
+
+    def _photo_with_headline(self):
+        from PIL import ImageDraw
+        from src.image_ops import _load_font
+
+        w, h = 640, 640
+        im = Image.new("RGB", (w, h))
+        px = im.load()
+        for y in range(h):
+            for x in range(w):
+                px[x, y] = (60 + x // 6, 120 + y // 8, 200 - y // 6)
+        d = ImageDraw.Draw(im)
+        d.ellipse((200, 260, 440, 600), fill=(230, 200, 60))
+        d.text((110, 60), "Rehydrate", fill=(255, 255, 255), font=_load_font(90))
+        return im
+
+    def test_a_headline_over_a_photo_is_found_and_scrubbed(self):
+        from src.text_check import detector_available, find_text, scrub_text
+
+        if not detector_available():
+            self.skipTest("rapidocr isn't installed here")
+        im = self._photo_with_headline()
+        found = find_text(im)
+        self.assertTrue(found.found_text, "the detector must see the headline")
+        self.assertTrue(any("ehydrat" in f.text for f in found.findings), found.summary())
+        out, notes, after = scrub_text(im)
+        self.assertFalse(after.found_text, f"still readable: {after.summary()}")
+        self.assertEqual(out.size, im.size)
+        # The picture underneath is kept: the subject is untouched.
+        self.assertEqual(out.getpixel((320, 430)), im.getpixel((320, 430)))
+
+    def test_detector_findings_are_scaled_and_filtered(self):
+        from src import text_check
+
+        class _Engine:
+            def __call__(self, array):
+                return (
+                    [
+                        ([[10, 10], [200, 10], [200, 60], [10, 60]], "Summer", 0.93),
+                        ([[10, 100], [200, 100], [200, 150], [10, 150]], "??", 0.99),   # no letters
+                        ([[10, 200], [200, 200], [200, 250], [10, 250]], "faint", 0.2),  # below score
+                    ],
+                    0.1,
+                )
+
+        original = text_check._detector, text_check._detector_state
+        text_check._detector, text_check._detector_state = _Engine(), "ready"
+        try:
+            found = text_check._detector_findings(Image.new("RGB", (300, 300)), min_height=2)
+        finally:
+            text_check._detector, text_check._detector_state = original
+        self.assertEqual([(f.text, f.box) for f in found], [("Summer", (10, 10, 190, 50))])
+        self.assertAlmostEqual(found[0].confidence, 93.0)
+
+    def test_forced_paint_out_of_a_big_headline_and_tesseract_gone(self):
+        # remove_text(force=True) goes past the size limit; ocr_available
+        # is true on the detector alone.
+        from src import text_check
+
+        result = text_check.TextCheckResult(
+            available=True,
+            findings=[text_check.TextFinding("BIG", 99.0, (0, 0, 300, 120))],
+        )
+        im = Image.new("RGB", (300, 300), (30, 90, 200))
+        kept, count, reason = text_check.remove_text(im, result)
+        self.assertIsNotNone(reason)
+        cleaned, count, reason = text_check.remove_text(im, result, force=True)
+        self.assertIsNone(reason)
+        self.assertEqual(count, 1)
+        with mock.patch.object(text_check, "tesseract_available", lambda: False), \
+                mock.patch.object(text_check, "detector_available", lambda: True):
+            self.assertTrue(text_check.ocr_available())

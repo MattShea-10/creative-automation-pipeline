@@ -36,7 +36,12 @@ hiddenimports = (
 # (src/ad_split.py falls back to GrabCut on ImportError), so a build
 # without it still works -- but when the packages are present they and
 # their native bits come along.
-for optional in ("rembg", "onnxruntime", "pymatting", "numba", "llvmlite", "pooch", "scipy"):
+for optional in (
+    "rembg", "onnxruntime", "pymatting", "numba", "llvmlite", "pooch", "scipy",
+    # The scene-text detector (src/text_check.py): its ONNX models and
+    # config ship inside the package as data files.
+    "rapidocr_onnxruntime", "pyclipper", "shapely", "yaml",
+):
     try:
         hiddenimports += collect_submodules(optional)
         datas += collect_data_files(optional)

@@ -157,6 +157,15 @@ message). Then either:
   crops a headline band off and sends only the picture part; the
   results page says which. A photo with no words on it is still the
   best reference.
+  The no-text check itself uses a scene-text detector (RapidOCR --
+  PaddleOCR's detector as bundled ONNX models, installed into the
+  app's Python on first use, or `pip install rapidocr-onnxruntime`),
+  not only Tesseract: Tesseract reads documents and is nearly blind to
+  a headline set over a photograph, which is how lettered backdrops
+  were passing the check. Every word the detector finds is painted
+  out, the picture is re-read, and a headline too big to paint out is
+  cropped off -- a backdrop leaves this step with no words on it, or
+  the results page says exactly what is still readable.
 
 Each result has **Download layered PSD** (opens looking exactly like the
 preview) and **Download live-text PSD** (the same, with the text still

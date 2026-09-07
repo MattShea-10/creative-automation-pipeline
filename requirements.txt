@@ -35,5 +35,7 @@ rembg[cpu]>=2.0.60
 # made from the size's own layers. Bundles a static ffmpeg binary, so
 # nothing else to install.
 imageio-ffmpeg>=0.5
+# Scene-text detector for the no-text check on generated backdrops (models bundled in the wheel).
+rapidocr-onnxruntime>=1.3
 # iPhone HEIC photos on the mood board (converted to PNG on the way in).
 pillow-heif>=0.16

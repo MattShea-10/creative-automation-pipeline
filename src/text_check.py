@@ -91,13 +91,113 @@ class TextCheckResult:
         return ", ".join(words)
 
 
-def ocr_available() -> bool:
-    """Whether both halves of the OCR stack are actually present."""
+def tesseract_available() -> bool:
+    """Whether both halves of the Tesseract stack are actually present."""
     try:
         import pytesseract  # noqa: F401
     except ImportError:
         return False
     return shutil.which("tesseract") is not None
+
+
+# The scene-text detector. Tesseract is a document reader: it reads a
+# page of type and is close to blind to a headline set over a photograph
+# -- a run with "a drink," lettered across the sky and a wordmark down
+# the bottle came back from it as "no text found", and every check
+# built on it was a check that never fired. RapidOCR bundles PaddleOCR's
+# DB detector and recogniser as ONNX models inside the pip package (no
+# separate model download, about 15 MB), finds that headline, the
+# wordmark and the label, and runs in a couple of seconds on a CPU.
+# Installed into the running interpreter on first use, the way ffmpeg
+# is, so a packaged or fresh install doesn't need a setup step.
+DETECTOR_PACKAGE = "rapidocr-onnxruntime"
+DETECTOR_MIN_SCORE = float(os.environ.get("AI_TEXT_DETECTOR_MIN_SCORE") or 0.5)
+_detector = None
+_detector_state = None  # None = untried, "ready", or an error message
+
+
+def ensure_text_detector(install: bool = True):
+    """The RapidOCR engine, importing it and installing it first if
+    allowed; None (with the reason in `_detector_state`) when it can't
+    be had."""
+    global _detector, _detector_state
+    if _detector is not None:
+        return _detector
+    if _detector_state not in (None, "ready") and not install:
+        return None
+    try:
+        from rapidocr_onnxruntime import RapidOCR
+    except ImportError:
+        if not install or os.environ.get("AI_TEXT_DETECTOR_NO_INSTALL"):
+            _detector_state = f"{DETECTOR_PACKAGE} isn't installed"
+            return None
+        import subprocess
+        import sys
+
+        try:
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--quiet", DETECTOR_PACKAGE],
+                check=True, capture_output=True, timeout=600,
+            )
+            import importlib
+
+            importlib.invalidate_caches()
+            from rapidocr_onnxruntime import RapidOCR
+        except Exception as exc:  # noqa: BLE001
+            _detector_state = (
+                f"{DETECTOR_PACKAGE} isn't installed and couldn't be installed automatically "
+                f"({type(exc).__name__}). In the terminal you start the app from, run:  "
+                f"{sys.executable} -m pip install {DETECTOR_PACKAGE}"
+            )
+            return None
+    try:
+        _detector = RapidOCR()
+    except Exception as exc:  # noqa: BLE001
+        _detector_state = f"{DETECTOR_PACKAGE} failed to start: {exc}"
+        return None
+    _detector_state = "ready"
+    return _detector
+
+
+def detector_available() -> bool:
+    return ensure_text_detector(install=False) is not None
+
+
+def ocr_available() -> bool:
+    """Whether anything can read text out of a picture: the scene-text
+    detector, or failing that Tesseract."""
+    return detector_available() or tesseract_available()
+
+
+def _detector_findings(image: Image.Image, min_height: float, min_score: float = None):
+    """Text the scene-text detector finds, as TextFindings with the
+    detector's 0..1 score scaled to Tesseract's 0..100."""
+    engine = ensure_text_detector()
+    if engine is None:
+        return None
+    import numpy as np
+
+    try:
+        result, _elapsed = engine(np.asarray(image.convert("RGB")))
+    except Exception:  # noqa: BLE001
+        return None
+    threshold = DETECTOR_MIN_SCORE if min_score is None else min_score
+    findings = []
+    for box, text, score in result or []:
+        score = float(score)
+        if score < threshold:
+            continue
+        word = (text or "").strip()
+        if len(_LETTERS.findall(word)) < MIN_LETTERS and not any(ch.isdigit() for ch in word):
+            continue
+        xs = [float(p[0]) for p in box]
+        ys = [float(p[1]) for p in box]
+        left, top = int(min(xs)), int(min(ys))
+        width, height = int(max(xs)) - left, int(max(ys)) - top
+        if min(width, height) < min_height:
+            continue
+        findings.append(TextFinding(text=word, confidence=score * 100.0, box=(left, top, width, height)))
+    return findings
 
 
 def find_text(image: Image.Image, min_confidence: float = None) -> TextCheckResult:
@@ -111,8 +211,19 @@ def find_text(image: Image.Image, min_confidence: float = None) -> TextCheckResu
     installed, so a caller can tell "checked, clean" from "couldn't
     check" -- which matter differently and must never be conflated.
     """
-    if not ocr_available():
-        return TextCheckResult(available=False)
+    # The detector first: it is the one that actually sees lettering on
+    # a photograph. Tesseract's passes are kept for what it is good at
+    # (small, clean, document-like type) and merged in.
+    min_height = max(1.0, image.height * MIN_HEIGHT_FRACTION)
+    detected = _detector_findings(
+        image, min_height,
+        None if min_confidence is None else float(min_confidence) / 100.0,
+    )
+    if not tesseract_available():
+        if detected is None:
+            return TextCheckResult(available=False)
+        detected.sort(key=lambda f: -f.confidence)
+        return TextCheckResult(available=True, findings=detected)
 
     import pytesseract
 
@@ -139,17 +250,28 @@ def find_text(image: Image.Image, min_confidence: float = None) -> TextCheckResu
                 # A broken or half-installed Tesseract reports as "can't
                 # check" rather than failing the render around it.
                 continue
-    if not pages:
+    if not pages and detected is None:
         return TextCheckResult(available=False)
 
-    min_height = max(1.0, image.height * MIN_HEIGHT_FRACTION)
-    findings = []
-    seen_boxes = set()
+    findings = list(detected or [])
+    seen_boxes = {tuple(v // 8 for v in f.box) for f in findings}
     threshold = MIN_CONFIDENCE if min_confidence is None else float(min_confidence)
     for data in pages:
-        findings.extend(_findings_from(data, min_height, seen_boxes, threshold))
+        for finding in _findings_from(data, min_height, seen_boxes, threshold):
+            # A Tesseract word inside a detector box is the same text
+            # read twice; the detector's box already covers it.
+            if any(_inside(finding.box, other.box) for other in findings):
+                continue
+            findings.append(finding)
     findings.sort(key=lambda f: -f.confidence)
     return TextCheckResult(available=True, findings=findings)
+
+
+def _inside(box, other) -> bool:
+    l, t, w, h = box
+    ol, ot, ow, oh = other
+    cx, cy = l + w / 2, t + h / 2
+    return ol <= cx <= ol + ow and ot <= cy <= ot + oh
 
 
 def _findings_from(data, min_height, seen_boxes, min_confidence=None):
@@ -218,7 +340,10 @@ def build_text_mask(image: Image.Image, result: "TextCheckResult"):
     mask = np.zeros((image.height, image.width), dtype=np.uint8)
     for finding in result.findings:
         left, top, width, height = finding.box
-        pad = max(2, int(round(height * MASK_PADDING_FRACTION)))
+        # The shorter side is the letter height, whichever way the text
+        # runs: a wordmark down a bottle is a tall thin box, and padding
+        # by its height would swallow the bottle.
+        pad = max(2, int(round(min(width, height) * MASK_PADDING_FRACTION)))
         x0 = max(0, left - pad)
         y0 = max(0, top - pad)
         x1 = min(image.width, left + width + pad)
@@ -235,13 +360,15 @@ def masked_area_fraction(image: Image.Image, mask) -> float:
     return float((mask > 0).sum()) / float(image.width * image.height)
 
 
-def remove_text(image: Image.Image, result: "TextCheckResult"):
+def remove_text(image: Image.Image, result: "TextCheckResult", force: bool = False):
     """Paint out the words in `result`, reconstructing the background.
 
     Returns (cleaned_image, removed_count, reason). `reason` is None on
     success and a short explanation when nothing was done -- refusing
     loudly matters more than trying: a failed inpaint doesn't leave the
     image as it was, it leaves a smear where the text used to be.
+    `force` paints out regardless of size, for a caller that has decided
+    a smear beats lettering (see scrub_text()).
     """
     if not result.findings:
         return image, 0, "nothing to remove"
@@ -253,7 +380,7 @@ def remove_text(image: Image.Image, result: "TextCheckResult"):
 
     mask = build_text_mask(image, result)
     fraction = masked_area_fraction(image, mask)
-    if fraction > MAX_REMOVABLE_AREA_FRACTION:
+    if fraction > MAX_REMOVABLE_AREA_FRACTION and not force:
         return (
             image,
             0,
@@ -267,6 +394,103 @@ def remove_text(image: Image.Image, result: "TextCheckResult"):
     # difference in quality is invisible on the small, isolated regions
     # this is limited to.
     radius = max(3, int(round(image.height * 0.006)))
-    painted = cv2.inpaint(array, mask, radius, cv2.INPAINT_TELEA)
+    if fraction > MAX_REMOVABLE_AREA_FRACTION:
+        # A big hole (a forced paint-out of a headline) is filled at a
+        # reduced size and scaled back, which gives a smooth fill in a
+        # fraction of the time; the fill only lands inside the hole.
+        h, w = mask.shape
+        scale = 320.0 / max(h, w)
+        sw, sh = max(8, int(w * scale)), max(8, int(h * scale))
+        small = cv2.resize(array, (sw, sh), interpolation=cv2.INTER_AREA)
+        small_mask = cv2.resize(mask, (sw, sh), interpolation=cv2.INTER_NEAREST)
+        small_painted = cv2.inpaint(small, small_mask, 5, cv2.INPAINT_TELEA)
+        fill = cv2.resize(small_painted, (w, h), interpolation=cv2.INTER_CUBIC)
+        k = max(3, radius * 2 + 1)
+        blend = cv2.GaussianBlur(mask, (k, k), 0).astype("float32")[:, :, None] / 255.0
+        painted = (fill * blend + array * (1 - blend)).astype("uint8")
+    else:
+        painted = cv2.inpaint(array, mask, radius, cv2.INPAINT_TELEA)
     cleaned = Image.fromarray(painted[:, :, ::-1])
     return cleaned, len(result.findings), None
+
+
+# scrub_text(): how many paint-out passes before falling back to a crop.
+# Inpainting can leave enough of a letter to still read; a second pass
+# over what is left usually finishes it.
+SCRUB_PASSES = 3
+# The crop fallback keeps the tallest text-free band of the frame, if it
+# is at least this much of the height; below that too little picture
+# remains to be worth calling a backdrop.
+SCRUB_CROP_MIN_FRACTION = 0.45
+
+
+def scrub_text(image: Image.Image):
+    """Make `image` text-free, whatever it takes short of a new image.
+
+    A backdrop goes under the template's own words, so lettering on it
+    is never acceptable -- and a soft patch where a word was is. This
+    paints out every word the OCR engine finds, re-reads, and repeats;
+    if a headline is too big to paint out convincingly it crops to the
+    largest band of the frame with no text in it and scales that back
+    up to size. Returns (image, notes, leftover) where `leftover` is the
+    TextCheckResult of the final read -- empty when the picture came out
+    clean, `available=False` when nothing could be checked.
+    """
+    notes = []
+    found = find_text(image)
+    if not found.available:
+        return image, notes, found
+    if not found.found_text:
+        return image, notes, found
+    working = image
+    removed_total = 0
+    for _ in range(SCRUB_PASSES):
+        cleaned, removed, reason = remove_text(working, found, force=True)
+        if reason:
+            break
+        removed_total += removed
+        working = cleaned
+        found = find_text(working)
+        if not found.found_text:
+            break
+    if removed_total:
+        notes.append(f"{removed_total} word(s) painted out.")
+    if not found.found_text:
+        return working, notes, found
+
+    # Still readable after painting: crop the lettering off instead.
+    try:
+        import numpy as np
+    except ImportError:
+        return working, notes, found
+    mask = build_text_mask(working, found)
+    rows = np.asarray(mask).max(axis=1) > 0
+    best, start = (0, 0), None
+    for y, has_text in enumerate(list(rows) + [True]):
+        if not has_text and start is None:
+            start = y
+        elif has_text and start is not None:
+            if y - start > best[1] - best[0]:
+                best = (start, y)
+            start = None
+    top, bottom = best
+    band = bottom - top
+    if band < working.height * SCRUB_CROP_MIN_FRACTION:
+        return working, notes, found
+    # Keep the frame's own shape: the band is full width, so the width
+    # is trimmed from the centre by the same proportion, then the crop
+    # is scaled back to the original size.
+    keep_w = max(8, int(round(working.width * band / working.height)))
+    left = (working.width - keep_w) // 2
+    cropped = working.crop((left, top, left + keep_w, bottom)).resize(working.size, Image.LANCZOS)
+    notes.append(
+        f"A headline too large to paint out was cropped off: the text-free "
+        f"{band / working.height:.0%} of the frame was scaled back up to size."
+    )
+    found = find_text(cropped)
+    if found.found_text:
+        cleaned, removed, reason = remove_text(cropped, found, force=True)
+        if not reason:
+            cropped = cleaned
+            found = find_text(cropped)
+    return cropped, notes, found

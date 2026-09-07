@@ -125,7 +125,7 @@ from src.providers import (
     get_provider,
 )
 from src.storage import SUPPORTED_EXTENSIONS
-from src.text_check import TextCheckResult, find_text, ocr_available, remove_text
+from src.text_check import TextCheckResult, find_text, ocr_available, remove_text, scrub_text
 
 # Sane bounds for a user-supplied font size, in pixels -- just a safety
 # valve against nonsense input (0, negative, absurdly huge); the autofit
@@ -1120,6 +1120,14 @@ def _generate_text_free(
     return image, shown, attempts, result
 
 
+def _text_detector_problem() -> str:
+    """Why the scene-text detector isn't running, for a warning."""
+    from src import text_check
+
+    text_check.ensure_text_detector(install=False)
+    return text_check._detector_state or f"{text_check.DETECTOR_PACKAGE} isn't installed"
+
+
 def _clean_text_out(image, result, label: str, attempts: int):
     """Last resort once the retries are spent: paint the text out.
 
@@ -1134,31 +1142,24 @@ def _clean_text_out(image, result, label: str, attempts: int):
     image was fixed.
     """
     attempt_word = f"{attempts} attempt{'s' if attempts != 1 else ''}"
-    cleaned, removed, reason = remove_text(image, result)
-    if reason:
-        return (
-            image,
-            None,
-            f"The generated {label} has readable text in it ({result.summary()}) after "
-            f"{attempt_word}, and it wasn't painted out: {reason}. Try a different prompt "
-            "or provider, or supply your own image.",
-        )
-
-    # Verify rather than assume. Inpainting can leave enough of a word
-    # behind to still be read, and claiming a clean image that isn't is
-    # worse than not trying.
-    after = find_text(cleaned)
+    # Whatever it takes: paint out, re-read, paint again, and crop the
+    # lettering off if painting can't finish it. A backdrop with a soft
+    # patch on it is a backdrop; a backdrop with a headline on it is
+    # not. What was done is reported, and so is anything still left.
+    cleaned, what, after = scrub_text(image)
+    done = " ".join(what) if what else "nothing could be done"
     if after.found_text:
         return (
             cleaned,
             None,
-            f"The generated {label} had text in it after {attempt_word}; painting it out "
-            f"left some behind ({after.summary()}). Worth a look before shipping.",
+            f"The generated {label} had text in it after {attempt_word} ({result.summary()}); "
+            f"{done} Some is still readable ({after.summary()}). Worth a look before shipping, "
+            "or run again for a fresh picture.",
         )
     return (
         cleaned,
         f"Text was found in the generated {label} after {attempt_word} "
-        f"({result.summary()}) and painted out.",
+        f"({result.summary()}) and removed: {done}",
         None,
     )
 
@@ -2802,9 +2803,9 @@ def generate():
                     background_warnings_pending.append(cleaned_warning)
             elif not upload_ai_text.available and not upload_ai_allow_text:
                 background_warnings_pending.append(
-                    "Couldn't check the generated backdrop for text -- Tesseract isn't "
-                    "installed (macOS: brew install tesseract). The image may have "
-                    "lettering baked into it; give it a look before shipping."
+                    "Couldn't check the generated backdrop for text -- no text detector is "
+                    f"available ({_text_detector_problem()}). The image may have lettering "
+                    "baked into it; give it a look before shipping."
                 )
             if (
                 upload_ai_image.width < upload_ai_width
