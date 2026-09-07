@@ -6900,6 +6900,9 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             self.assertIn("fine print", negative)
             self.assertIn("demographic text", negative)
         self.assertIn("Whole ad on Turbo", r.data.decode())
+        # And the plain statement that the words were asked for -- the
+        # one thing a "why is there text" reader needs to see first.
+        self.assertIn("the words in these pictures were asked for", r.data.decode())
 
     def test_a_failed_submission_comes_back_with_the_brief_and_files_still_filled_in(self):
         # An Ideogram error (or a wrong file type, or a size that won't

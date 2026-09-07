@@ -3430,6 +3430,11 @@ def generate():
             f"{upload_ai_provider}, one per output size -- prompt: \"{full_ad_prompt}\" "
             f"[excluded: {FULL_AD_NEGATIVE_CLAUSE}]."
         )
+        background_warnings.append(
+            "Whole ad mode: the words in these pictures were asked for -- this box tells the model "
+            "to paint the headline, product name and CTA into the image itself. For a text-free "
+            "backdrop under your templates, untick \"Generate the whole ad\" and run again."
+        )
         if upload_ai_provider == "ideogram" and upload_ai_speed == "TURBO":
             background_warnings.append(
                 "Whole ad on Turbo: Turbo is the roughest pass for typography and tends to misspell "
