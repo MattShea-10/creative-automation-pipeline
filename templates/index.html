@@ -1301,37 +1301,91 @@
       if (refZone && refInput) {
         var refUrl = refZone.querySelector('[data-role="reference-url"]');
         var refList = refZone.querySelector('[data-role="reference-url-list"]');
-        var webUrls = [];
+        var LIMIT = {{ reference_limit }};
+        // Everything on the board, in one list: pictures chosen with the
+        // picker, pictures dropped as files (carried as data URLs, since
+        // not every browser lets a script put dropped files INTO a file
+        // input), and pictures dragged off web pages (carried as their
+        // address, fetched by the server).
+        var board = [];  // {kind: "picker"|"data"|"web", name, preview, value}
         var keptChips = function () {
           return Array.prototype.slice.call(root.querySelectorAll('[data-role^="layer-cached-upload_ai_reference"]'))
             .filter(function (c) { return !c.hidden && !c.classList.contains("is-cleared"); }).length;
         };
-        var total = function () { return (refInput.files ? refInput.files.length : 0) + webUrls.length + keptChips(); };
-        var renderWeb = function () {
+        var total = function () { return board.length + keptChips(); };
+        var render = function () {
           refList.innerHTML = "";
-          webUrls.forEach(function (url, i) {
+          board.forEach(function (item, i) {
             var chip = document.createElement("div");
             chip.className = "layer-image-cached";
             chip.style.marginTop = "0.4rem";
-            chip.innerHTML = '<img alt="Web image"><div class="layer-image-cached-meta"><strong>From the web</strong>' +
+            chip.innerHTML = '<img alt=""><div class="layer-image-cached-meta"><strong></strong>' +
               '<span class="layer-image-cached-name"></span></div>' +
-              '<button type="button" class="clear-btn" title="Drop this web image">&times;</button>' +
-              '<input type="hidden" name="upload_ai_reference_url">';
-            chip.querySelector("img").src = url;
-            chip.querySelector(".layer-image-cached-name").textContent = url.replace(/^https?:\/\//, "").slice(0, 60);
-            chip.querySelector("input").value = url;
-            chip.querySelector("button").addEventListener("click", function () { webUrls.splice(i, 1); renderWeb(); });
+              '<button type="button" class="clear-btn" title="Remove this picture">&times;</button>';
+            chip.querySelector("img").src = item.preview;
+            chip.querySelector("strong").textContent =
+              item.kind === "web" ? "From the web" : "On the board";
+            chip.querySelector(".layer-image-cached-name").textContent = item.name.slice(0, 60);
+            if (item.kind === "web") {
+              var u = document.createElement("input"); u.type = "hidden"; u.name = "upload_ai_reference_url"; u.value = item.value; chip.appendChild(u);
+            } else if (item.kind === "data") {
+              var d = document.createElement("input"); d.type = "hidden"; d.name = "upload_ai_reference_data"; d.value = item.value; chip.appendChild(d);
+              var n = document.createElement("input"); n.type = "hidden"; n.name = "upload_ai_reference_data_name"; n.value = item.name; chip.appendChild(n);
+            }
+            chip.querySelector("button").addEventListener("click", function () {
+              if (item.kind === "picker") {
+                // The picker holds its files as a unit; dropping one
+                // means rebuilding it without that one.
+                var keep = new DataTransfer();
+                Array.prototype.forEach.call(refInput.files || [], function (f) { if (f !== item.file) keep.items.add(f); });
+                try { refInput.files = keep.files; } catch (e) { refInput.value = ""; }
+              }
+              board.splice(i, 1);
+              render();
+            });
             refList.appendChild(chip);
           });
         };
-        var addWeb = function (url) {
-          if (!/^https?:\/\//i.test(url) || webUrls.indexOf(url) !== -1) return;
-          if (total() >= {{ reference_limit }}) { window.alert("A mood board holds up to {{ reference_limit }} pictures. Remove one first."); return; }
-          webUrls.push(url); renderWeb();
+        var tooMany = function (adding) {
+          if (total() + adding > LIMIT) {
+            window.alert("A mood board holds up to " + LIMIT + " pictures. Remove one first.");
+            return true;
+          }
+          return false;
         };
-        // A picture dragged off a web page arrives as its address, not a
-        // file -- a file input ignores it. Both kinds land on the zone,
-        // and several at once are fine.
+        var addWeb = function (url) {
+          if (!/^https?:\/\//i.test(url)) return;
+          if (board.some(function (b) { return b.kind === "web" && b.value === url; })) return;
+          if (tooMany(1)) return;
+          board.push({ kind: "web", name: url.replace(/^https?:\/\//, ""), preview: url, value: url });
+          render();
+        };
+        var addDroppedFiles = function (files) {
+          var list = Array.prototype.filter.call(files, function (f) { return /^image\//.test(f.type); });
+          if (!list.length) return;
+          if (tooMany(list.length)) return;
+          list.forEach(function (f) {
+            var reader = new FileReader();
+            reader.onload = function () {
+              board.push({ kind: "data", name: f.name, preview: reader.result, value: reader.result });
+              render();
+            };
+            reader.readAsDataURL(f);
+          });
+        };
+        var syncPicker = function () {
+          // The picker's own files, shown as chips like everything else.
+          board = board.filter(function (b) { return b.kind !== "picker"; });
+          var files = Array.prototype.slice.call(refInput.files || []);
+          if (total() + files.length > LIMIT) {
+            window.alert("A mood board holds up to " + LIMIT + " pictures; only the first " + LIMIT + " will be used.");
+          }
+          files.forEach(function (f) {
+            board.push({ kind: "picker", name: f.name, preview: URL.createObjectURL(f), file: f });
+          });
+          render();
+        };
+        // Files or web pictures can land anywhere on the zone.
         ["dragenter", "dragover"].forEach(function (evt) {
           refZone.addEventListener(evt, function (e) { e.preventDefault(); refZone.classList.add("is-dragover"); });
         });
@@ -1340,22 +1394,15 @@
           refZone.classList.remove("is-dragover");
           var dt = e.dataTransfer;
           if (!dt) return;
-          if (dt.files && dt.files.length) {
-            e.preventDefault();
-            var merged = new DataTransfer();
-            Array.prototype.forEach.call(refInput.files || [], function (f) { merged.items.add(f); });
-            Array.prototype.forEach.call(dt.files, function (f) { merged.items.add(f); });
-            refInput.files = merged.files;
-            refInput.dispatchEvent(new Event("change"));
-            return;
-          }
+          e.preventDefault();
+          if (dt.files && dt.files.length) { addDroppedFiles(dt.files); return; }
           var url = (dt.getData("text/uri-list") || dt.getData("text/plain") || "").split("\n")[0].trim();
           if (!url) {
             var html = dt.getData("text/html") || "";
             var m = html.match(/<img[^>]+src=["']([^"']+)["']/i);
             if (m) url = m[1];
           }
-          if (url) { e.preventDefault(); addWeb(url); }
+          if (url) addWeb(url);
         });
         if (refUrl) {
           var takeUrl = function () { var u = refUrl.value.trim(); if (u) { addWeb(u); refUrl.value = ""; } };
@@ -1363,11 +1410,7 @@
           refUrl.addEventListener("change", takeUrl);
           refUrl.addEventListener("paste", function () { setTimeout(takeUrl, 0); });
         }
-        refInput.addEventListener("change", function () {
-          if (total() > {{ reference_limit }}) {
-            window.alert("A mood board holds up to {{ reference_limit }} pictures; only the first {{ reference_limit }} will be used.");
-          }
-        });
+        refInput.addEventListener("change", syncPicker);
       }
 
       var customHeroToggle = root.querySelector('[data-role="custom-hero-toggle"]');

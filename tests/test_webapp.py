@@ -6995,6 +6995,53 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertIn(f"{labels[0]}: kept exactly as approved", page2)
         self.assertIn(f"about ${0.03 * (len(labels) - 1):.2f}", page2)
 
+    def test_a_picture_dropped_on_the_board_arrives_as_a_data_url_and_is_used(self):
+        # Dropping a file on the dashed zone: the page reads it and sends
+        # the bytes itself (a data: URL), since not every browser lets a
+        # script put a dropped file into a file input. Same result as an
+        # upload -- sent to Ideogram, kept on Edit, named in the notes.
+        import base64
+        import webapp as _webapp
+
+        self._stage_real_template()
+        png = self._reference_png()
+        sent = []
+
+        class _Ideogramish:
+            name = "stub"
+            supports_style_reference = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, style_reference=None):
+                from PIL import Image as _Image
+                sent.append(style_reference)
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Ideogramish()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "upload_ai_reference_data": "data:image/png;base64," + base64.b64encode(png).decode(),
+                "upload_ai_reference_data_name": "moodboard from desk.png",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        self.assertEqual(sent[-1], png)
+        page = r.data.decode()
+        self.assertIn("Styled after the reference image moodboard_from_desk.png", page)
+        job_id = re.search(r'/edit/([0-9a-f]+)', page).group(1)
+        self.assertIn("moodboard_from_desk.png", self.client.get(f"/edit/{job_id}").get_data(as_text=True))
+        # Junk is refused with the brief kept.
+        r2 = self.client.post("/generate", data={
+            "product_name": "HydroBoost", "campaign_message": "Keep me", "upload_ai_enabled": "1",
+            "header": "", "description": "",
+            "upload_ai_reference_data": "data:text/plain;base64,aGVsbG8=", "upload_ai_reference_data_name": "notes.txt",
+        }, content_type="multipart/form-data", follow_redirects=True)
+        page2 = r2.get_data(as_text=True)
+        self.assertIn("isn&#39;t a PNG, JPEG or WebP", page2.replace("&#x27;", "&#39;"))
+        self.assertIn(">Keep me</textarea>", page2)
+
     def test_no_reference_means_no_reference_clause(self):
         import webapp as _webapp
 

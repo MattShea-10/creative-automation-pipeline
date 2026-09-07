@@ -1277,6 +1277,33 @@ def _save_upload(file_storage, dest_dir: Path) -> Path:
 REFERENCE_FETCH_LIMIT = 25 * 1024 * 1024  # Ideogram's per-image cap
 
 
+def _save_data_url_image(data_url: str, name: str, dest_dir: Path) -> Path:
+    """Save a picture the browser sent as a data: URL (a file dropped on
+    the mood board -- not every browser lets a script put a dropped file
+    into a file input, so the page reads it and sends the bytes itself).
+    Raises ValueError with a message fit for the form."""
+    import base64
+
+    match = re.match(r"data:(image/(png|jpeg|jpg|webp));base64,(.+)$", data_url or "", re.S)
+    if not match:
+        raise ValueError(f"Reference image '{name or 'dropped picture'}' isn't a PNG, JPEG or WebP.")
+    ext = {"png": ".png", "jpeg": ".jpg", "jpg": ".jpg", "webp": ".webp"}[match.group(2)]
+    try:
+        data = base64.b64decode(match.group(3), validate=False)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Couldn't read the dropped picture '{name}': {exc}") from exc
+    if len(data) > REFERENCE_FETCH_LIMIT:
+        raise ValueError(f"'{name}' is over 25 MB, which is more than Ideogram accepts.")
+    stem = secure_filename(Path(name or "dropped").stem) or "dropped"
+    dest = dest_dir / f"{stem}{ext}"
+    counter = 2
+    while dest.exists():
+        dest = dest_dir / f"{stem}-{counter}{ext}"
+        counter += 1
+    dest.write_bytes(data)
+    return dest
+
+
 def _fetch_web_image(url: str, dest_dir: Path) -> Path:
     """Save the picture at `url` into `dest_dir` and return its path.
 
@@ -1658,11 +1685,23 @@ def _keep_submission(message: str):
         uploads_dir.mkdir(parents=True, exist_ok=True)
         fields = {}
         for key in request.form:
+            if key in ("upload_ai_reference_data", "upload_ai_reference_data_name"):
+                continue  # kept as files below, not as a megabyte of base64
             values = request.form.getlist(key)
             fields[key] = values[0] if len(values) == 1 else values
         for name in EDIT_CHECKBOX_FIELD_NAMES:
             fields[name] = bool(request.form.get(name))
         files = {}
+        free_slots = list(REFERENCE_SLOTS)
+        names = request.form.getlist("upload_ai_reference_data_name")
+        for i, data_url in enumerate(request.form.getlist("upload_ai_reference_data")):
+            if not data_url.strip() or not free_slots:
+                continue
+            try:
+                saved = _save_data_url_image(data_url, names[i] if i < len(names) else "", uploads_dir)
+            except ValueError:
+                continue
+            files[free_slots.pop(0)] = saved.relative_to(uploads_dir).as_posix()
         for key in request.files:
             uploads = [f for f in request.files.getlist(key) if f is not None and f.filename]
             if not uploads:
@@ -1678,9 +1717,10 @@ def _keep_submission(message: str):
             if key == "upload_ai_reference":
                 # The mood board's pictures go to their numbered slots,
                 # which is where Edit looks for them.
-                for slot, upload in zip(REFERENCE_SLOTS, uploads):
+                for slot, upload in zip(list(free_slots), uploads):
                     saved = _save_upload(upload, uploads_dir)
                     files[slot] = saved.relative_to(uploads_dir).as_posix()
+                    free_slots.remove(slot)
             else:
                 saved = _save_upload(uploads[0], uploads_dir)
                 files[key] = saved.relative_to(uploads_dir).as_posix()
@@ -2162,6 +2202,16 @@ def generate():
                 "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
             )
         upload_ai_reference_paths.append(_save_upload(upload, uploads_dir))
+    dropped_names = request.form.getlist("upload_ai_reference_data_name")
+    for i, data_url in enumerate(request.form.getlist("upload_ai_reference_data")):
+        if not data_url.strip():
+            continue
+        try:
+            upload_ai_reference_paths.append(
+                _save_data_url_image(data_url, dropped_names[i] if i < len(dropped_names) else "", uploads_dir)
+            )
+        except ValueError as exc:
+            return _keep_submission(str(exc))
     for url in (u.strip() for u in request.form.getlist("upload_ai_reference_url")):
         if not url:
             continue
