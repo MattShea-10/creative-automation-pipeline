@@ -1102,6 +1102,7 @@ def build_layered_psd(
     size: Tuple[int, int],
     *,
     layer_names: Optional[dict] = None,
+    hidden: Optional[set] = None,
 ) -> PSDImage:
     """Assemble a render_creative_layers() stack into a psd_tools PSDImage.
 
@@ -1119,6 +1120,13 @@ def build_layered_psd(
     _tight_bbox_crop() -- rather than left at the full canvas size, so a
     recognized layer's box is actually the region it visually occupies.
 
+    `hidden` names (lowercased, before renaming) the layers to write
+    switched off. A template layer someone turned off in Photoshop stays
+    out of the flattened preview, and it has to stay off in the layered
+    file too -- or the download opens showing a header the preview
+    never had, and the motion clip (which reads this file) animates it.
+    Written rather than dropped so it is one click away in Photoshop.
+
     Raises ValueError if `layers` is empty -- there's always at least a
     "Background" layer for a real creative, so an empty list almost
     certainly means the caller passed the wrong thing.
@@ -1127,6 +1135,7 @@ def build_layered_psd(
         raise ValueError("layers must contain at least one (name, image) entry")
     if layer_names is None:
         layer_names = REUPLOAD_LAYER_NAMES
+    hidden = {h.strip().lower() for h in (hidden or ())}
 
     # "RGBA" (not "RGB") -- with an RGB-mode document, psd_tools stores a
     # layer's alpha as a separate "user layer mask" channel instead of a
@@ -1141,7 +1150,9 @@ def build_layered_psd(
         rgba = layer_img if layer_img.mode == "RGBA" else layer_img.convert("RGBA")
         cropped, left, top = _tight_bbox_crop(rgba)
         psd_layer_name = layer_names.get(name, name)
-        psd.create_pixel_layer(cropped, name=psd_layer_name, top=top, left=left)
+        layer = psd.create_pixel_layer(cropped, name=psd_layer_name, top=top, left=left)
+        if name.strip().lower() in hidden:
+            layer.visible = False
     return psd
 
 
@@ -1151,9 +1162,24 @@ def save_layered_psd(
     dest_path,
     *,
     layer_names: Optional[dict] = None,
+    hidden: Optional[set] = None,
 ) -> None:
     """build_layered_psd() and write it straight to `dest_path`."""
-    build_layered_psd(layers, size, layer_names=layer_names).save(dest_path)
+    build_layered_psd(layers, size, layer_names=layer_names, hidden=hidden).save(dest_path)
+
+
+def hidden_layer_names(psd_path) -> set:
+    """Lowercased names of the top-level layers switched off in
+    `psd_path`; empty when the file can't be read."""
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:
+        return set()
+    return {
+        (layer.name or "").strip().lower()
+        for layer in psd
+        if (layer.name or "").strip() and not layer.visible
+    }
 
 
 def _rewrite_type_layer_text(layer, text: str) -> bool:

@@ -64,6 +64,7 @@ from psd_tools import PSDImage
 from src.ad_split import split_ad
 from src.psd_export import (
     write_whole_ad_psd,
+    hidden_layer_names as psd_hidden_layer_names,
     save_layered_psd,
     save_layered_psd_preserving_type,
     replace_pixel_layers,
@@ -4900,11 +4901,25 @@ def generate():
                         # beside it is the editable one, with the same
                         # copy in live type layers and the CTA still a
                         # live group.
+                        # A layer switched off in the template, or hidden
+                        # by this run's own hide box, stays off here --
+                        # unless this run drew a new one over it, in
+                        # which case the new one is what the preview
+                        # shows and what should be in the file.
+                        hidden_in_template = {
+                            name
+                            for name in (
+                                psd_hidden_layer_names(psd_path_for_size)
+                                if psd_path_for_size is not None else set()
+                            ) | hidden_layer_names
+                            if name not in export_layer_patches
+                        }
                         save_layered_psd(
                             export_layers,
                             (width, height),
                             job_dir / psd_candidate_filename,
                             layer_names={},
+                            hidden=hidden_in_template,
                         )
                         psd_filename = psd_candidate_filename
                     except Exception:
@@ -5388,8 +5403,21 @@ def motion(job_id):
     # (backdrop drift only) for a size that has no layers.
     psd = job_dir / f"{png.stem}.psd"
     out = job_dir / f"{png.stem}.mp4"
+    # Layers the template had switched off don't animate, even in a
+    # per-size PSD written before the app wrote them switched off: the
+    # source-template copy beside it still says which they were.
+    source_template = job_dir / f"{png.stem}_source-template.psd"
+    hidden = psd_hidden_layer_names(source_template) if source_template.is_file() else set()
+    # ...and the layers the run's own hide boxes took out.
     try:
-        info = render_motion_clip(psd if psd.is_file() else None, out, fallback_image=png)
+        fields = (json.loads((job_dir / "form_state.json").read_text()).get("fields") or {})
+    except Exception:  # noqa: BLE001
+        fields = {}
+    hidden |= {name for name in HIDEABLE_LAYER_NAMES if fields.get(f"layer_{name}_hidden")}
+    try:
+        info = render_motion_clip(
+            psd if psd.is_file() else None, out, fallback_image=png, hidden=hidden
+        )
     except RuntimeError as exc:
         return {"error": str(exc)}, 500
     videos[label] = {

@@ -3834,6 +3834,23 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertLess(white_pixels(hidden), white_pixels(shown) // 4)
         self.assertIn("logo (hidden)", page)
 
+    def test_a_hidden_layer_is_switched_off_in_the_layered_psd_and_the_clip(self):
+        # The preview leaves a hidden layer out; the layered PSD written
+        # beside it used to turn every layer back on -- so the download
+        # opened with the logo showing and the motion clip animated it.
+        from psd_tools import PSDImage
+        from src.motion import layers_from_psd
+
+        self._write_template_with_a_background_layer("hide-300x250.psd", (300, 250))
+        _hidden, page = self._render_with(layer_logo_hidden="1")
+        job_id = re.search(r"/download/([0-9a-f]{32})", page).group(1)
+        psd_path = next((Path(self.tmp_dir) / job_id).glob("*300x250.psd"))
+        visibility = {l.name.strip().lower(): l.visible for l in PSDImage.open(psd_path)}
+        self.assertIn("logo", visibility, "the layer stays in the file, one click away")
+        self.assertFalse(visibility["logo"], "...but switched off, as the preview shows it")
+        self.assertTrue(visibility.get("background", True))
+        self.assertNotIn("logo", [n for n, _ in layers_from_psd(psd_path)[0]])
+
     def test_hiding_wins_over_content_supplied_for_the_same_layer(self):
         # "Hide it" and "put this in it" contradict each other. Drawing
         # the upload would render exactly what was asked to disappear,
@@ -8295,6 +8312,36 @@ class MotionClipTest(unittest.TestCase):
         r, g, b = frames[0].getpixel((100, 65))
         self.assertGreater(r, b, "the subject is missing from the first frame: the inpainted backdrop is showing")
         self.assertGreater(frames[30].getpixel((100, 65))[0], 180)
+
+
+    def test_layers_switched_off_in_the_template_do_not_animate(self):
+        # The per-size layered PSD is written with a template's hidden
+        # layers switched off, and the clip reads visibility -- so a
+        # header the preview never showed can't appear in the video. And
+        # for a PSD written before that (every layer on), the template's
+        # own list of hidden names is honoured directly.
+        from psd_tools import PSDImage
+        from src.motion import layers_from_psd
+        from src.psd_export import hidden_layer_names, save_layered_psd
+
+        layers, canvas = self._layers(painted=False)
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            save_layered_psd(layers, canvas, tmp / "size.psd", layer_names={}, hidden={"header"})
+            self.assertEqual(
+                [(l.name, l.visible) for l in PSDImage.open(tmp / "size.psd")],
+                [("background", True), ("product", True), ("header", False)],
+            )
+            self.assertEqual(hidden_layer_names(tmp / "size.psd"), {"header"})
+            self.assertEqual([n for n, _ in layers_from_psd(tmp / "size.psd")[0]], ["background", "product"])
+            # The old kind of file: all on, hidden names supplied.
+            save_layered_psd(layers, canvas, tmp / "old.psd", layer_names={})
+            self.assertEqual(
+                [n for n, _ in layers_from_psd(tmp / "old.psd", skip={"header"})[0]],
+                ["background", "product"],
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
 
 
 class IdeogramKeyBoxTest(unittest.TestCase):

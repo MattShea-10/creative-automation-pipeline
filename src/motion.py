@@ -93,17 +93,22 @@ def ensure_ffmpeg(log=None) -> Optional[str]:
     return ffmpeg_path()
 
 
-def layers_from_psd(psd_path) -> Tuple[List[Tuple[str, Image.Image]], Tuple[int, int]]:
+def layers_from_psd(psd_path, skip=None) -> Tuple[List[Tuple[str, Image.Image]], Tuple[int, int]]:
     """The visible top-level pixel layers of a PSD as (name, full-canvas
     RGBA) pairs, bottom to top -- the layered PSD the app saves per size
-    is exactly this stack."""
+    is exactly this stack. `skip` names (lowercased) layers to leave out
+    even when the file has them switched on: the layers a template had
+    switched off, for a per-size PSD written before the app kept that."""
     from psd_tools import PSDImage
 
+    skip = {n.strip().lower() for n in (skip or ())}
     psd = PSDImage.open(psd_path)
     canvas = (psd.width, psd.height)
     out = []
     for layer in psd:
         if not layer.visible or layer.kind not in ("pixel", "group", "shape", "type"):
+            continue
+        if (layer.name or "").strip().lower() in skip:
             continue
         try:
             image = layer.composite() if layer.kind == "group" else layer.topil()
@@ -224,9 +229,12 @@ def render_motion_clip(
     fps: int = FPS,
     loop: bool = True,
     fallback_image=None,
+    hidden=None,
 ) -> dict:
     """Write the MP4 for one size. Returns {"path", "seconds", "frames",
-    "layers"}; raises RuntimeError with a plain reason when it can't."""
+    "layers"}; raises RuntimeError with a plain reason when it can't.
+    `hidden` names layers not to animate whatever the PSD says (see
+    layers_from_psd)."""
     exe = ensure_ffmpeg()
     if not exe:
         import sys
@@ -238,7 +246,7 @@ def render_motion_clip(
     layers, canvas = ([], None)
     if psd_path is not None and Path(psd_path).is_file():
         try:
-            layers, canvas = layers_from_psd(psd_path)
+            layers, canvas = layers_from_psd(psd_path, skip=hidden)
         except Exception:  # noqa: BLE001
             layers, canvas = [], None
     if not layers:
