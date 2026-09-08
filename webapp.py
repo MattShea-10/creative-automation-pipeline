@@ -74,6 +74,7 @@ from src.psd_export import (
     set_type_layer_effects,
     pair_type_layers_with_pixels,
     set_type_layer_raster,
+    set_layer_visibility,
     set_type_layer_text,
     set_type_layer_colors,
 )
@@ -106,8 +107,10 @@ from src.image_ops import (
     get_psd_layer_stack,
     get_psd_layer_names,
     get_psd_visible_layers,
+    get_psd_buried_layers,
     get_psd_layer_text_style,
     map_box_through_fit,
+    find_font_file,
     open_as_rgb,
     parse_size,
     parse_sizes,
@@ -173,6 +176,12 @@ ALLOWED_BADGE_EXTENSIONS = (".png", ".webp", ".jpg", ".jpeg")
 # For the PSD layer-override fields (logo/CTA/product image) -- same
 # tolerance as the badge image, since these can be flat JPGs too.
 ALLOWED_LAYER_IMAGE_EXTENSIONS = (".png", ".webp", ".jpg", ".jpeg")
+# ...and a PSD, flattened on the way in (transparency kept, so a logo or
+# product cut out on its own layer arrives as a cut-out). These are the
+# picture fields: the hero image, the logo/product layer updates, and
+# the mood board. What is picked out of a PSD is its composite, not its
+# layers -- a layered design belongs in "Size-specific PSD templates".
+PICTURE_UPLOAD_EXTENSIONS = ALLOWED_LAYER_IMAGE_EXTENSIONS + (".psd",)
 
 # Size-specific PSD templates: each one becomes the background for exactly
 # the output size it's paired with (a Pillow-rendered flattened preview of
@@ -184,7 +193,10 @@ MAX_PSD_TEMPLATES = 4
 
 # The "quick campaign" single-input mode: upload just this one flagship
 # size and every other exported size comes from default_templates/.
-CONTENT_PSD_SIZE = (728, 480)
+# 1920x1080: the flagship is the widescreen size the saved templates are
+# designed at, and the floor for how big a backdrop is generated.
+CONTENT_PSD_SIZE = (1920, 1080)
+CONTENT_PSD_LABEL = f"{CONTENT_PSD_SIZE[0]}x{CONTENT_PSD_SIZE[1]}"
 
 # Every PSD template used this request -- a per-request template row or a
 # saved default -- must have layers with these exact (case-insensitive)
@@ -266,7 +278,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_cta_button_color", "layer_cta_text_color",
     "layer_cta_glow_color", "layer_cta_glow_size", "layer_cta_glow_opacity",
     "header", "description", "custom_sizes",
-    "fit_mode",
+    "fit_mode", "upload_hero_fit",
     "header_text_color", "header_align", "header_font_size",
     "message_text_color", "message_align", "message_font_size",
     "cta_text", "cta_position", "cta_button_color", "cta_text_color",
@@ -281,6 +293,7 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_legal_text",
     "layer_legal_font_family", "layer_legal_font_size", "layer_legal_text_color",
     "psd_size_1", "psd_size_2", "psd_size_3", "psd_size_4",
+    "psd_as_is",
 )
 # Layers offered a "hide" checkbox. Deliberately not "background": it
 # sits behind everything and hiding it leaves a hole rather than a
@@ -300,6 +313,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "brand_color_1_enabled", "brand_color_2_enabled", "brand_color_3_enabled",
     "ai_hero_enabled",
     "upload_custom_hero_enabled",
+    "upload_hero_from_template",
     "upload_ai_enabled",
     "upload_ai_keep",
     "upload_ai_allow_text",
@@ -413,12 +427,21 @@ PROMPT_NEGATION_LEAD = re.compile(
     r"do\s+not\s+include|don'?t\s+include|not\s+allowed|never)\s*[:=\-\u2013\u2014]\s*([^.\n\]]+?)\.?\s*\]?\s*$",
     re.IGNORECASE | re.DOTALL,
 )
+# Any noun, not only the text words: "no bottles or drink" typed into the
+# prompt came back as four bottles, for the same reason "no text" came
+# back lettered. A term is a short run of plain words up to the next
+# comma, full stop, "just"/"only" or the end.
+_ANY_TERM = r"(?:[A-Za-z][A-Za-z'-]*)(?:\s+(?!no\b|just\b|only\b|with\b)[A-Za-z][A-Za-z'-]*){0,3}"
 PROMPT_NEGATION_PHRASE = re.compile(
-    r"\b(?:no|without|free\s+of|zero|not\s+any|absolutely\s+no)\s+" + _NEGATION_QUALIFIER + _NEGATION_TERM
-    + r"(?:\s*(?:,|/|&|\bor\b|\band\b|\bnor\b)\s*(?:no\s+)?" + _NEGATION_QUALIFIER + _NEGATION_TERM + r")*"
+    r"\b(?:no|without|free\s+of|zero|not\s+any|absolutely\s+no)\s+" + _NEGATION_QUALIFIER + _ANY_TERM
+    # "no X or Y" / "no X and Y" continue the same exclusion; after a
+    # comma only another explicit "no ..." does, so "no bottles, just
+    # people having fun" keeps the part that was wanted.
+    + r"(?:\s*(?:(?:/|&|\bor\b|\band\b|\bnor\b)\s*(?:no\s+)?|,\s*no\s+)" + _NEGATION_QUALIFIER + _ANY_TERM + r")*"
     + r"(?:\s+(?:anywhere|at\s+all|in\s+the\s+(?:image|picture|frame|shot)|on\s+(?:it|the\s+image|the\s+picture)))?\b",
     re.IGNORECASE,
 )
+_TEXT_TERM_RE = re.compile(r"\b" + _NEGATION_TERM + r"\b", re.IGNORECASE)
 PROMPT_TEXTLESS_WORD = re.compile(r"\b(?:text-?free|textless|wordless|un-?lettered)\b", re.IGNORECASE)
 _TEXT_NEGATION_TERMS = (
     "text", "word", "letter", "typograph", "type", "writing", "caption",
@@ -455,6 +478,29 @@ def split_prompt_negations(prompt):
     if PROMPT_TEXTLESS_WORD.search(text):
         negations.append("no text")
         text = PROMPT_TEXTLESS_WORD.sub(" ", text)
+    # Whatever is left that still talks about text goes too, clause by
+    # clause. "no bottles or drink with text on it" loses its "no
+    # bottles or drink" to the pattern above and would leave "with text
+    # on it" standing in the prompt -- an order for text. A clause that
+    # mentions lettering at all has no business in a picture prompt:
+    # it is either an exclusion (kept, on the negative side) or a
+    # remark about one (dropped).
+    kept_clauses = []
+    for clause in re.split(r"\s*[,;.]\s*", text):
+        if not clause.strip():
+            continue
+        if _TEXT_TERM_RE.search(clause):
+            negations.append(clause.strip())
+            continue
+        # A clause that lost its ending to a removal ("we can add a
+        # bottle but", "just image with") gets the dangling word cut.
+        clause = re.sub(
+            r"(?:^|\s+)(?:but|with|and|or|of|for|in|on|just|only|then)\s*$", "", clause.strip(),
+            flags=re.IGNORECASE,
+        ).strip()
+        if clause and clause.lower() not in ("just image", "an image", "image", "a picture", "picture"):
+            kept_clauses.append(clause)
+    text = ", ".join(kept_clauses)
     # Tidy what the removals left behind: doubled commas, an orphaned
     # "and", empty brackets, stray spaces.
     text = re.sub(r"\(\s*\)|\[\s*\]", " ", text)
@@ -464,8 +510,7 @@ def split_prompt_negations(prompt):
     text = re.sub(r"\s*([,;])\s*(?:[,;]\s*)+", r"\1 ", text)
     text = text.strip(" ,;:-\u2013\u2014\t\n")
     text = re.sub(r"\s+([,;.])", r"\1", text)
-    lowered = " ".join(negations).lower()
-    about_text = any(term in lowered for term in _TEXT_NEGATION_TERMS)
+    about_text = any(_TEXT_TERM_RE.search(n) for n in negations)
     return (text or None), negations, about_text
 
 
@@ -599,29 +644,32 @@ def _backdrop_scene(product_name, campaign_message, audience, rng=None, textless
     chooser = rng or random
     scene = chooser.choice(BACKDROP_SCENES)
     pictured = "the audience" in scene
-    who = audience or "the target audience"
+    # On a text-free run the audience is "people" and the product is
+    # "the product": every distinctive word in the prompt has come back
+    # as lettering on one run or another -- ADULTS on a shirt from the
+    # audience, HYDRO BOOST on a shirt from the product name. A backdrop
+    # goes UNDER the template's own product and copy layers, so it does
+    # not need either named; it needs a scene.
+    who = "people" if textless else (audience or "the target audience")
     scene = scene.replace("the audience", who)
+    if textless:
+        scene = scene.replace("the product's", "the object's").replace("the product", "a plain unlabeled object")
     parts = [scene]
-    if product_name:
-        # For a text-free backdrop the product is there as a shape, not
-        # a wordmark: a named product invites its name on the label.
-        parts.append(
-            f"featuring the {product_name} product with a plain blank unprinted label"
-            if textless else f"featuring {product_name}"
-        )
-    if audience and not pictured:
+    if product_name and not textless:
+        parts.append(f"featuring {product_name}")
+    if audience and not pictured and not textless:
         # A scene without people in it still has an audience: it sets
         # the styling, so the brief's audience always reaches Ideogram.
+        # Not on a text-free run: "styled for Active Adults 18-34" came
+        # back with ADULTS lettered on the picture.
         parts.append(f"styled for {audience}")
     if campaign_message:
         if textless:
-            # The message's subject matter as keywords, not as the
-            # sentence: an unquoted sentence is still a sentence, and a
-            # typography model sets sentences. "Rehydrate with a
-            # refreshing summer drink" came back lettered across the sky.
-            keywords = _theme_keywords(campaign_message)
-            if keywords:
-                parts.append(f"mood: {keywords}")
+            # Not even as keywords. "mood: rehydrate, refreshing,
+            # summer" came back with REHYDRATE and SUMMER set as type:
+            # a typography model letters any distinctive word it is
+            # given. The scene and the product are the whole brief here.
+            pass
         else:
             # Unquoted on purpose. Quoted text in an Ideogram prompt is a
             # request to letter it; this is a theme, not copy to set.
@@ -669,7 +717,8 @@ REFERENCE_CROP_MIN_FRACTION = 0.35
 def _textless_reference(image, name: str):
     """(image, note): `image` with its lettering painted out or cropped
     off, and a sentence saying what was done -- or (image, None) when
-    there was nothing to do or no way to check."""
+    there was nothing to do or no way to check, and (None, note) for a
+    reference that is mostly lettering and must not be sent at all."""
     from src.text_check import (
         MAX_REMOVABLE_AREA_FRACTION, build_text_mask, masked_area_fraction, remove_text,
     )
@@ -705,10 +754,11 @@ def _textless_reference(image, name: str):
             start = None
     top, bottom = best
     if bottom - top < image.height * REFERENCE_CROP_MIN_FRACTION:
-        return image, (
+        return None, (
             f"{name} is mostly text ({masked_area_fraction(image, mask):.0%} of it), "
-            "which couldn't be taken out -- expect the model to copy its lettering. "
-            "A photo without a headline works better as a reference."
+            "which couldn't be taken out, so it was NOT sent to the model -- a style "
+            "reference like that makes it copy the lettering. A photo without a "
+            "headline works as a reference."
         )
     cropped = image.crop((0, top, image.width, bottom))
     # Anything small that survived in the band goes the cheap way.
@@ -1156,12 +1206,96 @@ def _clean_text_out(image, result, label: str, attempts: int):
             f"{done} Some is still readable ({after.summary()}). Worth a look before shipping, "
             "or run again for a fresh picture.",
         )
+    from src.text_check import detector_description
+
     return (
         cleaned,
         f"Text was found in the generated {label} after {attempt_word} "
-        f"({result.summary()}) and removed: {done}",
+        f"({result.summary()}) and removed: {done} (checked with {detector_description()}.)",
         None,
     )
+
+
+def _flagship_template_path():
+    """The saved template at the flagship size, or failing that the
+    largest saved template; None when there are none."""
+    # The same choice the render makes: with two files for one size
+    # (hydroboost-1920x1080 and tester-1920x1080, say) the later one in
+    # name order is the one that renders, so it is the one whose
+    # backdrop is taken.
+    best, best_area = None, -1
+    if not DEFAULT_TEMPLATES_DIR.is_dir():
+        return None
+    by_size = {}
+    for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
+            continue
+        match = _SIZE_IN_FILENAME_RE.search(path.name)
+        if not match:
+            continue
+        by_size[(int(match.group(1)), int(match.group(2)))] = path
+    if CONTENT_PSD_SIZE in by_size:
+        return by_size[CONTENT_PSD_SIZE]
+    for size, path in by_size.items():
+        if size[0] * size[1] > best_area:
+            best, best_area = path, size[0] * size[1]
+    return best
+
+
+def template_background_as_hero(dest_dir: Path):
+    """The flagship template's own `background` layer, written to
+    `dest_dir` as a PNG the size of that template, for use as the hero
+    image -- so a batch can run on the template's own backdrop (a plain
+    white, a brand gradient) without anyone exporting it by hand.
+    Returns (path, note) or raises ValueError."""
+    template = _flagship_template_path()
+    if template is None:
+        raise ValueError("there are no saved templates in default_templates/ to take a background from")
+    try:
+        psd = PSDImage.open(template)
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"couldn't open {template.name}: {exc}") from exc
+    layer = next((l for l in psd if (l.name or "").strip().lower() == "background"), None)
+    if layer is None:
+        raise ValueError(f"{template.name} has no layer named 'background'")
+    try:
+        image = layer.composite()
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"couldn't read the background layer of {template.name}: {exc}") from exc
+    if image is None:
+        raise ValueError(f"the background layer of {template.name} is empty")
+    canvas = Image.new("RGBA", (psd.width, psd.height), (255, 255, 255, 255))
+    canvas.alpha_composite(image.convert("RGBA"), (max(0, layer.left), max(0, layer.top)))
+    dest = dest_dir / f"hero_from_{template.stem}_background.png"
+    canvas.convert("RGB").save(dest)
+    return dest, (
+        f"Hero image: the background layer of {template.name} ({psd.width}x{psd.height}), "
+        "used as the backdrop of every size."
+    )
+
+
+def _off_canvas_layers(psd_path, names) -> dict:
+    """{name: description} for each of `names` that IS a top-level layer
+    in the PSD but has no pixels inside the canvas."""
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return {}
+    wanted = {n.lower() for n in names}
+    out = {}
+    for layer in psd:
+        key = (layer.name or "").strip().lower()
+        if key not in wanted:
+            continue
+        try:
+            x0, y0, x1, y1 = layer.bbox
+        except Exception:  # noqa: BLE001
+            continue
+        if x1 <= x0 or y1 <= y0:
+            out[key] = "it has no pixels"
+        elif x0 >= psd.width or y0 >= psd.height or x1 <= 0 or y1 <= 0:
+            out[key] = f"its box is at x {x0}..{x1}, y {y0}..{y1}"
+    return out
 
 
 def _default_template_sizes() -> list:
@@ -1219,8 +1353,22 @@ def _default_size_templates() -> tuple:
     """
     templates: dict = {}
     template_paths: dict = {}
+    for size, path in _default_template_paths().items():
+        try:
+            templates[size] = _open_template_cached(path)
+        except Exception:
+            continue
+        template_paths[size] = path
+    return templates, template_paths
+
+
+def _default_template_paths() -> dict:
+    """{(width, height): path} for the saved templates, without opening
+    any of them. Everything that only needs to know which files exist
+    (the form's layer lists) reads this."""
+    template_paths: dict = {}
     if not DEFAULT_TEMPLATES_DIR.is_dir():
-        return templates, template_paths
+        return template_paths
     for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
         if not path.is_file():
             continue
@@ -1229,13 +1377,29 @@ def _default_size_templates() -> tuple:
         match = _SIZE_IN_FILENAME_RE.search(path.name)
         if not match:
             continue
-        width, height = int(match.group(1)), int(match.group(2))
-        try:
-            templates[(width, height)] = open_as_rgb(path)
-        except Exception:
-            continue
-        template_paths[(width, height)] = path
-    return templates, template_paths
+        template_paths[(int(match.group(1)), int(match.group(2)))] = path
+    return template_paths
+
+
+# Flattened templates, keyed by (path, size, mtime). Drawing a PSD from
+# its layers is right (see open_psd_flat) and slow -- a second for a
+# large one -- and a page load asks for every template several times
+# over. The key changes the moment the file does, so a template
+# re-saved in Photoshop is re-read.
+_template_image_cache: dict = {}
+
+
+def _open_template_cached(path: Path):
+    stat = path.stat()
+    key = (str(path), stat.st_size, stat.st_mtime_ns)
+    image = _template_image_cache.get(key)
+    if image is None:
+        image = open_as_rgb(path)
+        # One entry per path: an older version of the same file is stale.
+        for old in [k for k in _template_image_cache if k[0] == key[0]]:
+            del _template_image_cache[old]
+        _template_image_cache[key] = image
+    return image.copy()
 
 
 # How far a quick-campaign content PSD may sit from a saved template's
@@ -1352,6 +1516,14 @@ def _parse_align(value: str, default: str) -> str:
     return value if value in VALID_TEXT_ALIGNMENTS else default
 
 
+def _parse_layer_align(value: str) -> str:
+    """A template text layer's alignment choice: left/center/right, or
+    "template" -- the paragraph alignment the layer has in Photoshop,
+    which is the default. It used to default to left, which quietly
+    un-centred every centred description."""
+    return value if value in VALID_TEXT_ALIGNMENTS else "template"
+
+
 def _parse_font_family(value: str, default: str = "sans") -> str:
     return value if value in VALID_FONT_FAMILIES else default
 
@@ -1458,6 +1630,33 @@ def _parse_glow_opacity(raw) -> int:
     return max(0, min(100, value))
 
 
+def _flatten_psd_upload(path: Path) -> Path:
+    """A PSD dropped on a picture field becomes a PNG of its composite,
+    transparency intact, in place; any other file is returned as is."""
+    if path.suffix.lower() != ".psd":
+        return path
+    try:
+        from psd_tools import PSDImage
+
+        psd = PSDImage.open(path)
+        # force=True composites the layers rather than handing back the
+        # cached preview, which is flat RGB: it is what keeps a cut-out
+        # logo's transparency.
+        image = psd.composite(force=True)
+        if image is None:
+            raise ValueError("the file has no composite image")
+        image = image.convert("RGBA")
+    except Exception as exc:  # noqa: BLE001
+        raise ValueError(f"Couldn't flatten '{path.name}': {exc}") from exc
+    out = path.with_suffix(".png")
+    image.save(out)
+    try:
+        path.unlink()
+    except OSError:
+        pass
+    return out
+
+
 def _save_upload(file_storage, dest_dir: Path) -> Path:
     """Save an uploaded file, preserving its extension (open_as_rgb() and
     render_creative() both branch on it -- e.g. to detect a video)."""
@@ -1511,7 +1710,7 @@ def _save_data_url_image(data_url: str, name: str, dest_dir: Path) -> Path:
 # What the mood board takes, beyond the PNG/JPEG/WebP Ideogram itself
 # accepts: a video (its middle frame is the reference), iPhone HEIC,
 # TIFF, GIF, BMP -- converted to PNG on the way in.
-REFERENCE_EXTRA_EXTENSIONS = (".heic", ".heif", ".tif", ".tiff", ".gif", ".bmp") + VIDEO_EXTENSIONS
+REFERENCE_EXTRA_EXTENSIONS = (".heic", ".heif", ".tif", ".tiff", ".gif", ".bmp", ".psd") + VIDEO_EXTENSIONS
 REFERENCE_EXTENSIONS = ALLOWED_LAYER_IMAGE_EXTENSIONS + REFERENCE_EXTRA_EXTENSIONS
 
 
@@ -1523,6 +1722,8 @@ def _normalise_reference(path: Path) -> Path:
     suffix = path.suffix.lower()
     if suffix in ALLOWED_LAYER_IMAGE_EXTENSIONS:
         return path
+    if suffix == ".psd":
+        return _flatten_psd_upload(path)
     try:
         if suffix in VIDEO_EXTENSIONS:
             from src.image_ops import extract_video_frame
@@ -1725,7 +1926,7 @@ def _editable_text_layers() -> set:
     one enabled somewhere is enough for the field to be worth offering.
     """
     editable = set()
-    _templates, template_paths = _default_size_templates()
+    template_paths = _default_template_paths()
     for path in template_paths.values():
         for name in get_psd_text_layers(path, visible_only=True):
             editable.add(name)
@@ -1747,7 +1948,7 @@ def _switched_off_layers() -> set:
     checkbox too, and a designer can switch any of them off.
     """
     seen, visible = set(), set()
-    _templates, template_paths = _default_size_templates()
+    template_paths = _default_template_paths()
     for path in template_paths.values():
         try:
             psd = PSDImage.open(path)
@@ -1773,7 +1974,7 @@ def _present_text_layers() -> set:
     shown at all rather than sitting there permanently dead.
     """
     present = set()
-    _templates, template_paths = _default_size_templates()
+    template_paths = _default_template_paths()
     for path in template_paths.values():
         for name in get_psd_text_layers(path):
             present.add(name)
@@ -1799,6 +2000,7 @@ def _inject_settings():
         "default_ideogram_speed": DEFAULT_IDEOGRAM_SPEED,
         "reference_limit": REFERENCE_LIMIT,
         "reference_slots": REFERENCE_SLOTS,
+        "content_psd_label": CONTENT_PSD_LABEL,
     }
 
 
@@ -2328,6 +2530,13 @@ def generate():
     fit_mode = request.form.get("fit_mode", "crop")
     if fit_mode not in ("crop", "contain"):
         fit_mode = "crop"
+    # How the hero image goes into each size's background layer: filled
+    # (cropped to the layer's shape -- right for a photo) or fitted whole
+    # (no cropping, the layer's edges padded with the picture's own edge
+    # colour -- right for a finished composition nothing may be cut off).
+    upload_hero_fit = request.form.get("upload_hero_fit", "crop")
+    if upload_hero_fit not in ("crop", "contain"):
+        upload_hero_fit = "crop"
 
     header_text_color = _parse_hex_color(request.form.get("header_text_color"), default=(255, 255, 255))
     header_show_background = not request.form.get("header_no_background")
@@ -2395,6 +2604,13 @@ def generate():
     psd_templates: dict = {}
     psd_template_paths: dict = {}
     psd_file_paths: dict = {}  # {row index: Path} -- for form_state.json, see below
+    # Sizes whose uploaded PSD is to be used exactly as it is: no hero
+    # in its background, no copy from the form drawn over its text, no
+    # hide boxes. For someone uploading a finished creative for one
+    # size, the file IS the creative -- and every "update" they make to
+    # it was being painted over by the same hero and the same typed
+    # description on every run, which read as the upload not taking.
+    psd_as_is_sizes: set = set()
     # (label, Path) for every PSD actually uploaded *this request* (not
     # carried forward from a prior edit) -- scanned for profanity in their
     # text layers below, once content_psd's own fresh-upload is known too.
@@ -2427,7 +2643,7 @@ def generate():
         if not psd_size_raw and not psd_file_provided:
             continue
         if psd_file_provided and not psd_size_raw:
-            return _keep_submission(f"PSD template row {i}: choose a target size (e.g. 728x480) for the uploaded PSD file.")
+            return _keep_submission(f"PSD template row {i}: choose a target size (e.g. {CONTENT_PSD_LABEL}) for the uploaded PSD file.")
         if psd_size_raw and not psd_file_provided:
             return _keep_submission(f"PSD template row {i}: you entered a size ({psd_size_raw}) but didn't attach a .psd file.")
         try:
@@ -2439,6 +2655,8 @@ def generate():
         except ValueError as exc:
             return _keep_submission(f"PSD template row {i}: {exc}")
         psd_template_paths[(psd_width, psd_height)] = psd_path
+        if request.form.get("psd_as_is"):
+            psd_as_is_sizes.add((psd_width, psd_height))
 
     # "Quick campaign" single-input mode: upload just the one flagship
     # 728x480 PSD and disregard the Output sizes / Custom sizes selections
@@ -2449,11 +2667,11 @@ def generate():
     if content_psd_fresh:
         if not _allowed(content_psd_file.filename, ALLOWED_PSD_TEMPLATE_EXTENSIONS):
             return _keep_submission(
-                f"728x480 content PSD: '{content_psd_file.filename}' isn't a supported file type. "
+                f"{CONTENT_PSD_LABEL} content PSD: '{content_psd_file.filename}' isn't a supported file type. "
                 "Accepted: " + ", ".join(ALLOWED_PSD_TEMPLATE_EXTENSIONS)
             )
         content_psd_path = _save_upload(content_psd_file, uploads_dir)
-        fresh_psd_uploads.append(("728x480 content PSD", content_psd_path))
+        fresh_psd_uploads.append((f"{CONTENT_PSD_LABEL} content PSD", content_psd_path))
     else:
         content_psd_path = _carry_forward_upload("content_psd", uploads_dir, prior_job_dir, prior_form_state)
     content_psd_provided = content_psd_path is not None
@@ -2462,7 +2680,7 @@ def generate():
         try:
             content_psd_image = open_as_rgb(content_psd_path)
         except ValueError as exc:
-            return _keep_submission(f"728x480 content PSD: {exc}")
+            return _keep_submission(f"{CONTENT_PSD_LABEL} content PSD: {exc}")
         # The upload renders as its own size (see the size_templates merge
         # below) *and* pulls in whatever's already saved in
         # default_templates/ -- "Output sizes"/"Custom sizes" and the
@@ -2477,13 +2695,24 @@ def generate():
     # layer of every template -- just supplied by hand instead.
     upload_hero_file = request.files.get("upload_hero_image")
     upload_hero_fresh = upload_hero_file is not None and bool(upload_hero_file.filename)
+    background_notes_pending_hero = None
     if upload_hero_fresh:
-        if not _allowed(upload_hero_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
+        if not _allowed(upload_hero_file.filename, PICTURE_UPLOAD_EXTENSIONS):
             return _keep_submission(
                 f"Campaign hero image: '{upload_hero_file.filename}' isn't a supported file type. "
-                "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
+                "Accepted: " + ", ".join(PICTURE_UPLOAD_EXTENSIONS)
             )
-        upload_hero_path = _save_upload(upload_hero_file, uploads_dir)
+        try:
+            upload_hero_path = _flatten_psd_upload(_save_upload(upload_hero_file, uploads_dir))
+        except ValueError as exc:
+            return _keep_submission(f"Campaign hero image: {exc}")
+    elif request.form.get("upload_hero_from_template"):
+        # The template's own backdrop as the hero: nothing to upload.
+        try:
+            upload_hero_path, hero_note = template_background_as_hero(uploads_dir)
+        except ValueError as exc:
+            return _keep_submission(f"Campaign hero image from the template: {exc}")
+        background_notes_pending_hero = hero_note
     elif request.form.get("upload_hero_image_clear"):
         upload_hero_path = None
     else:
@@ -2514,7 +2743,7 @@ def generate():
         if not _allowed(upload.filename, REFERENCE_EXTENSIONS):
             return _keep_submission(
                 f"Reference image: '{upload.filename}' isn't a supported file type. "
-                "Accepted: pictures (" + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS + (".heic", ".tif", ".gif"))
+                "Accepted: pictures (" + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS + (".heic", ".tif", ".gif", ".psd"))
                 + ") and videos (" + ", ".join(VIDEO_EXTENSIONS) + " -- the middle frame is used)."
             )
         try:
@@ -2568,16 +2797,27 @@ def generate():
                 textless, note = _textless_reference(reference, path.name)
                 if note:
                     upload_ai_reference_notes.append(note)
+                if textless is None:
+                    continue
                 if textless is not reference:
+                    # A reference that had words on it is an ad, and an
+                    # ad handed to Ideogram as a style reference comes
+                    # back as an ad -- a sign, a board, a label, with
+                    # the words painted back in. Its LOOK still counts:
+                    # the cleaned copy goes into the mood board that is
+                    # described in the prompt (palette, lighting), but
+                    # the picture itself is not sent to the model.
                     reference = textless
                     buffer = io.BytesIO()
                     reference.save(buffer, format="PNG")
-                    reference_bytes = buffer.getvalue()
-                    # Kept beside the original so the results page can
-                    # show what the model was actually given.
-                    (path.parent / f"{path.stem}_textless.png").write_bytes(reference_bytes)
+                    (path.parent / f"{path.stem}_textless.png").write_bytes(buffer.getvalue())
+                    upload_ai_reference_notes.append(
+                        f"{path.name} was described in the prompt only, not sent as a style reference."
+                    )
+                    reference_bytes = None
             upload_ai_reference_images.append(reference)
-            upload_ai_reference_bytes_list.append(reference_bytes)
+            if reference_bytes is not None:
+                upload_ai_reference_bytes_list.append(reference_bytes)
         except Exception as exc:  # noqa: BLE001
             return _keep_submission(f"Couldn't read the reference image {path.name}: {exc}")
     upload_ai_reference_image = _mood_board(upload_ai_reference_images) if upload_ai_reference_images else None
@@ -2772,14 +3012,17 @@ def generate():
             if upload_ai_reference_notes:
                 background_notes_pending += " " + " ".join(upload_ai_reference_notes)
             if upload_ai_reference_path is not None:
-                sent_as_file = getattr(_provider(upload_ai_provider), "supports_style_reference", False)
+                sent_as_file = (
+                    getattr(_provider(upload_ai_provider), "supports_style_reference", False)
+                    and bool(upload_ai_reference_bytes)
+                )
                 names = ", ".join(p.name for p in upload_ai_reference_paths)
                 background_notes_pending += (
                     f" Styled after the reference image{'s' if len(upload_ai_reference_paths) > 1 else ''} {names}"
                     + (
                         f" (sent to Ideogram as {'style references' if len(upload_ai_reference_paths) > 1 else 'a style reference'}, and described in the prompt)."
                         if sent_as_file
-                        else f" (described in the prompt -- {upload_ai_provider} can't take the picture itself)."
+                        else " (described in the prompt only)."
                     )
                 )
             if upload_ai_allow_text:
@@ -2880,6 +3123,9 @@ def generate():
 
     background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
+    missing_fonts_reported: set = set()  # each uninstalled template font is reported once, not once per size
+    if background_notes_pending_hero:
+        background_notes.append(background_notes_pending_hero)
     if reference_overflow_warning:
         background_warnings.append(reference_overflow_warning)
     if background_notes_pending:
@@ -2931,7 +3177,7 @@ def generate():
     if content_psd_provided and not default_templates:
         background_notes.append(
             "default_templates/ doesn't have any saved templates yet -- only the "
-            "uploaded 728x480 content PSD's own size was exported."
+            f"uploaded {CONTENT_PSD_LABEL} content PSD's own size was exported."
         )
     size_templates = dict(default_templates)
     size_template_paths = dict(default_template_paths)
@@ -2967,12 +3213,25 @@ def generate():
             name for name in REQUIRED_PSD_LAYERS if name not in template_layer_boxes
         ]
         if missing_layers:
+            # A layer that exists but sits entirely off the canvas (dragged
+            # past the artboard edge, or empty) counts as absent above --
+            # say which, since "missing" sends someone looking for a layer
+            # that is right there in the Layers panel.
+            off_canvas = _off_canvas_layers(template_path, missing_layers)
+            truly_missing = [n for n in missing_layers if n not in off_canvas]
+            parts = []
+            if truly_missing:
+                parts.append("is missing required layer(s): " + ", ".join(truly_missing))
+            for name, where in off_canvas.items():
+                parts.append(
+                    f"has a '{name}' layer that is entirely outside the {template_width}x{template_height} "
+                    f"canvas ({where}) -- move it onto the artboard in Photoshop and save"
+                )
             return _keep_submission(
                 f"{size_label(template_width, template_height)} template "
-                f"({Path(template_path).name}) is missing required layer(s): "
-                + ", ".join(missing_layers)
+                f"({Path(template_path).name}) " + "; ".join(parts)
                 + ". Every PSD template needs 'logo', 'description', and 'product' layers "
-                "(named exactly that, case-insensitive)."
+                "(named exactly that, case-insensitive), with pixels inside the canvas."
             )
 
     # Layer overrides -- lives in the PSD section only: swap the
@@ -3001,7 +3260,7 @@ def generate():
     )
     layer_header_glow_size = _parse_glow_size(request.form.get("layer_header_glow_size"))
     layer_header_glow_opacity = _parse_glow_opacity(request.form.get("layer_header_glow_opacity"))
-    layer_header_align = _parse_align(request.form.get("layer_header_align"), default="left")
+    layer_header_align = _parse_layer_align(request.form.get("layer_header_align"))
     layer_header_background = bool(request.form.get("layer_header_background"))
     layer_header_background_color = _parse_hex_color(
         request.form.get("layer_header_background_color"), default=(0, 0, 0)
@@ -3040,7 +3299,7 @@ def generate():
     layer_description_glow_opacity = _parse_glow_opacity(
         request.form.get("layer_description_glow_opacity")
     )
-    layer_description_align = _parse_align(request.form.get("layer_description_align"), default="left")
+    layer_description_align = _parse_layer_align(request.form.get("layer_description_align"))
     layer_description_background = bool(request.form.get("layer_description_background"))
     layer_description_background_color = _parse_hex_color(
         request.form.get("layer_description_background_color"), default=(0, 0, 0)
@@ -3082,7 +3341,7 @@ def generate():
     )
     layer_legal_glow_size = _parse_glow_size(request.form.get("layer_legal_glow_size"))
     layer_legal_glow_opacity = _parse_glow_opacity(request.form.get("layer_legal_glow_opacity"))
-    layer_legal_align = _parse_align(request.form.get("layer_legal_align"), default="left")
+    layer_legal_align = _parse_layer_align(request.form.get("layer_legal_align"))
     layer_legal_background = bool(request.form.get("layer_legal_background"))
     layer_legal_background_color = _parse_hex_color(
         request.form.get("layer_legal_background_color"), default=(0, 0, 0)
@@ -3145,6 +3404,34 @@ def generate():
     hidden_layer_names = {
         name for name in HIDEABLE_LAYER_NAMES if request.form.get(f"layer_{name}_hidden")
     }
+    # Copy typed for a layer whose hide box is ticked: the hide wins (see
+    # above), and the words never appear -- which reads as "my change
+    # didn't take". Say which box is doing it.
+    typed_but_hidden = [
+        name for name, text in (
+            ("header", layer_header_text), ("description", layer_description_text),
+            ("legal", layer_legal_text), ("cta", layer_cta_text),
+        ) if text and name in hidden_layer_names
+    ]
+    if typed_but_hidden:
+        background_warnings.append(
+            "You typed copy for "
+            + ", ".join(typed_but_hidden)
+            + f" but {'its' if len(typed_but_hidden) == 1 else 'their'} Hide box is ticked, so "
+            f"{'it is' if len(typed_but_hidden) == 1 else 'they are'} not drawn on any size. "
+            "Untick the box under \"Hide layers\" to see the text."
+        )
+    if len(hidden_layer_names) >= len(HIDEABLE_LAYER_NAMES) - 1:
+        # Every layer hidden is almost never meant: the hide boxes carry
+        # over from run to run with the rest of the form, and a set
+        # ticked once for an experiment quietly empties every creative
+        # after it -- which then reads as "the logo isn't rendering".
+        background_warnings.append(
+            "Every template layer is hidden on this run (Hide layers: "
+            + ", ".join(sorted(hidden_layer_names))
+            + "), so each size shows only its background. The hide boxes carry over "
+            "from your last run -- untick them under \"Hide layers\" if that isn't what you meant."
+        )
 
     layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
     layer_upload_paths: dict = {}  # {field_name: Path} -- for form_state.json, see below
@@ -3155,12 +3442,15 @@ def generate():
         layer_file = request.files.get(field_name)
         layer_fresh = layer_file is not None and bool(layer_file.filename)
         if layer_fresh:
-            if not _allowed(layer_file.filename, ALLOWED_LAYER_IMAGE_EXTENSIONS):
+            if not _allowed(layer_file.filename, PICTURE_UPLOAD_EXTENSIONS):
                 return _keep_submission(
                     f"'{layer_file.filename}' isn't a supported file type for the {layer_name} layer update. "
-                    "Accepted: " + ", ".join(ALLOWED_LAYER_IMAGE_EXTENSIONS)
+                    "Accepted: " + ", ".join(PICTURE_UPLOAD_EXTENSIONS)
                 )
-            layer_path = _save_upload(layer_file, uploads_dir)
+            try:
+                layer_path = _flatten_psd_upload(_save_upload(layer_file, uploads_dir))
+            except ValueError as exc:
+                return _keep_submission(f"{layer_name} layer update: {exc}")
         elif request.form.get(f"{field_name}_clear"):
             # The (x) next to a carried-forward image. Without an explicit
             # signal there'd be no way to take one back off: a file input
@@ -3551,10 +3841,16 @@ def generate():
         # offering it alongside is the difference between "you can move
         # this text" and "you can retype this text".
         source_psd_filename = None
-        if (width, height) in psd_templates:
+        if (width, height) in psd_as_is_sizes:
             background_notes.append(
-                f"{size_label(width, height)} used your uploaded PSD template as-is -- "
-                "no header/message/logo/badge/CTA overlay is added on top of a template."
+                f"{size_label(width, height)} used your uploaded PSD exactly as uploaded (\"Use these files exactly "
+                "as uploaded\" ticked): its own background and text, with no hero image, typed copy or hide boxes applied."
+            )
+        elif (width, height) in psd_templates:
+            background_notes.append(
+                f"{size_label(width, height)} used your uploaded PSD template as its layout -- the hero "
+                "image goes into its background layer and copy typed on the form is drawn into its text "
+                "layers. Tick \"Use these files exactly as uploaded\" above the rows to use it as it is."
             )
         elif (width, height) in default_templates:
             background_notes.append(
@@ -3685,14 +3981,9 @@ def generate():
                 or layer_cta_stroke_size
                 or layer_image_overrides
                 or hidden_layer_names
-            ) and (width, height) in size_template_paths:
+            ) and (width, height) in size_template_paths and (width, height) not in psd_as_is_sizes:
                 psd_path_for_size = size_template_paths.get((width, height))
                 layer_boxes = get_psd_layer_boxes(psd_path_for_size)
-                # Where the type is DRAWN: the same boxes, kept
-                # TEXT_EDGE_PADDING_PX in from the canvas edge. The
-                # originals stay for cleaning, since the designer's own
-                # pixels reach wherever the designer's box did.
-                draw_boxes = _inset_boxes_to_canvas(layer_boxes, (width, height))
                 applied_layers = []
                 # Each overridden layer's own isolated RGBA patch (box-
                 # positioned, transparent everywhere else) -- keyed by
@@ -3748,6 +4039,15 @@ def generate():
                         name: map_box_through_fit(box, psd_canvas_size, (width, height), fit_mode)
                         for name, box in layer_boxes.items()
                     }
+                # Where the type is DRAWN: the same boxes, kept
+                # TEXT_EDGE_PADDING_PX in from the canvas edge. The
+                # originals stay for cleaning, since the designer's own
+                # pixels reach wherever the designer's box did. Taken
+                # AFTER the remap above: taken before it, a 1280x720
+                # file rendering as 1920x1080 had its text drawn at the
+                # file's own coordinates -- a description landing on top
+                # of the logo, in a box two-thirds the width it should be.
+                draw_boxes = _inset_boxes_to_canvas(layer_boxes, (width, height))
 
                 def _fit_rgba_like_final_image(rgba_image):
                     # Map a full-canvas RGBA PSD composite (psd-tools'
@@ -3933,7 +4233,9 @@ def generate():
                         # words. A plain backdrop still crops to fill --
                         # there is nothing in it to lose, and letterbox
                         # margins on a texture look like a mistake.
-                        background_fit = "contain" if upload_ai_allow_text else "crop"
+                        background_fit = (
+                            "contain" if (upload_ai_allow_text or upload_hero_fit == "contain") else "crop"
+                        )
                         final_image = apply_layer_background_override(
                             final_image, box, override_image, fit=background_fit
                         )
@@ -3985,6 +4287,21 @@ def generate():
                     if psd_path_for_size is not None
                     else set()
                 )
+                buried_in_template = (
+                    get_psd_buried_layers(psd_path_for_size)
+                    if psd_path_for_size is not None
+                    else set()
+                )
+                if buried_in_template:
+                    background_notes.append(
+                        f"{size_label(width, height)}: "
+                        + ", ".join(sorted(buried_in_template))
+                        + (" sit" if len(buried_in_template) > 1 else " sits")
+                        + " below the background in that size's template, so "
+                        + ("they are" if len(buried_in_template) > 1 else "it is")
+                        + " covered and not drawn -- as in Photoshop. Drag the layer above "
+                        "the background and re-save the template to use it."
+                    )
                 # Say so when a template has a layer switched off. A
                 # designer's eye-icon in Photoshop silently removes that
                 # layer from this size and nothing else on the page
@@ -4079,6 +4396,12 @@ def generate():
                     box = box_override or draw_boxes.get(layer_key)
                     if box is None:
                         return
+                    if layer_key in buried_in_template:
+                        # Sitting under this size's background in the
+                        # stack: covered, exactly as Photoshop shows it.
+                        # (A layer merely switched off is different --
+                        # typed copy turns it back on, as it always has.)
+                        return
                     if not text:
                         # Restyling, not rewriting. Someone who picked a
                         # colour or a font without retyping the words
@@ -4126,6 +4449,24 @@ def generate():
                         )
                     effective_family = font_family or psd_text_style.get("family") or "sans"
                     effective_bold = psd_text_style.get("bold", True)
+                    # The template's own typeface, when it is installed on
+                    # this machine and no other family was picked on the
+                    # form. Otherwise the nearest bundled face stands in
+                    # -- and the results page says so, since "why is the
+                    # font different" is otherwise unanswerable.
+                    effective_font_name = None if font_family else psd_text_style.get("font_name")
+                    if align == "template":
+                        align = psd_text_style.get("align") or "left"
+                    if effective_font_name and find_font_file(effective_font_name) is None:
+                        if effective_font_name not in missing_fonts_reported:
+                            missing_fonts_reported.add(effective_font_name)
+                            background_warnings.append(
+                                f"The template's {layer_key} is set in {effective_font_name}, which isn't "
+                                "installed on this computer, so the redrawn text uses a bundled "
+                                f"{effective_family} face instead. Install the font (or activate it in "
+                                "Creative Cloud) and run again to match the design."
+                            )
+                        effective_font_name = None
                     # A user-typed font size wins as the *ceiling* for the
                     # same shrink-to-fit search the PSD's own font size
                     # otherwise drives -- see apply_layer_text_override()'s
@@ -4161,6 +4502,7 @@ def generate():
                         text,
                         text_color=effective_color,
                         font_family=effective_family,
+                        font_name=effective_font_name,
                         font_size=ceiling_font_size,
                         exact_font_size=exact_font_size,
                         bold=effective_bold,
@@ -4189,6 +4531,7 @@ def generate():
                         text,
                         text_color=effective_color,
                         font_family=effective_family,
+                        font_name=effective_font_name,
                         font_size=ceiling_font_size,
                         exact_font_size=exact_font_size,
                         bold=effective_bold,
@@ -4342,7 +4685,9 @@ def generate():
                         or layer_cta_stroke_size
                         or layer_cta_text_stroke_size
                         or layer_cta_radius is not None
-                        or layer_cta_font_family
+                        # The family dropdown always submits something ("sans" by
+                        # default), so on its own it is not a request to redraw.
+                        or (layer_cta_font_family and layer_cta_font_family != "sans")
                         or layer_cta_font_size
                     )
                     and "cta" not in layer_image_overrides
@@ -4352,6 +4697,12 @@ def generate():
                     # that upload IS the button, and drawing one over it
                     # would bury what the user just supplied.
                     cta_box = layer_boxes.get("cta")
+                    restyling_button_flat = bool(
+                        layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT
+                        or layer_cta_glow
+                        or layer_cta_stroke_size
+                        or layer_cta_radius is not None
+                    )
                     # A CTA built as a group -- the designer's rounded
                     # rectangle with its label on top -- has a text layer
                     # of its own, and that is the thing being changed.
@@ -4480,7 +4831,10 @@ def generate():
                         cta_patch = Image.new("RGBA", final_image.size, (0, 0, 0, 0))
                         cta_patch.paste(final_image.crop(cta_box).convert("RGBA"), cta_box[:2])
                         export_layer_patches["cta"] = cta_patch
-                    elif cta_box is not None:
+                    elif cta_box is not None and (layer_cta_text or restyling_button_flat):
+                        # A flat (pixel) CTA has no label to read back: redrawn only
+                        # with words to put on it or a restyled button, never over a
+                        # font choice alone.
                         _clean_layer_box(cta_box, "cta", full_box=True)
                         cta_kwargs = dict(
                             button_color=layer_cta_button_color,
@@ -4498,12 +4852,12 @@ def generate():
                             corner_radius=layer_cta_radius,
                         )
                         final_image = apply_layer_cta_override(
-                            final_image, cta_box, layer_cta_text, **cta_kwargs
+                            final_image, cta_box, layer_cta_text or "", **cta_kwargs
                         )
                         export_layer_patches["cta"] = apply_layer_cta_override(
                             Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
                             cta_box,
-                            layer_cta_text,
+                            layer_cta_text or "",
                             keep_alpha=True,
                             **cta_kwargs,
                         )
@@ -4579,9 +4933,14 @@ def generate():
                                         continue
                                     blank = Image.new("RGBA", source_size, (0, 0, 0, 0))
                                     if name == "background":
+                                        # The same fit the preview used
+                                        # (see background_fit above) --
+                                        # a file that fits the hero
+                                        # differently from the preview
+                                        # is a different creative.
                                         source_layer_images[name] = apply_layer_background_override(
                                             blank, box, override_image, keep_alpha=True,
-                                            fit="contain" if upload_ai_allow_text else "crop",
+                                            fit="contain" if (upload_ai_allow_text or upload_hero_fit == "contain") else "crop",
                                         )
                                     else:
                                         source_layer_images[name] = apply_layer_image_override(
@@ -4797,6 +5156,14 @@ def generate():
                                         "beside each as \"(rendered)\", switched off."
                                     )
 
+                            # Layers hidden on the form open switched off
+                            # in the editable file too, so it matches the
+                            # preview; nothing is deleted, the eye is off.
+                            if hidden_layer_names:
+                                set_layer_visibility(
+                                    job_dir / source_candidate_filename,
+                                    {name: False for name in hidden_layer_names},
+                                )
                             set_flattened_preview(
                                 job_dir / source_candidate_filename, final_image
                             )
@@ -5331,6 +5698,44 @@ def serve_upload(job_id, filename):
     if not file_path.is_file():
         abort(404)
     return send_file(file_path)
+
+
+UPLOAD_THUMB_EDGE = 160
+_upload_thumb_cache: dict = {}
+
+
+@app.route("/upload-thumb/<job_id>/<filename>")
+def serve_upload_thumb(job_id, filename):
+    """A small JPEG of one job upload, whatever its format.
+
+    The size-specific template rows keep .psd files, which no browser can
+    draw, so their "kept from your last run" chip can't point at the raw
+    file the way the hero chip does. This renders the same flat picture
+    the run would use (open_as_rgb: the PSD's stored preview) at thumbnail
+    size, so the chip shows the actual template rather than a broken
+    image icon. Videos get their first frame for the same reason.
+    """
+    job_id = secure_filename(job_id)
+    filename = secure_filename(filename)
+    file_path = JOBS_DIR / job_id / "uploads" / filename
+    if not file_path.is_file():
+        abort(404)
+    try:
+        stat = file_path.stat()
+        key = (str(file_path), stat.st_size, stat.st_mtime_ns)
+        payload = _upload_thumb_cache.get(key)
+        if payload is None:
+            image = open_as_rgb(file_path)
+            image.thumbnail((UPLOAD_THUMB_EDGE, UPLOAD_THUMB_EDGE))
+            buffer = io.BytesIO()
+            image.save(buffer, format="JPEG", quality=85)
+            payload = buffer.getvalue()
+            if len(_upload_thumb_cache) > 200:
+                _upload_thumb_cache.clear()
+            _upload_thumb_cache[key] = payload
+    except Exception:  # noqa: BLE001
+        abort(404)
+    return send_file(io.BytesIO(payload), mimetype="image/jpeg", max_age=0)
 
 
 @app.route("/download-campaigns/<session_id>")

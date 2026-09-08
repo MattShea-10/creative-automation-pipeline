@@ -111,7 +111,15 @@ def tesseract_available() -> bool:
 # Installed into the running interpreter on first use, the way ffmpeg
 # is, so a packaged or fresh install doesn't need a setup step.
 DETECTOR_PACKAGE = "rapidocr-onnxruntime"
-DETECTOR_MIN_SCORE = float(os.environ.get("AI_TEXT_DETECTOR_MIN_SCORE") or 0.5)
+DETECTOR_MIN_SCORE = float(os.environ.get("AI_TEXT_DETECTOR_MIN_SCORE") or 0.3)
+# The engine's own thresholds, set low: at its defaults it missed the
+# small pseudo-lettering a model paints down a bottle label (a 0.4
+# score, illegible but unmistakably text), and at these it finds that
+# without reading sand or foliage as words.
+DETECTOR_SETTINGS = {"text_score": 0.3, "det_box_thresh": 0.3, "det_thresh": 0.2}
+# The long edge, in pixels, the detector reads at (smaller images are
+# scaled up to it first).
+DETECTOR_WORK_EDGES = (1600, 2560)
 _detector = None
 _detector_state = None  # None = untried, "ready", or an error message
 
@@ -151,7 +159,7 @@ def ensure_text_detector(install: bool = True):
             )
             return None
     try:
-        _detector = RapidOCR()
+        _detector = RapidOCR(**DETECTOR_SETTINGS)
     except Exception as exc:  # noqa: BLE001
         _detector_state = f"{DETECTOR_PACKAGE} failed to start: {exc}"
         return None
@@ -177,27 +185,63 @@ def _detector_findings(image: Image.Image, min_height: float, min_score: float =
         return None
     import numpy as np
 
-    try:
-        result, _elapsed = engine(np.asarray(image.convert("RGB")))
-    except Exception:  # noqa: BLE001
-        return None
+    # Read at more than one size: lettering on a shirt in a 1024px
+    # generation is a dozen pixels tall and the detector walks past it
+    # at native size, while a headline it sees at native size can fall
+    # apart when blown up. Every read's boxes are mapped back to the
+    # image's own pixels and merged.
     threshold = DETECTOR_MIN_SCORE if min_score is None else min_score
+    source = image.convert("RGB")
     findings = []
-    for box, text, score in result or []:
-        score = float(score)
-        if score < threshold:
+    for edge in DETECTOR_WORK_EDGES:
+        scale = edge / max(image.size)
+        prepared = source
+        if abs(scale - 1.0) > 0.05:
+            prepared = source.resize(
+                (int(round(image.width * scale)), int(round(image.height * scale))), Image.LANCZOS
+            )
+        else:
+            scale = 1.0
+        try:
+            result, _elapsed = engine(np.asarray(prepared))
+        except Exception:  # noqa: BLE001
             continue
-        word = (text or "").strip()
-        if len(_LETTERS.findall(word)) < MIN_LETTERS and not any(ch.isdigit() for ch in word):
-            continue
-        xs = [float(p[0]) for p in box]
-        ys = [float(p[1]) for p in box]
-        left, top = int(min(xs)), int(min(ys))
-        width, height = int(max(xs)) - left, int(max(ys)) - top
-        if min(width, height) < min_height:
-            continue
-        findings.append(TextFinding(text=word, confidence=score * 100.0, box=(left, top, width, height)))
+        for box, text, score in result or []:
+            score = float(score)
+            if score < threshold:
+                continue
+            word = (text or "").strip()
+            xs = [float(p[0]) / scale for p in box]
+            ys = [float(p[1]) / scale for p in box]
+            left, top = int(min(xs)), int(min(ys))
+            width, height = int(max(xs)) - left, int(max(ys)) - top
+            if min(width, height) < min_height:
+                continue
+            letters = len(_LETTERS.findall(word))
+            # One big letter is still lettering (a "G" left standing on
+            # a sign after the rest was painted out); one small one is
+            # noise.
+            if letters < MIN_LETTERS and not any(ch.isdigit() for ch in word):
+                if not (letters == 1 and min(width, height) >= min_height * 2.5 and score >= 0.6):
+                    continue
+            box_ = (left, top, width, height)
+            if any(_inside(box_, f.box) or _inside(f.box, box_) for f in findings):
+                continue
+            findings.append(TextFinding(text=word, confidence=score * 100.0, box=box_))
     return findings
+
+
+def detector_description() -> str:
+    """What is doing the reading, for the results page."""
+    if ensure_text_detector(install=False) is None:
+        return "Tesseract only" if tesseract_available() else "nothing"
+    try:
+        from importlib.metadata import version
+
+        ver = version(DETECTOR_PACKAGE)
+    except Exception:  # noqa: BLE001
+        ver = "?"
+    return f"rapidocr {ver}, read at {'/'.join(str(e) for e in DETECTOR_WORK_EDGES)} px"
 
 
 def find_text(image: Image.Image, min_confidence: float = None) -> TextCheckResult:
@@ -265,6 +309,14 @@ def find_text(image: Image.Image, min_confidence: float = None) -> TextCheckResu
             findings.append(finding)
     findings.sort(key=lambda f: -f.confidence)
     return TextCheckResult(available=True, findings=findings)
+
+
+def _near(box, other, margin_fraction: float = 1.0) -> bool:
+    """Whether `box` touches `other` grown by its own shorter side."""
+    l, t, w, h = box
+    ol, ot, ow, oh = other
+    m = int(round(min(ow, oh) * margin_fraction))
+    return not (l + w < ol - m or l > ol + ow + m or t + h < ot - m or t > ot + oh + m)
 
 
 def _inside(box, other) -> bool:
@@ -418,52 +470,98 @@ def remove_text(image: Image.Image, result: "TextCheckResult", force: bool = Fal
 # Inpainting can leave enough of a letter to still read; a second pass
 # over what is left usually finishes it.
 SCRUB_PASSES = 3
+# The lowered bar for the final read (0..100, against MIN_CONFIDENCE's 70
+# and the detector's 50): fragments of painted-out words score low.
+SCRUB_FAINT_CONFIDENCE = 30.0
 # The crop fallback keeps the tallest text-free band of the frame, if it
 # is at least this much of the height; below that too little picture
 # remains to be worth calling a backdrop.
 SCRUB_CROP_MIN_FRACTION = 0.45
+# Above this much of the frame under lettering, painting would replace
+# the picture with smear: crop instead.
+SCRUB_CROP_ABOVE_FRACTION = 0.30
 
 
 def scrub_text(image: Image.Image):
     """Make `image` text-free, whatever it takes short of a new image.
 
     A backdrop goes under the template's own words, so lettering on it
-    is never acceptable -- and a soft patch where a word was is. This
-    paints out every word the OCR engine finds, re-reads, and repeats;
-    if a headline is too big to paint out convincingly it crops to the
-    largest band of the frame with no text in it and scales that back
-    up to size. Returns (image, notes, leftover) where `leftover` is the
-    TextCheckResult of the final read -- empty when the picture came out
-    clean, `available=False` when nothing could be checked.
+    is never acceptable -- and a soft patch where a word was is. Every
+    word the detector finds is painted out; the picture is re-read and
+    painted again where letters survive; and when the lettering covers
+    so much of the frame that painting would replace the picture (a
+    poster, not a photo) the largest text-free band is kept instead
+    and scaled back to size.
+
+    Returns (image, notes, leftover): `leftover` is the final read --
+    empty when nothing readable is left, `available=False` when nothing
+    could be checked. A fragment the detector still scores inside an
+    area that has already been painted twice is smear, not a word, and
+    is not counted.
     """
     notes = []
     found = find_text(image)
-    if not found.available:
+    if not found.available or not found.found_text:
         return image, notes, found
-    if not found.found_text:
-        return image, notes, found
+
     working = image
+    mask = build_text_mask(working, found)
+    if masked_area_fraction(working, mask) > SCRUB_CROP_ABOVE_FRACTION:
+        cropped, note = _crop_off_text(working, mask)
+        if cropped is not None:
+            working = cropped
+            notes.append(note)
+            found = find_text(working)
+            if not found.found_text:
+                return working, notes, found
+
     removed_total = 0
+    painted_boxes = []
     for _ in range(SCRUB_PASSES):
         cleaned, removed, reason = remove_text(working, found, force=True)
         if reason:
             break
         removed_total += removed
+        painted_boxes.extend(f.box for f in found.findings)
         working = cleaned
         found = find_text(working)
         if not found.found_text:
             break
+    # What painting leaves behind is a fragment: a letter or two at a
+    # score the normal read ignores. One more read with the bar lowered
+    # -- but only WHERE something was painted: at that bar the detector
+    # reads sand and foliage as words, and painting those out all over
+    # the frame wrecks the picture.
+    if painted_boxes:
+        faint = find_text(working, min_confidence=SCRUB_FAINT_CONFIDENCE)
+        near = [f for f in faint.findings if any(_near(f.box, b) for b in painted_boxes)]
+        if near:
+            cleaned, removed, reason = remove_text(
+                working, TextCheckResult(available=True, findings=near), force=True
+            )
+            if not reason:
+                working = cleaned
+                removed_total += removed
+        found = find_text(working)
+        # Anything still scored inside the painted area is the inpaint's
+        # own texture being read as letters, not lettering.
+        found = TextCheckResult(
+            available=found.available,
+            findings=[f for f in found.findings if not any(_near(f.box, b, 0.5) for b in painted_boxes)],
+        )
     if removed_total:
         notes.append(f"{removed_total} word(s) painted out.")
-    if not found.found_text:
-        return working, notes, found
+    return working, notes, found
 
-    # Still readable after painting: crop the lettering off instead.
+
+def _crop_off_text(image: Image.Image, mask):
+    """Keep the tallest band of rows with no text in it, scaled back to
+    the frame's own size; (None, None) when that band is too small to
+    be worth calling a picture."""
     try:
         import numpy as np
     except ImportError:
-        return working, notes, found
-    mask = build_text_mask(working, found)
+        return None, None
     rows = np.asarray(mask).max(axis=1) > 0
     best, start = (0, 0), None
     for y, has_text in enumerate(list(rows) + [True]):
@@ -475,22 +573,15 @@ def scrub_text(image: Image.Image):
             start = None
     top, bottom = best
     band = bottom - top
-    if band < working.height * SCRUB_CROP_MIN_FRACTION:
-        return working, notes, found
+    if band < image.height * SCRUB_CROP_MIN_FRACTION:
+        return None, None
     # Keep the frame's own shape: the band is full width, so the width
     # is trimmed from the centre by the same proportion, then the crop
     # is scaled back to the original size.
-    keep_w = max(8, int(round(working.width * band / working.height)))
-    left = (working.width - keep_w) // 2
-    cropped = working.crop((left, top, left + keep_w, bottom)).resize(working.size, Image.LANCZOS)
-    notes.append(
-        f"A headline too large to paint out was cropped off: the text-free "
-        f"{band / working.height:.0%} of the frame was scaled back up to size."
+    keep_w = max(8, int(round(image.width * band / image.height)))
+    left = (image.width - keep_w) // 2
+    cropped = image.crop((left, top, left + keep_w, bottom)).resize(image.size, Image.LANCZOS)
+    return cropped, (
+        f"The lettering covered too much of the frame to paint out, so the text-free "
+        f"{band / image.height:.0%} of it was kept and scaled back up to size."
     )
-    found = find_text(cropped)
-    if found.found_text:
-        cleaned, removed, reason = remove_text(cropped, found, force=True)
-        if not reason:
-            cropped = cleaned
-            found = find_text(cropped)
-    return cropped, notes, found

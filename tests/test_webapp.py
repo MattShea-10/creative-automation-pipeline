@@ -2193,6 +2193,23 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         edit_page = self.client.get(f"/edit/{job_id}")
         self.assertIn(b"Currently: <strong>template.psd</strong>", edit_page.data)
         self.assertIn(b'value="300x250"', edit_page.data)
+        # ...and it is a proper chip with a thumbnail of the template,
+        # not just a line of prose: a browser can't draw a .psd, so the
+        # picture comes from the thumbnail route, which must answer with
+        # a real JPEG of the file's composite (red, here).
+        self.assertIn(b"Kept from your last run", edit_page.data)
+        thumb_url = f"/upload-thumb/{job_id}/template.psd".encode()
+        self.assertIn(thumb_url, edit_page.data)
+        thumb = self.client.get(thumb_url.decode())
+        self.assertEqual(thumb.status_code, 200)
+        self.assertEqual(thumb.mimetype, "image/jpeg")
+        with Image.open(io.BytesIO(thumb.data)) as img:
+            self.assertLessEqual(max(img.size), webapp.UPLOAD_THUMB_EDGE)
+            r_, g_, b_ = img.convert("RGB").getpixel((img.width // 2, img.height // 2))
+        self.assertGreater(r_, 150)
+        self.assertLess(g_, 100)
+        self.assertLess(b_, 100)
+        self.assertEqual(self.client.get(f"/upload-thumb/{job_id}/missing.psd").status_code, 404)
 
         # Resubmit exactly as the pre-filled edit form would -- the size
         # field carried over by the browser, no new psd_file_1, no clear
@@ -3962,9 +3979,9 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertTrue(seen["prompt"].startswith("a stadium at dusk"), seen["prompt"])
         self.assertEqual(seen["key"], "test-key")
         # Not the template's 300x250: the generator is asked for a size
-        # that covers the whole batch, floored at the content-PSD size
-        # (728x480 here), and 728x480 is nearest 3x2.
-        self.assertEqual(seen["aspect"], "3x2")
+        # that covers the whole batch, floored at the flagship size
+        # (1920x1080), and 1920x1080 is 16x9.
+        self.assertEqual(seen["aspect"], "16x9")
 
         # And its pixels are in the creative, via the background layer.
         self.assertIn(b"300x250: updated layer(s) -- background", r.data)
@@ -4034,7 +4051,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertIn("taken out of it and sent as a negative prompt", page)
         self.assertIn("whole-ad box was ignored", page)
 
-    def test_the_cleaned_copy_is_what_goes_to_the_provider(self):
+    def test_an_ad_reference_is_described_not_sent(self):
         from src.text_check import ocr_available
         if not ocr_available():
             self.skipTest("Tesseract isn't installed")
@@ -4088,10 +4105,14 @@ class ContentPsdQuickModeTest(unittest.TestCase):
             ideogram.requests.post, ideogram.requests.get = original_post, original_get
             os.environ.pop("IDEOGRAM_API_KEY", None)
         self.assertEqual(r.status_code, 200, r.data[:800])
-        self.assertIn("parts", seen, "the reference should have gone to Ideogram")
-        sent = Image.open(io.BytesIO(seen["parts"][0][1]))
-        self.assertLess(sent.height, 640 * 0.8, "the headline band must be cropped off")
-        self.assertIn("had a headline across it", r.get_data(as_text=True))
+        # A reference with words on it is an ad, and an ad sent as a
+        # style reference comes back as an ad: it is described in the
+        # prompt (palette, lighting) and NOT sent as a file.
+        self.assertNotIn("parts", seen, "an ad must not go to Ideogram as a style reference")
+        page = r.get_data(as_text=True)
+        self.assertIn("had a headline across it", page)
+        self.assertIn("described in the prompt only, not sent as a style reference", page)
+        self.assertIn("in the look of the reference picture", page)
 
     def test_upload_ai_stands_in_for_a_missing_content_psd(self):
         # No flagship PSD designed yet, so the Upload Creative generator
@@ -4617,9 +4638,11 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self._write_template_with_a_background_layer("p1-300x250.psd", (300, 250))
         prompt = self._prompt_used(product_name="OffScrpt")
         self.assertNotIn("product photo", prompt)
-        # The product name goes in: a blank Image prompt auto-builds from
-        # it, which is what the field's placeholder promises.
-        self.assertIn("OffScrpt", prompt)
+        # The product name stays OUT of a text-free backdrop prompt: a
+        # named product came back with its name on a shirt. The backdrop
+        # sits under the template's own product layer and needs a
+        # scene, not a name.
+        self.assertNotIn("OffScrpt", prompt)
         # But it must not ask for BRANDING. "abstract branded backdrop
         # suggesting <product name>" is a logo brief, and it produced
         # exactly that: an invented mark with a wordmark under it, sitting
@@ -4756,7 +4779,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
             "/generate", data=data, content_type="multipart/form-data", follow_redirects=True
         )
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b"728x480 content PSD", r.data)
+        self.assertIn(b"1920x1080 content PSD", r.data)
         self.assertIn(b"supported file type", r.data)
 
 
@@ -5438,6 +5461,11 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         if not self.REAL_TEMPLATES_DIR.is_dir():
             return None
         for path in sorted(self.REAL_TEMPLATES_DIR.glob("*.psd")):
+            # Not one of the app's own exports someone dropped back into
+            # the folder: those carry hidden "(rendered)" twins and a
+            # switched-off CTA, and are not what these tests are about.
+            if "source-template" in path.name.lower():
+                continue
             return path
         return None
 
@@ -8493,12 +8521,21 @@ class PromptNegationGuardTest(unittest.TestCase):
             ("a product shot of a can, studio lighting", ["no text"], True),
         )
 
+    def test_any_noun_can_be_excluded_not_only_text_words(self):
+        split = webapp.split_prompt_negations
+        self.assertEqual(
+            split("no text, no bottles or drink, just people having fun, no bottles"),
+            ("just people having fun", ["no text, no bottles or drink", "no bottles"], True),
+        )
+        self.assertEqual(
+            split("runners on a track, no faces, no crowd, golden hour"),
+            ("runners on a track, golden hour", ["no faces, no crowd"], False),
+        )
+
     def test_ordinary_prompts_pass_through_untouched(self):
         split = webapp.split_prompt_negations
         self.assertEqual(split("beach at sunset, warm tones"), ("beach at sunset, warm tones", [], False))
-        # A negation that isn't about lettering is left for the model --
-        # it may be a scene note, and it doesn't cause the lettering bug.
-        self.assertEqual(split("no people, empty street at night"), ("no people, empty street at night", [], False))
+        self.assertEqual(split("no people, empty street at night"), ("empty street at night", ["no people"], False))
         self.assertEqual(split(None), (None, [], False))
         self.assertEqual(split(""), (None, [], False))
 
@@ -8506,7 +8543,7 @@ class PromptNegationGuardTest(unittest.TestCase):
         positive, negations, about_text = webapp.split_prompt_negations(
             "bright kitchen scene. Avoid: clutter and steam."
         )
-        self.assertEqual(positive, "bright kitchen scene.")
+        self.assertEqual(positive, "bright kitchen scene")
         self.assertEqual(negations, ["clutter and steam"])
         self.assertFalse(about_text)
 
@@ -8621,9 +8658,15 @@ class TextFreeRenderModeTest(unittest.TestCase):
         scene = webapp._backdrop_scene(
             "Hydro Boost", "Rehydrate with a refreshing summer drink", "Active Adults 18-34", textless=True
         )
+        # Neither the sentence nor its keywords nor the audience: every
+        # distinctive word handed to a typography model came back as
+        # type (REHYDRATE, SUMMER, ADULTS were all lettered on runs).
         self.assertNotIn("Rehydrate with a refreshing summer drink", scene)
-        self.assertIn("mood: rehydrate, refreshing, summer, drink", scene)
-        self.assertIn("plain blank unprinted label", scene)
+        self.assertNotIn("rehydrate", scene.lower())
+        self.assertNotIn("Adults", scene)
+        # Not even the product name: HYDRO BOOST came back on a shirt.
+        self.assertNotIn("Hydro", scene)
+        self.assertNotIn("Boost", scene)
         for phrase in (scene, webapp.BACKGROUND_PROMPT_GUIDANCE):
             self.assertNotRegex(phrase.lower(), r"\btext\b", phrase)
         # The whole-ad prompt still carries the message whole: there it
@@ -8673,11 +8716,15 @@ class SceneTextDetectorTest(unittest.TestCase):
 
         class _Engine:
             def __call__(self, array):
+                # The image arrives scaled up to a working size; the
+                # boxes come back in those pixels and must be mapped
+                # back to the 300px original.
+                k = array.shape[1] / 300.0
                 return (
                     [
-                        ([[10, 10], [200, 10], [200, 60], [10, 60]], "Summer", 0.93),
-                        ([[10, 100], [200, 100], [200, 150], [10, 150]], "??", 0.99),   # no letters
-                        ([[10, 200], [200, 200], [200, 250], [10, 250]], "faint", 0.2),  # below score
+                        ([[10 * k, 10 * k], [200 * k, 10 * k], [200 * k, 60 * k], [10 * k, 60 * k]], "Summer", 0.93),
+                        ([[10 * k, 100 * k], [200 * k, 100 * k], [200 * k, 150 * k], [10 * k, 150 * k]], "??", 0.99),
+                        ([[10 * k, 200 * k], [200 * k, 200 * k], [200 * k, 250 * k], [10 * k, 250 * k]], "faint", 0.2),
                     ],
                     0.1,
                 )
@@ -8688,7 +8735,9 @@ class SceneTextDetectorTest(unittest.TestCase):
             found = text_check._detector_findings(Image.new("RGB", (300, 300)), min_height=2)
         finally:
             text_check._detector, text_check._detector_state = original
-        self.assertEqual([(f.text, f.box) for f in found], [("Summer", (10, 10, 190, 50))])
+        self.assertEqual([f.text for f in found], ["Summer"])
+        left, top, width, height = found[0].box
+        self.assertTrue(abs(left - 10) <= 1 and abs(top - 10) <= 1 and abs(width - 190) <= 2 and abs(height - 50) <= 2, found[0].box)
         self.assertAlmostEqual(found[0].confidence, 93.0)
 
     def test_forced_paint_out_of_a_big_headline_and_tesseract_gone(self):
@@ -8709,3 +8758,447 @@ class SceneTextDetectorTest(unittest.TestCase):
         with mock.patch.object(text_check, "tesseract_available", lambda: False), \
                 mock.patch.object(text_check, "detector_available", lambda: True):
             self.assertTrue(text_check.ocr_available())
+
+
+class PsdPictureUploadTest(unittest.TestCase):
+    """A PSD chosen in a picture field (hero, logo/product update, mood
+    board) is flattened to a PNG on the way in, transparency kept."""
+
+    def setUp(self):
+        webapp.app.config["TESTING"] = True
+        self.client = _CampaignBriefAutoFillClient(webapp.app.test_client())
+        self._orig = (webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR)
+        self.tmp = Path(tempfile.mkdtemp())
+        webapp.JOBS_DIR = self.tmp / "jobs"
+        webapp.DOWNLOADS_DIR = self.tmp / "downloads"
+        webapp.DEFAULT_TEMPLATES_DIR = self.tmp / "templates"
+        webapp.TEMPLATE_BACKUPS_DIR = self.tmp / "backups"
+        for d in (webapp.JOBS_DIR, webapp.DEFAULT_TEMPLATES_DIR):
+            d.mkdir(parents=True)
+
+    def tearDown(self):
+        webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _psd_bytes(self, size=(120, 80), color=(200, 30, 30, 255)):
+        from src.psd_export import build_layered_psd
+
+        layer = Image.new("RGBA", size, (0, 0, 0, 0))
+        layer.paste(color, (10, 10, size[0] - 10, size[1] - 10))
+        buffer = io.BytesIO()
+        build_layered_psd([("art", layer)], size, layer_names={}).save(buffer)
+        return buffer.getvalue()
+
+    def test_flatten_keeps_transparency(self):
+        path = self.tmp / "logo.psd"
+        path.write_bytes(self._psd_bytes())
+        out = webapp._flatten_psd_upload(path)
+        self.assertEqual(out.suffix, ".png")
+        self.assertFalse(path.exists())
+        with Image.open(out) as im:
+            self.assertEqual(im.mode, "RGBA")
+            self.assertEqual(im.getpixel((2, 2))[3], 0, "the empty corner stays transparent")
+            self.assertEqual(im.getpixel((60, 40))[:3], (200, 30, 30))
+
+    def test_the_templates_own_background_can_be_the_hero(self):
+        # "Use the template's background layer as the hero image": no
+        # upload, the flagship template's own backdrop goes behind every
+        # size, and the results page says whose it was.
+        from tests.test_webapp import ContentPsdQuickModeTest
+
+        ContentPsdQuickModeTest._write_template_with_a_background_layer(self, "t-300x250.psd", (300, 250))
+        r = self.client.post(
+            "/generate",
+            data={
+                "upload_custom_hero_enabled": "1",
+                "upload_hero_from_template": "1",
+                "header": "", "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:600])
+        page = r.get_data(as_text=True)
+        self.assertIn("Hero image: the background layer of t-300x250.psd (300x250)", page)
+        job_id = re.search(r"/download/([0-9a-f]{32})", page).group(1)
+        hero = webapp.JOBS_DIR / job_id / "uploads" / "hero_from_t-300x250_background.png"
+        self.assertTrue(hero.is_file())
+        with Image.open(hero) as im:
+            self.assertEqual(im.getpixel((150, 125)), (30, 180, 30))  # the fixture's green backdrop
+
+    def test_the_hero_can_be_fitted_whole_instead_of_cropped(self):
+        # A square hero into a wide template: filled, its top and bottom
+        # are cropped away; fitted, the whole square is there with the
+        # sides padded in the picture's own edge colour.
+        from tests.test_webapp import ContentPsdQuickModeTest
+
+        ContentPsdQuickModeTest._write_template_with_a_background_layer(self, "t-400x200.psd", (400, 200))
+        hero = Image.new("RGB", (300, 300), (20, 20, 20))
+        hero.paste((220, 30, 30), (0, 0, 300, 40))        # a red band across the top
+        buffer = io.BytesIO(); hero.save(buffer, format="PNG")
+
+        def run(fit):
+            buffer.seek(0)
+            r = self.client.post(
+                "/generate",
+                data={
+                    "upload_custom_hero_enabled": "1",
+                    "upload_hero_image": (io.BytesIO(buffer.getvalue()), "hero.png"),
+                    "upload_hero_fit": fit,
+                    "header": "", "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(r.status_code, 200, r.data[:600])
+            job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+            return Image.open(next((webapp.JOBS_DIR / job_id).glob("*_400x200.png"))).convert("RGB")
+
+        cropped = run("crop")
+        fitted = run("contain")
+        # Filled: the red band is cropped off (the middle 200px of the
+        # square is what shows), so the top row is dark.
+        self.assertLess(cropped.getpixel((200, 5))[0], 100)
+        # Fitted: the whole square sits in the middle, red band and all.
+        self.assertGreater(fitted.getpixel((200, 5))[0], 180)
+        self.assertLess(fitted.getpixel((200, 150))[0], 100)
+
+    def test_the_editable_psd_matches_the_preview(self):
+        # The live-text (source-template) download must fit the hero the
+        # way the preview did and open with the form-hidden layers
+        # switched off -- it used to crop a hero the preview had fitted,
+        # and show a product the preview had hidden.
+        from psd_tools import PSDImage
+        from src.psd_export import build_layered_psd
+
+        size = (400, 200)
+        def block(colour, box):
+            im = Image.new("RGBA", size, (0, 0, 0, 0)); im.paste(colour, box); return im
+        psd = build_layered_psd(
+            [
+                ("background", Image.new("RGBA", size, (255, 255, 255, 255))),
+                ("logo", block((0, 90, 200, 255), (20, 20, 120, 80))),
+                ("product", block((10, 10, 10, 255), (250, 60, 380, 190))),
+                ("description", block((200, 200, 200, 255), (20, 120, 200, 190))),
+            ],
+            size, layer_names={},
+        )
+        psd.save(webapp.DEFAULT_TEMPLATES_DIR / "t-400x200.psd")
+        hero = Image.new("RGB", (300, 300), (20, 20, 20)); hero.paste((220, 30, 30), (0, 0, 300, 40))
+        buffer = io.BytesIO(); hero.save(buffer, format="PNG"); buffer.seek(0)
+        r = self.client.post(
+            "/generate",
+            data={
+                "upload_custom_hero_enabled": "1",
+                "upload_hero_image": (buffer, "hero.png"),
+                "upload_hero_fit": "contain",
+                "layer_product_hidden": "1",
+                "header": "", "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:600])
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        job = webapp.JOBS_DIR / job_id
+        preview = Image.open(next(job.glob("*_400x200.png"))).convert("RGB")
+        source = PSDImage.open(next(job.glob("*_400x200_source-template.psd")))
+        by_name = {l.name.strip().lower(): l for l in source}
+        self.assertFalse(by_name["product"].visible, "hidden on the form, hidden in the file")
+        # Fitted whole: the red band is in the file's background too.
+        background = by_name["background"].topil().convert("RGB")
+        self.assertGreater(background.getpixel((200, 3))[0], 180)
+        self.assertGreater(preview.getpixel((200, 3))[0], 180)
+
+    def test_a_size_specific_psd_can_be_used_exactly_as_uploaded(self):
+        # "As uploaded" on a PSD row: the file's own background and text
+        # stand; the hero image and the typed description are not put
+        # into it. Without the box, they are -- which is what made an
+        # updated upload look like it hadn't taken.
+        from src.psd_export import build_layered_psd
+
+        size = (400, 200)
+        def block(colour, box):
+            im = Image.new("RGBA", size, (0, 0, 0, 0)); im.paste(colour, box); return im
+        psd = build_layered_psd(
+            [
+                ("background", Image.new("RGBA", size, (240, 200, 40, 255))),  # yellow
+                ("logo", block((0, 90, 200, 255), (20, 20, 120, 80))),
+                ("product", block((10, 10, 10, 255), (250, 60, 380, 190))),
+                ("description", block((200, 200, 200, 255), (20, 120, 200, 190))),
+            ],
+            size, layer_names={},
+        )
+        buffer = io.BytesIO(); psd.save(buffer)
+        hero = Image.new("RGB", (400, 200), (20, 20, 20)); hb = io.BytesIO(); hero.save(hb, format="PNG")
+
+        def run(as_is):
+            data = {
+                "upload_custom_hero_enabled": "1",
+                "upload_hero_image": (io.BytesIO(hb.getvalue()), "hero.png"),
+                "psd_file_1": (io.BytesIO(buffer.getvalue()), "mine-400x200.psd"),
+                "psd_size_1": "400x200",
+                "layer_description_text": "Typed on the form",
+                "layer_description_use_custom_color": "1",
+                "layer_description_text_color": "#ff0000",
+                "header": "", "description": "",
+            }
+            if as_is:
+                data["psd_as_is"] = "1"
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200, r.data[:600])
+            job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+            return Image.open(next((webapp.JOBS_DIR / job_id).glob("*_400x200.png"))).convert("RGB"), r.get_data(as_text=True)
+
+        overridden, page = run(False)
+        self.assertLess(overridden.getpixel((200, 100))[0], 60, "hero (dark) replaces the yellow background")
+        self.assertIn("exactly as uploaded", page)
+        kept, page = run(True)
+        self.assertEqual(kept.getpixel((200, 100)), (240, 200, 40), "the file's own background stands")
+        reds = sum(1 for x in range(20, 200, 2) for y in range(120, 190, 2)
+                   if (lambda p: p[0] > 180 and p[1] < 90)(kept.getpixel((x, y))))
+        self.assertEqual(reds, 0, "nothing typed on the form is drawn over it")
+        self.assertIn("exactly as uploaded", page)
+
+    def test_a_psd_hero_image_is_accepted(self):
+        from tests.test_webapp import ContentPsdQuickModeTest
+
+        template = self.tmp / "templates" / "t-300x250.psd"
+        ContentPsdQuickModeTest._write_template_with_a_background_layer(self, "t-300x250.psd", (300, 250))
+        r = self.client.post(
+            "/generate",
+            data={
+                "upload_custom_hero_enabled": "1",
+                "upload_hero_image": (io.BytesIO(self._psd_bytes(size=(600, 400))), "hero.psd"),
+                "header": "", "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:600])
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        uploads = list((webapp.JOBS_DIR / job_id / "uploads").iterdir())
+        self.assertTrue(any(p.name == "hero.png" for p in uploads), [p.name for p in uploads])
+        self.assertFalse(any(p.suffix == ".psd" for p in uploads))
+
+
+class OffCanvasLayerTest(unittest.TestCase):
+    """A required layer dragged entirely off the artboard is reported as
+    exactly that, not as "missing" -- it is right there in the Layers
+    panel, and "missing" sends someone looking for it."""
+
+    def test_the_layer_is_named_with_where_it_went(self):
+        from src.psd_export import build_layered_psd
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            size = (300, 250)
+            layers = []
+            for name, colour in (("background", (30, 180, 30, 255)), ("logo", (255, 255, 255, 255)), ("product", (10, 10, 10, 255))):
+                im = Image.new("RGBA", size, (0, 0, 0, 0))
+                im.paste(colour, (10, 10, 100, 100))
+                layers.append((name, im))
+            psd = build_layered_psd(layers, size, layer_names={})
+            # A description layer placed past the right edge of the canvas.
+            desc = Image.new("RGBA", (80, 40), (200, 200, 200, 255))
+            psd.create_pixel_layer(desc, name="description", top=20, left=400)
+            path = tmp / "t-300x250.psd"
+            psd.save(path)
+            self.assertEqual(
+                webapp._off_canvas_layers(path, ["description", "logo"]),
+                {"description": "its box is at x 400..480, y 20..60"},
+            )
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class LayerUnderBackgroundTest(unittest.TestCase):
+    """A layer dragged BELOW the background in the Layers panel is
+    covered, so it must render the way Photoshop shows it: not at all --
+    not resurface when the background is swapped, not take a text
+    override, and not animate."""
+
+    def _psd(self, tmp):
+        from src.psd_export import build_layered_psd
+
+        size = (300, 250)
+        def block(colour, box):
+            im = Image.new("RGBA", size, (0, 0, 0, 0)); im.paste(colour, box); return im
+        psd = build_layered_psd(
+            [
+                ("description", block((250, 40, 40, 255), (20, 150, 280, 240))),  # UNDER the background
+                ("background", Image.new("RGBA", size, (30, 180, 30, 255))),
+                ("logo", block((255, 255, 255, 255), (10, 10, 90, 60))),
+                ("product", block((10, 10, 10, 255), (150, 80, 290, 240))),
+            ],
+            size, layer_names={},
+        )
+        path = tmp / "under-300x250.psd"
+        psd.save(path)
+        return path
+
+    def test_buried_layers_are_treated_as_hidden_everywhere(self):
+        from src.image_ops import get_psd_layer_foreground, get_psd_visible_layers, get_psd_text_layers
+        from src.psd_export import hidden_layer_names
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            path = self._psd(tmp)
+            self.assertNotIn("description", get_psd_visible_layers(path))
+            self.assertIn("logo", get_psd_visible_layers(path))
+            self.assertIn("description", hidden_layer_names(path))
+            # Swapping the background must not bring the buried layer up.
+            fg = get_psd_layer_foreground(path, "background")
+            self.assertIsNotNone(fg)
+            self.assertEqual(fg.getpixel((60, 200))[3], 0, "the buried description must stay covered")
+            self.assertGreater(fg.getpixel((200, 150))[3], 200, "the product on top still shows")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_typed_copy_for_a_buried_layer_is_not_drawn(self):
+        webapp.app.config["TESTING"] = True
+        client = _CampaignBriefAutoFillClient(webapp.app.test_client())
+        orig = (webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR)
+        tmp = Path(tempfile.mkdtemp())
+        webapp.JOBS_DIR = tmp / "jobs"; webapp.DOWNLOADS_DIR = tmp / "downloads"
+        webapp.DEFAULT_TEMPLATES_DIR = tmp / "templates"; webapp.TEMPLATE_BACKUPS_DIR = tmp / "backups"
+        webapp.JOBS_DIR.mkdir(parents=True); webapp.DEFAULT_TEMPLATES_DIR.mkdir(parents=True)
+        try:
+            self._psd(webapp.DEFAULT_TEMPLATES_DIR).rename(webapp.DEFAULT_TEMPLATES_DIR / "under-300x250.psd")
+            r = client.post(
+                "/generate",
+                data={
+                    "upload_custom_hero_enabled": "1",
+                    "layer_description_text": "Drive the summer",
+                    "layer_description_use_custom_color": "1",
+                    "layer_description_text_color": "#ff0000",
+                    "header": "", "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+            self.assertEqual(r.status_code, 200, r.data[:600])
+            page = r.get_data(as_text=True)
+            self.assertIn("description sits below the background", page)
+            job_id = re.search(r"/download/([0-9a-f]{32})", page).group(1)
+            out = Image.open(next((webapp.JOBS_DIR / job_id).glob("*_300x250.png"))).convert("RGB")
+            reds = sum(1 for x in range(0, 300, 2) for y in range(0, 250, 2)
+                       if (lambda p: p[0] > 180 and p[1] < 90 and p[2] < 90)(out.getpixel((x, y))))
+            self.assertEqual(reds, 0, "no red text anywhere: the layer is covered")
+        finally:
+            webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR = orig
+            shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TemplateFontTest(unittest.TestCase):
+    """Redrawn text uses the template's own typeface when that font is
+    installed, found by PostScript name; otherwise the bundled face
+    stands in and the results page says which font is missing."""
+
+    def test_installed_fonts_are_found_by_postscript_name(self):
+        from src import image_ops
+
+        original = image_ops._SYSTEM_FONT_DIRS, image_ops._font_index_cache
+        image_ops._SYSTEM_FONT_DIRS = [image_ops._FONTS_DIR]
+        image_ops._font_index_cache = None
+        try:
+            found = image_ops.find_font_file("DejaVuSans-Bold")
+            self.assertIsNotNone(found)
+            self.assertEqual(found[0].name, "DejaVuSans-Bold.ttf")
+            self.assertIsNone(image_ops.find_font_file("AdobeInvisFont"))
+            self.assertIsNone(image_ops.find_font_file("NoSuchFace-Bold"))
+            font = image_ops._load_font(30, bold=False, family="serif", font_name="DejaVuSans-Bold")
+            self.assertIn("Bold", font.getname()[1])
+            # Not installed: the family fallback, not an error.
+            font = image_ops._load_font(30, bold=False, family="serif", font_name="NoSuchFace-Bold")
+            self.assertEqual(font.getname()[0], "DejaVu Serif")
+        finally:
+            image_ops._SYSTEM_FONT_DIRS, image_ops._font_index_cache = original
+
+    def test_the_psd_style_names_the_runs_font(self):
+        from src.image_ops import get_psd_layer_text_style
+
+        style = get_psd_layer_text_style("default_templates/tester-1920x1080.psd", "header")
+        self.assertEqual(style.get("font_name"), "AvenirNextCondensed-DemiBold")
+        self.assertEqual(style.get("family"), "condensed")
+
+
+class ScaledTemplateBoxTest(unittest.TestCase):
+    """A template file whose canvas is smaller than the size it renders
+    at (a 1280x720 file named 1920x1080) has every layer box scaled up
+    -- including the box the new text is drawn into. Drawn at the
+    file's own coordinates, a description landed on the logo."""
+
+    def setUp(self):
+        webapp.app.config["TESTING"] = True
+        self.client = _CampaignBriefAutoFillClient(webapp.app.test_client())
+        self._orig = (webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR)
+        self.tmp = Path(tempfile.mkdtemp())
+        webapp.JOBS_DIR = self.tmp / "jobs"; webapp.DOWNLOADS_DIR = self.tmp / "downloads"
+        webapp.DEFAULT_TEMPLATES_DIR = self.tmp / "templates"; webapp.TEMPLATE_BACKUPS_DIR = self.tmp / "backups"
+        webapp.JOBS_DIR.mkdir(parents=True); webapp.DEFAULT_TEMPLATES_DIR.mkdir(parents=True)
+
+    def tearDown(self):
+        webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_text_lands_in_the_scaled_box(self):
+        from src.psd_export import build_layered_psd
+
+        # A 400x300 canvas saved under an 800x600 name: the description
+        # box is the right-hand column (300..390 x 20..280) of the file,
+        # i.e. x 600..780 of the render.
+        size = (400, 300)
+        def block(colour, box):
+            im = Image.new("RGBA", size, (0, 0, 0, 0)); im.paste(colour, box); return im
+        psd = build_layered_psd(
+            [
+                ("background", Image.new("RGBA", size, (255, 255, 255, 255))),
+                ("logo", block((0, 90, 200, 255), (20, 20, 280, 280))),
+                ("product", block((10, 10, 10, 255), (100, 200, 200, 290))),
+                ("description", block((200, 200, 200, 255), (300, 20, 390, 280))),
+            ],
+            size, layer_names={},
+        )
+        psd.save(webapp.DEFAULT_TEMPLATES_DIR / "t-800x600.psd")
+        r = self.client.post(
+            "/generate",
+            data={
+                "upload_custom_hero_enabled": "1",
+                "layer_description_text": "Rehydrate the summer",
+                "layer_description_use_custom_color": "1",
+                "layer_description_text_color": "#ff0000",
+                "header": "", "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:600])
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        out = Image.open(next((webapp.JOBS_DIR / job_id).glob("*_800x600.png"))).convert("RGB")
+        self.assertEqual(out.size, (800, 600))
+        def red_pixels(x0, x1):
+            return sum(1 for x in range(x0, x1) for y in range(0, 600, 2)
+                       if (lambda p: p[0] > 180 and p[1] < 90 and p[2] < 90)(out.getpixel((x, y))))
+        self.assertGreater(red_pixels(600, 780), 50, "the text must be drawn in the scaled column")
+        self.assertEqual(red_pixels(300, 400), 0, "and not at the file's own, unscaled coordinates")
+
+
+class PsdTemplateReadTest(unittest.TestCase):
+    """A PSD template renders from the picture Photoshop stored in it
+    (its own render, layer effects included), read with psd-tools rather
+    than Pillow -- Pillow misreads a five-channel preview. The app keeps
+    that stored picture current whenever it edits a file's layers."""
+
+    def test_the_stored_picture_is_what_renders_and_stays_current(self):
+        from src.image_ops import open_as_rgb
+        from src.psd_export import build_layered_psd, set_flattened_preview
+
+        tmp = Path(tempfile.mkdtemp())
+        try:
+            size = (120, 80)
+            psd = build_layered_psd([("background", Image.new("RGBA", size, (30, 180, 30, 255)))], size, layer_names={})
+            path = tmp / "t-120x80.psd"
+            psd.save(path)
+            self.assertEqual(open_as_rgb(path).getpixel((5, 5)), (30, 180, 30))
+            # The stored picture is authoritative: an effect Photoshop
+            # drew into it (stood in for here by a repaint) is what the
+            # app shows, since psd-tools' own redraw has no shadows.
+            set_flattened_preview(path, Image.new("RGB", size, (200, 0, 0)))
+            self.assertEqual(open_as_rgb(path).getpixel((5, 5)), (200, 0, 0))
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)

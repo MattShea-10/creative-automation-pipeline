@@ -380,6 +380,31 @@ def pair_type_layers_with_pixels(psd_path, images: dict, prefer: str = "text") -
     return replaced
 
 
+def set_layer_visibility(psd_path, visibility: dict) -> list:
+    """Switch named top-level layers on or off in place: `visibility`
+    maps a lowercased layer name to True/False. Returns the names
+    changed. A layer hidden on the form is left out of the preview, so
+    the editable file has to open the same way -- with that layer's eye
+    off, not gone."""
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    wanted = {k.strip().lower(): bool(v) for k, v in (visibility or {}).items()}
+    changed = []
+    for layer in psd:
+        key = (layer.name or "").strip().lower()
+        if key in wanted and layer.visible != wanted[key]:
+            layer.visible = wanted[key]
+            changed.append(key)
+    if changed:
+        try:
+            psd.save(psd_path)
+        except Exception:  # noqa: BLE001
+            return []
+    return changed
+
+
 def set_type_layer_raster(psd_path, images: dict) -> list:
     """Replace the cached picture Photoshop shows for a live type layer,
     without touching the text itself.
@@ -1175,11 +1200,16 @@ def hidden_layer_names(psd_path) -> set:
         psd = PSDImage.open(psd_path)
     except Exception:
         return set()
+    from src.image_ops import layers_under_background
+
+    # A layer under the background is hidden by the stack even with its
+    # eye on -- it stays out of the layered PSD's visible set and out
+    # of the motion clip, like one switched off.
     return {
         (layer.name or "").strip().lower()
         for layer in psd
         if (layer.name or "").strip() and not layer.visible
-    }
+    } | layers_under_background(psd)
 
 
 def _rewrite_type_layer_text(layer, text: str) -> bool:

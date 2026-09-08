@@ -400,7 +400,7 @@ semi-transparent asset.
 The hero image upload is optional -- there's also a separate
 "Size-specific PSD templates" section (right below it, not buried in
 "Advanced options") where you can upload up to four `.psd` files, each
-paired with an exact target size (e.g. `728x480`). Each one becomes the
+paired with an exact target size (e.g. `1920x1080`). Each one becomes the
 background for *that* size only, using Pillow's native flattened/composite
 preview of the PSD (`Image.open(path).convert("RGB")` -- the same path any
 other image takes); there's no layer extraction or role recognition. A
@@ -427,7 +427,7 @@ header/message/logo/badge/CTA drawn on top. The whole point of a template
 is that it's already a finished design; those overlay fields only apply
 to sizes filled in from the general hero image.
 
-For a "just one upload" workflow, there's also a **728x480 content PSD**
+For a "just one upload" workflow, there's also a **1920x1080 content PSD**
 field at the very top of the form. Upload a single `.psd` there and the
 exported batch becomes exactly that size plus whatever's saved in
 `default_templates/` -- the "Output sizes"/"Custom sizes" choices and the
@@ -577,7 +577,7 @@ size.
   products:
     - name: "HydroBoost Sports Drink"
       slug: "hydroboost"
-      asset_path: "assets/renders/hydroboost_728x480.png"
+      asset_path: "assets/renders/hydroboost_1920x1080.png"
       # or: asset_path: "assets/video/hydroboost_demo.mp4"
   ```
   `asset_path` takes priority over both the naming convention and GenAI
@@ -615,7 +615,7 @@ part that matters most for a finished design, and it's controlled by
 | `crop` (default) | Scales up to fill the target frame completely, cropping whatever doesn't fit -- the same "fill" behavior used for generic product photos. | Generic photography where losing a bit of the edges is fine. |
 | `contain` | Scales the whole image down to fit *entirely* inside the target frame with **no cropping**, and fills the leftover space with a softly blurred, stretched version of the same image as a backdrop rather than plain black bars. | A finished, already-composed design -- logo, CTA, and layout are all fixed in place, so cropping would cut pieces off. |
 
-This matters a lot in practice: a 728x480 finished design (logo
+This matters a lot in practice: a 1920x1080 finished design (logo
 top-left, CTA bottom-right) run through `crop` into a 970x90 banner keeps
 only a thin center sliver -- the logo and CTA are both gone. The same file
 through `contain` keeps the entire design intact, just shrunk down and

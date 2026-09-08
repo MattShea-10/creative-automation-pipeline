@@ -37,5 +37,7 @@ rembg[cpu]>=2.0.60
 imageio-ffmpeg>=0.5
 # Scene-text detector for the no-text check on generated backdrops (models bundled in the wheel).
 rapidocr-onnxruntime>=1.3
+# Reads installed fonts' PostScript names so redrawn text can use the template's own typeface.
+fonttools>=4.40
 # iPhone HEIC photos on the mood board (converted to PNG on the way in).
 pillow-heif>=0.16

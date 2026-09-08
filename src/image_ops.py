@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import re
 import sys
+import os
 from pathlib import Path
 from typing import Iterable, List, Optional, Tuple, Union
 
@@ -100,11 +101,57 @@ def open_as_rgb(path: Union[str, Path], frame_seconds: Optional[float] = None) -
     path = Path(path)
     if path.suffix.lower() in VIDEO_EXTENSIONS:
         return extract_video_frame(path, frame_seconds=frame_seconds)
+    if path.suffix.lower() == ".psd":
+        flat = open_psd_flat(path)
+        if flat is not None:
+            return flat
     try:
         with Image.open(path) as img:
             return img.convert("RGB")
     except Exception as exc:
         raise ValueError(f"Could not open asset '{path}': {exc}.") from exc
+
+
+def open_psd_flat(path: Union[str, Path]) -> Optional[Image.Image]:
+    """A PSD's merged picture as RGB, read with psd-tools rather than
+    Pillow.
+
+    The picture Photoshop stored in the file is what is used when there
+    is one: it is Photoshop's own render, with every layer effect (a
+    drop shadow, a glow, a stroke) drawn the way the designer saw it.
+    psd-tools can redraw the layers itself, but it does not draw
+    shadows or glows -- a header with a drop shadow came back flat -- so
+    that redraw is the fallback, for a file with no stored preview.
+
+    Why psd-tools and not Pillow for the stored preview: Pillow's PSD
+    reader assumes it has at most four channels, and a file saved with
+    a fifth (a spot or extra alpha channel) is read with its planes
+    misaligned -- bands of shifted colour, one layer's lettering
+    showing through another. psd-tools reads the same bytes correctly.
+
+    A preview is only a snapshot, so this app rewrites it whenever it
+    edits a file's layers (see psd_export.set_flattened_preview). None
+    when psd-tools can't open the file, so the caller can try Pillow.
+    """
+    try:
+        from psd_tools import PSDImage
+
+        psd = PSDImage.open(path)
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        preview = psd.composite()  # the stored picture when the file has one
+    except Exception:  # noqa: BLE001
+        preview = None
+    if preview is not None and getattr(psd, "has_preview", lambda: True)():
+        return preview.convert("RGB")
+    try:
+        drawn = psd.composite(force=True)
+    except Exception:  # noqa: BLE001
+        drawn = None
+    if drawn is not None:
+        return drawn.convert("RGB")
+    return preview.convert("RGB") if preview is not None else None
 
 
 # Default render targets, as explicit pixel dimensions. Kept as a list (not
@@ -311,8 +358,114 @@ _FONTS_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent.paren
 _FONT_LOAD_WARNED = False
 
 
-def _load_font(size: int, bold: bool = True, family: str = "sans") -> ImageFont.FreeTypeFont:
+# The fonts installed on this machine, by PostScript name, so text
+# redrawn into a template can use the face the designer set it in
+# rather than the nearest bundled DejaVu. Photoshop stores a text
+# layer's font as its PostScript name ("MyriadPro-Regular",
+# "AvenirNextCondensed-DemiBold"); every font file carries that same
+# name in its name table (nameID 6), so matching is exact. Built once
+# per process, lazily: reading name tables from a few hundred files
+# takes a second or two.
+_SYSTEM_FONT_DIRS = [
+    Path("/System/Library/Fonts"),
+    Path("/System/Library/Fonts/Supplemental"),
+    Path("/Library/Fonts"),
+    Path.home() / "Library" / "Fonts",
+    # Adobe Fonts (Creative Cloud) activates fonts into a hidden cache.
+    Path.home() / "Library" / "Application Support" / "Adobe" / "CoreSync" / "plugins" / "livetype" / ".r",
+    Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts",
+    Path(os.environ.get("LOCALAPPDATA", "")) / "Microsoft" / "Windows" / "Fonts",
+    Path("/usr/share/fonts"),
+    Path("/usr/local/share/fonts"),
+    Path.home() / ".fonts",
+    Path.home() / ".local" / "share" / "fonts",
+]
+_FONT_FILE_SUFFIXES = (".ttf", ".otf", ".ttc", ".otc")
+_font_index_cache: Optional[dict] = None
+
+
+def _font_index() -> dict:
+    """{postscript name (lower): (path, face index)} for every font file
+    in the system font folders; empty when fontTools isn't available."""
+    global _font_index_cache
+    if _font_index_cache is not None:
+        return _font_index_cache
+    index: dict = {}
+    try:
+        from fontTools.ttLib import TTFont, TTCollection
+    except ImportError:
+        TTFont = TTCollection = None  # noqa: N806 -- filename matching only, below
+    seen_dirs = set()
+    for folder in _SYSTEM_FONT_DIRS:
+        try:
+            folder = folder.resolve()
+        except Exception:  # noqa: BLE001
+            continue
+        if not folder.is_dir() or folder in seen_dirs:
+            continue
+        seen_dirs.add(folder)
+        for path in folder.rglob("*"):
+            if path.suffix.lower() not in _FONT_FILE_SUFFIXES or not path.is_file():
+                continue
+            # By filename too, as a fallback key: "Apple Symbols.ttf" is
+            # AppleSymbols, "MyriadPro-Regular.otf" is MyriadPro-Regular.
+            # Without fontTools this is the only key there is; with it,
+            # the name table wins for the same key.
+            index.setdefault(_font_key(path.stem), (path, 0))
+            if TTFont is None:
+                continue
+            try:
+                if path.suffix.lower() in (".ttc", ".otc"):
+                    faces = list(TTCollection(str(path), lazy=True).fonts)
+                else:
+                    faces = [TTFont(str(path), lazy=True)]
+                for i, face in enumerate(faces):
+                    try:
+                        ps_name = face["name"].getDebugName(6)
+                    except Exception:  # noqa: BLE001
+                        ps_name = None
+                    if ps_name:
+                        index[_font_key(ps_name)] = (path, i)
+                    try:
+                        face.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+            except Exception:  # noqa: BLE001
+                continue
+    _font_index_cache = index
+    return index
+
+
+def _font_key(name: str) -> str:
+    """A PostScript name or filename reduced to letters and digits, so
+    "Apple Symbols", "AppleSymbols" and "Apple-Symbols" all meet."""
+    return re.sub(r"[^a-z0-9]", "", (name or "").lower())
+
+
+def find_font_file(postscript_name: Optional[str]):
+    """(path, face index) of the installed font with this PostScript
+    name, or None. Adobe's "AdobeInvisFont" placeholder and empty names
+    are never matched."""
+    if not postscript_name:
+        return None
+    key = _font_key(postscript_name)
+    if not key or key == "adobeinvisfont":
+        return None
+    return _font_index().get(key)
+
+
+def _load_font(
+    size: int, bold: bool = True, family: str = "sans", font_name: Optional[str] = None
+) -> ImageFont.FreeTypeFont:
     global _FONT_LOAD_WARNED
+    # The template's own face first, when it is installed here.
+    found = find_font_file(font_name)
+    if found is not None:
+        path, face_index = found
+        try:
+            return ImageFont.truetype(str(path), size=size, index=face_index)
+        except Exception:  # noqa: BLE001
+            pass
     bold_name, regular_name = _FONT_FAMILIES.get(family, _FONT_FAMILIES["sans"])
     name = bold_name if bold else regular_name
     candidates = [_FONTS_DIR / name, Path(name)]
@@ -461,6 +614,7 @@ def fit_text_block(
     bold: bool = True,
     leading: Optional[int] = None,
     leading_reference_size: Optional[int] = None,
+    font_name: Optional[str] = None,
 ) -> Tuple[ImageFont.FreeTypeFont, List[str], int]:
     """Find the *largest* font size whose wrapped text fits within (max_width, max_height).
 
@@ -487,7 +641,7 @@ def fit_text_block(
     max_font_size = max(max_font_size, min_font_size)
 
     def layout_for(size: int):
-        font = _load_font(size, bold=bold, family=family)
+        font = _load_font(size, bold=bold, family=family, font_name=font_name)
         lines = wrap_text_to_width(draw, text, font, max_width)
         if leading and leading_reference_size:
             # Use the PSD's own leading, scaled proportionally to this
@@ -1462,6 +1616,39 @@ def get_psd_layer_names(psd_path: Union[str, Path]) -> set:
     }
 
 
+def layers_under_background(psd) -> set:
+    """Lowercased names of the top-level layers that sit BELOW the
+    `background` layer in an open psd-tools document.
+
+    Photoshop draws the stack bottom to top, so anything under an
+    opaque, canvas-filling background is covered and never shows.
+    Treating those layers as visible -- because their eye icon is on
+    -- was drawing them: a description dragged under the background
+    in the Layers panel came back on top of the render, and its text
+    override was applied to a layer the designer had buried. They are
+    hidden layers in every sense that matters here.
+    """
+    names = [(layer.name or "").strip().lower() for layer in psd]
+    if "background" not in names:
+        return set()
+    index = names.index("background")
+    background = list(psd)[index]
+    if not background.visible:
+        return set()
+    return {n for n in names[:index] if n}
+
+
+def get_psd_buried_layers(psd_path: Union[str, Path]) -> set:
+    """layers_under_background() for a file on disk; empty when it can't
+    be read."""
+    try:
+        from psd_tools import PSDImage
+
+        return layers_under_background(PSDImage.open(psd_path))
+    except Exception:  # noqa: BLE001
+        return set()
+
+
 def get_psd_visible_layers(psd_path: Union[str, Path]) -> set:
     """Lowercased names of the top-level layers a PSD actually draws --
     the ones switched ON in Photoshop.
@@ -1485,10 +1672,12 @@ def get_psd_visible_layers(psd_path: Union[str, Path]) -> set:
         psd = PSDImage.open(psd_path)
     except Exception:
         return set()
+    buried = layers_under_background(psd)
     return {
         (layer.name or "").strip().lower()
         for layer in psd
         if (layer.name or "").strip() and layer.visible
+        and (layer.name or "").strip().lower() not in buried
     }
 
 
@@ -1599,11 +1788,12 @@ def get_psd_text_layers(psd_path: Union[str, Path], visible_only: bool = False) 
         return {}
 
     texts: dict = {}
+    buried = layers_under_background(psd) if visible_only else set()
     for layer in psd:
         name = (layer.name or "").strip()
         if not name or layer.kind != "type":
             continue
-        if visible_only and not layer.visible:
+        if visible_only and (not layer.visible or name.lower() in buried):
             continue
         try:
             text = layer.text
@@ -1822,6 +2012,14 @@ def _psd_composite_with_layers_hidden(
     targets = [layer for layer in psd if layer.name.strip().lower() in wanted]
     if not targets:
         return None
+    if "background" in wanted:
+        # Hiding the background must not surface what it was covering:
+        # a layer under it in the stack was never part of the picture.
+        buried = layers_under_background(psd)
+        targets += [
+            layer for layer in psd
+            if layer.name.strip().lower() in buried and layer not in targets
+        ]
 
     original_visibility = [(layer, layer.visible) for layer in targets]
     try:
@@ -2018,6 +2216,16 @@ def get_psd_layer_text_style(psd_path: Union[str, Path], layer_name: str) -> Opt
 
     result["bold"] = bool(style_sheet.get("FauxBold"))
 
+    # Paragraph alignment, as set in Photoshop: 0 left, 1 right, 2 centre;
+    # the justified variants (3-6) fall back to left.
+    try:
+        justification = int(
+            target.engine_dict["ParagraphRun"]["RunArray"][0]["ParagraphSheet"]["Properties"]["Justification"]
+        )
+        result["align"] = {0: "left", 1: "right", 2: "center"}.get(justification, "left")
+    except Exception:  # noqa: BLE001
+        pass
+
     if "font_size" in result:
         try:
             explicit_leading = float(style_sheet.get("Leading"))
@@ -2063,8 +2271,23 @@ def get_psd_layer_text_style(psd_path: Union[str, Path], layer_name: str) -> Opt
         font_names = target.font_names or []
     except Exception:
         font_names = []
-    if font_names:
-        name = font_names[0].lower()
+    # The run's own font, by PostScript name: the StyleSheet's "Font" is
+    # an index into the layer's FontSet, which lists every face the
+    # layer uses (plus Adobe's invisible placeholder), not necessarily
+    # in run order -- so font_names[0] is not "the font".
+    font_name = None
+    try:
+        font_set = target.resource_dict.get("FontSet") or []
+        raw = font_set[int(style_sheet.get("Font", 0))].get("Name")
+        # psd-tools hands the name back as its own String type, whose
+        # str() keeps the file's quotes ("'MyriadPro-Regular'").
+        font_name = str(raw or "").strip().strip("'\"").strip() or None
+    except Exception:  # noqa: BLE001
+        font_name = font_names[0] if font_names else None
+    if font_name:
+        result["font_name"] = font_name
+    name = (font_name or (font_names[0] if font_names else "")).lower()
+    if name:
         if "mono" in name:
             family = "mono"
         elif "cond" in name:
@@ -2497,6 +2720,7 @@ def apply_layer_text_override(
     font_size: Optional[int] = None,
     exact_font_size: Optional[int] = None,
     font_family: str = "sans",
+    font_name: Optional[str] = None,
     bold: bool = True,
     leading: Optional[int] = None,
     leading_reference_size: Optional[int] = None,
@@ -2612,6 +2836,7 @@ def apply_layer_text_override(
         bold=bold,
         leading=leading,
         leading_reference_size=leading_reference_size,
+        font_name=font_name,
     )
 
     if debug is not None:

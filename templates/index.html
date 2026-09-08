@@ -369,7 +369,7 @@
                  title="Build this creative by hand -- opens the layer editing below"
                  {% if prefill.get('upload_custom_hero_enabled') or prefill_files.get('upload_hero_image') %}checked{% endif %}>
           <div style="flex: 1 1 auto; min-width: 0;">
-            <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
+            <input type="file" id="upload_hero_image" name="upload_hero_image" accept=".png,.webp,.jpg,.jpeg,.psd" data-has-prior="{{ 'true' if prefill_files.get('upload_hero_image') else 'false' }}">
             {# A file input reads "No file chosen" whatever the server is
                holding: its value is read-only to scripts, so the name of
                a file carried forward from the last run cannot be written
@@ -404,7 +404,7 @@
         <div class="hint">
           <strong>This campaign needs artwork from one of two places: a hero image you upload here, or an
           AI-generated one below.</strong> Either way you supply a single picture, not a design -- the layout
-          comes from the 728x480 PSD already saved in <code>default_templates/</code>, which your image
+          comes from the {{ content_psd_label }} PSD already saved in <code>default_templates/</code>, which your image
           becomes the backdrop of. From there it carries onto every other saved size, each one keeping its own
           product, logo, CTA and text exactly where they were designed.
         </div>
@@ -414,6 +414,15 @@
           generator below is switched off; with it on, a freshly generated image wins. The "Output
           sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
           batch is whatever's in <code>default_templates/</code>.
+        </div>
+        <div style="margin-top: 0.8rem;">
+          <span style="font-weight: 600; font-size: 0.92rem;">Hero image fit</span>
+          <label class="checkbox-row" style="margin: 0.3rem 0 0; font-weight: 400;"><input type="radio" name="upload_hero_fit" value="crop" {% if prefill.get('upload_hero_fit', 'crop') == 'crop' %}checked{% endif %}> <span>Fill each size <span style="font-weight: 400; color: var(--muted);">(cropped to the layer's shape -- for a photo)</span></span></label>
+          <label class="checkbox-row" style="margin: 0.3rem 0 0; font-weight: 400;"><input type="radio" name="upload_hero_fit" value="contain" {% if prefill.get('upload_hero_fit', 'crop') == 'contain' %}checked{% endif %}> <span>Fit the whole image inside <span style="font-weight: 400; color: var(--muted);">(nothing cropped; the edges are padded with the picture's own edge colour -- for a finished composition)</span></span></label>
+        </div>
+        <div class="checkbox-row" style="margin-top: 0.5rem;">
+          <input type="checkbox" id="upload_hero_from_template" name="upload_hero_from_template" value="1" {% if prefill.get('upload_hero_from_template') %}checked{% endif %}>
+          <span>Use the {{ content_psd_label }} template's own background layer as the hero image <span style="font-weight: 400; color: var(--muted);">(no upload -- the template's backdrop, a plain white or a brand gradient, becomes the backdrop of every size. A file chosen above wins over this.)</span></span>
         </div>
         <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
           {# Everything in this section normally edits a COPY of each
@@ -534,9 +543,10 @@
           <div class="field" style="margin-top: 0.5rem; margin-bottom: 0.3rem;">
             <label>Header alignment</label>
             <div class="radio-row">
-              <label><input type="radio" name="layer_header_align" value="left" {% if prefill.get('layer_header_align', 'left') == 'left' %}checked{% endif %}> Left</label>
-              <label><input type="radio" name="layer_header_align" value="center" {% if prefill.get('layer_header_align', 'left') == 'center' %}checked{% endif %}> Center</label>
-              <label><input type="radio" name="layer_header_align" value="right" {% if prefill.get('layer_header_align', 'left') == 'right' %}checked{% endif %}> Right</label>
+              <label><input type="radio" name="layer_header_align" value="template" {% if prefill.get('layer_header_align', 'template') == 'template' %}checked{% endif %}> As designed</label>
+              <label><input type="radio" name="layer_header_align" value="left" {% if prefill.get('layer_header_align', 'template') == 'left' %}checked{% endif %}> Left</label>
+              <label><input type="radio" name="layer_header_align" value="center" {% if prefill.get('layer_header_align', 'template') == 'center' %}checked{% endif %}> Center</label>
+              <label><input type="radio" name="layer_header_align" value="right" {% if prefill.get('layer_header_align', 'template') == 'right' %}checked{% endif %}> Right</label>
             </div>
           </div>
           <div class="inline-controls" style="margin-top: 0.4rem;">
@@ -650,9 +660,10 @@
           <div class="field" style="margin-top: 0.5rem; margin-bottom: 0.3rem;">
             <label>Description alignment</label>
             <div class="radio-row">
-              <label><input type="radio" name="layer_description_align" value="left" {% if prefill.get('layer_description_align', 'left') == 'left' %}checked{% endif %}> Left</label>
-              <label><input type="radio" name="layer_description_align" value="center" {% if prefill.get('layer_description_align', 'left') == 'center' %}checked{% endif %}> Center</label>
-              <label><input type="radio" name="layer_description_align" value="right" {% if prefill.get('layer_description_align', 'left') == 'right' %}checked{% endif %}> Right</label>
+              <label><input type="radio" name="layer_description_align" value="template" {% if prefill.get('layer_description_align', 'template') == 'template' %}checked{% endif %}> As designed</label>
+              <label><input type="radio" name="layer_description_align" value="left" {% if prefill.get('layer_description_align', 'template') == 'left' %}checked{% endif %}> Left</label>
+              <label><input type="radio" name="layer_description_align" value="center" {% if prefill.get('layer_description_align', 'template') == 'center' %}checked{% endif %}> Center</label>
+              <label><input type="radio" name="layer_description_align" value="right" {% if prefill.get('layer_description_align', 'template') == 'right' %}checked{% endif %}> Right</label>
             </div>
           </div>
           <div class="inline-controls" style="margin-top: 0.4rem;">
@@ -774,9 +785,10 @@
           <div class="field" style="margin-top: 0.5rem; margin-bottom: 0.3rem;">
             <label>Legal alignment</label>
             <div class="radio-row">
-              <label><input type="radio" name="layer_legal_align" value="left" {% if prefill.get('layer_legal_align', 'left') == 'left' %}checked{% endif %}> Left</label>
-              <label><input type="radio" name="layer_legal_align" value="center" {% if prefill.get('layer_legal_align', 'left') == 'center' %}checked{% endif %}> Center</label>
-              <label><input type="radio" name="layer_legal_align" value="right" {% if prefill.get('layer_legal_align', 'left') == 'right' %}checked{% endif %}> Right</label>
+              <label><input type="radio" name="layer_legal_align" value="template" {% if prefill.get('layer_legal_align', 'template') == 'template' %}checked{% endif %}> As designed</label>
+              <label><input type="radio" name="layer_legal_align" value="left" {% if prefill.get('layer_legal_align', 'template') == 'left' %}checked{% endif %}> Left</label>
+              <label><input type="radio" name="layer_legal_align" value="center" {% if prefill.get('layer_legal_align', 'template') == 'center' %}checked{% endif %}> Center</label>
+              <label><input type="radio" name="layer_legal_align" value="right" {% if prefill.get('layer_legal_align', 'template') == 'right' %}checked{% endif %}> Right</label>
             </div>
           </div>
           <div class="inline-controls" style="margin-top: 0.4rem;">
@@ -900,11 +912,11 @@
           <div class="inline-controls" style="margin-top: 0.4rem;">
             <label for="layer_logo_image" data-layer-controls="logo" style="font-weight: 400;">
               <span style="white-space: nowrap;">Logo image</span>
-              <input type="file" id="layer_logo_image" name="layer_logo_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
+              <input type="file" id="layer_logo_image" name="layer_logo_image" accept=".png,.webp,.jpg,.jpeg,.psd" style="width: auto;">
             </label>
             <label for="layer_product_image" data-layer-controls="product" style="font-weight: 400;">
               <span style="white-space: nowrap;">Product image</span>
-              <input type="file" id="layer_product_image" name="layer_product_image" accept=".png,.webp,.jpg,.jpeg" style="width: auto;">
+              <input type="file" id="layer_product_image" name="layer_product_image" accept=".png,.webp,.jpg,.jpeg,.psd" style="width: auto;">
             </label>
           </div>
           {% if has_layer_images %}
@@ -942,7 +954,7 @@
           <div class="checkbox-row" style="margin: 0;">
             <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
             <span><span class="ai-badge">AI</span> Generate the hero image with AI instead of uploading one --
-            it becomes the backdrop on every size saved in <code>default_templates/</code>, the 728x480
+            it becomes the backdrop on every size saved in <code>default_templates/</code>, the {{ content_psd_label }}
             included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
           </div>
           {# Everything the generator needs lives under its own checkbox and
@@ -985,11 +997,11 @@
             <div class="field" style="margin-top: 0.7rem; margin-bottom: 0;">
               <label for="upload_ai_reference" style="font-weight: 400;">Reference images <span style="font-weight: 400; color: var(--muted);">(optional -- a mood board of up to {{ reference_limit }}: make the backdrop look like these)</span></label>
               <div class="drop-zone" data-role="reference-drop-zone">
-                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept="image/*,video/*,.png,.webp,.jpg,.jpeg,.heic,.heif,.tif,.tiff,.gif,.bmp,.mp4,.mov,.m4v,.webm" multiple data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
+                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept="image/*,video/*,.png,.webp,.jpg,.jpeg,.heic,.heif,.tif,.tiff,.gif,.bmp,.psd,.mp4,.mov,.m4v,.webm" multiple data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
                 <input type="text" data-role="reference-url" placeholder="...or drag pictures in from web pages, or paste an image address and press Enter" style="margin-top: 0.4rem;">
                 <div data-role="reference-url-list"></div>
                 <div class="hint" data-role="reference-status" hidden style="margin: 0.3rem 0 0; color: #fcd34d;"></div>
-                <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures or short videos here, choose files, or drag pictures straight off web pages -- up to {{ reference_limit }} together. PNG, JPEG, WebP, iPhone HEIC, TIFF, GIF; a video's middle frame is used. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
+                <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures or short videos here, choose files, or drag pictures straight off web pages -- up to {{ reference_limit }} together. PNG, JPEG, WebP, PSD (flattened), iPhone HEIC, TIFF, GIF; a video's middle frame is used. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
               </div>
               {% for slot in reference_slots %}
                 {% if prefill_files.get(slot) %}
@@ -1136,7 +1148,7 @@
           <div class="field" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a; margin-bottom: 0;">
             <label><span class="psd-badge">PSD</span> Size-specific PSD templates <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
           <div class="hint">
-            Upload a <code>.psd</code> file for a specific output size (e.g. <code>728x480</code>) and that size will
+            Upload a <code>.psd</code> file for a specific output size (e.g. <code>{{ content_psd_label }}</code>) and that size will
             use the flattened PSD as its background -- just the composite
             preview Pillow renders from the PSD, no layers or effects. A size you add here is automatically included
             in the batch even if it isn't checked/typed under "Output sizes" below. The hero image only needs to be
@@ -1147,23 +1159,38 @@
             <code>default_templates/</code> saved templates are only brought in when you use the content PSD
             field above, not from a row here.
           </div>
+          <div class="checkbox-row" style="margin-top: 0.4rem;">
+            <input type="checkbox" id="psd_as_is" name="psd_as_is" value="1" {% if prefill.get('psd_as_is') %}checked{% endif %}>
+            <span>Use these files exactly as uploaded <span style="font-weight: 400; color: var(--muted);">(their own background and text stand: the hero image is not put behind them and nothing typed on this form is drawn over them. Unticked, each file is a layout -- the hero goes into its background layer and typed copy into its text layers.)</span></span>
+          </div>
           {% for i in range(1, 5) %}
             <div class="inline-controls" style="margin-top: {% if i == 1 %}0.4rem{% else %}0.6rem{% endif %};">
               <label for="psd_size_{{ i }}" style="font-weight: 400;">
                 <span style="white-space: nowrap;">Size</span>
-                <input type="text" id="psd_size_{{ i }}" name="psd_size_{{ i }}" placeholder="728x480" style="width: 7rem;" value="{{ prefill.get('psd_size_' ~ i, '') }}">
+                <input type="text" id="psd_size_{{ i }}" name="psd_size_{{ i }}" placeholder="{{ content_psd_label }}" style="width: 7rem;" value="{{ prefill.get('psd_size_' ~ i, '') }}">
               </label>
               <label for="psd_file_{{ i }}" style="font-weight: 400; flex: 1 1 auto;">
                 <span style="white-space: nowrap;">PSD file</span>
                 <input type="file" id="psd_file_{{ i }}" name="psd_file_{{ i }}" accept=".psd" style="width: auto;">
               </label>
-              {% if prefill_files.get('psd_file_' ~ i) %}
-                <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" data-role="psd-clear-btn-{{ i }}" data-prefill-hint title="Remove this template -- use the hero image for this size instead">&times;</button>
-              {% endif %}
               <input type="hidden" id="psd_size_{{ i }}_clear" name="psd_size_{{ i }}_clear" value="">
             </div>
+            {# The same "kept from your last run" chip the hero image gets,
+               thumbnail included, so a row whose file input reads "No file
+               chosen" still shows which template is set for that size.
+               A .psd can't be drawn by a browser, so the picture comes
+               from the thumbnail route rather than the raw upload. #}
             {% if prefill_files.get('psd_file_' ~ i) %}
-              <div class="hint" id="psd_currently_{{ i }}" data-role="psd-currently-{{ i }}" data-prefill-hint style="margin-top: -0.3rem; margin-bottom: 0.5rem;">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong> -- choose a new file to replace it, click &times; to remove it and fall back to the hero image for this size, or leave blank to keep it.</div>
+              <div class="layer-image-cached" id="psd_currently_{{ i }}" data-role="psd-currently-{{ i }}" data-prefill-hint style="margin-top: 0.3rem; margin-bottom: 0.5rem;">
+                {% if edit_job_id %}
+                  <img src="{{ url_for('serve_upload_thumb', job_id=edit_job_id, filename=prefill_files.get('psd_file_' ~ i)) }}" alt="{{ prefill.get('psd_size_' ~ i, '') or 'Template' }} template">
+                {% endif %}
+                <div class="layer-image-cached-meta">
+                  <strong>Kept from your last run</strong>
+                  <span class="layer-image-cached-name" style="max-width: 24rem;" title="{{ prefill_files.get('psd_file_' ~ i) }}">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong></span>
+                </div>
+                <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" data-role="psd-clear-btn-{{ i }}" data-prefill-hint title="Remove this template -- use the hero image for this size instead">&times;</button>
+              </div>
             {% endif %}
           {% endfor %}
 
@@ -1182,7 +1209,7 @@
   <script>
     // Wires up the sync behavior for one campaign card's form -- the
     // "Generate a hero image with AI" checkbox revealing its options, the
-    // 728x480 content PSD input revealing the layer-overrides panel, and
+    // flagship content PSD input revealing the layer-overrides panel, and
     // each "Size-specific PSD templates" row's clear (x) button. Looks
     // elements up by `name`/`data-role` rather than `id` so it works
     // identically for the original server-rendered card and for every
@@ -1701,9 +1728,16 @@
             sizeInput.value = "";
             fileInput.value = "";
             clearFlag.value = "1";
-            if (currentlyHint) currentlyHint.hidden = true;
-            btn.hidden = true;
+            if (currentlyHint) currentlyHint.classList.add("is-cleared");
+            btn.disabled = true;
           });
+          // Picking a replacement file supersedes the kept one: the chip
+          // goes so the row doesn't read as holding two templates.
+          if (fileInput) {
+            fileInput.addEventListener("change", function () {
+              if (fileInput.files && fileInput.files.length && currentlyHint) currentlyHint.hidden = true;
+            });
+          }
         })(i);
       }
 
