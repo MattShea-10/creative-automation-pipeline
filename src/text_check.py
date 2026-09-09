@@ -158,10 +158,24 @@ def ensure_text_detector(install: bool = True):
                 f"{sys.executable} -m pip install {DETECTOR_PACKAGE}"
             )
             return None
-    try:
-        _detector = RapidOCR(**DETECTOR_SETTINGS)
-    except Exception as exc:  # noqa: BLE001
-        _detector_state = f"{DETECTOR_PACKAGE} failed to start: {exc}"
+    # The thresholds first; a RapidOCR build that won't take them (a
+    # KeyError on 'model_path' is one such, from a mismatched config in
+    # some releases) starts with its own defaults instead -- a detector
+    # at default sensitivity beats no detector, which left the text
+    # check on Tesseract alone.
+    errors = []
+    for settings in (DETECTOR_SETTINGS, {}):
+        try:
+            _detector = RapidOCR(**settings)
+            break
+        except Exception as exc:  # noqa: BLE001
+            errors.append(f"{type(exc).__name__}: {exc}")
+            _detector = None
+    if _detector is None:
+        _detector_state = (
+            f"{DETECTOR_PACKAGE} failed to start ({'; '.join(errors)}). In the terminal you start "
+            f"the app from, run:  {__import__('sys').executable} -m pip install --upgrade {DETECTOR_PACKAGE}"
+        )
         return None
     _detector_state = "ready"
     return _detector

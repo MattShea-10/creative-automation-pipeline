@@ -22,10 +22,12 @@ then open http://127.0.0.1:5000 in a browser.
 from __future__ import annotations
 
 import io
+import math
 import json
 import os
 import random
 import sys
+import time
 from pathlib import Path
 
 # Packaged builds (windows/build_exe.ps1, PyInstaller) run from a folder
@@ -79,9 +81,11 @@ from src.psd_export import (
     set_type_layer_colors,
 )
 from src.compliance import check_profanity, check_trademark_text
+from src.localization import localize_message
 from src.image_ops import (
     get_psd_text_layers,
     DEFAULT_SIZES,
+    SIZE_NAMES,
     VALID_BADGE_POSITIONS,
     VALID_CTA_POSITIONS,
     VALID_FONT_FAMILIES,
@@ -92,14 +96,18 @@ from src.image_ops import (
     apply_layer_image_override,
     apply_layer_cta_override,
     upscale_to_cover,
+    apply_layer_styled_lines,
     apply_layer_text_override,
     auto_transparent_background,
     center_crop_to_ratio,
     find_missing_brand_colors,
     get_psd_canvas_size,
     get_psd_backdrop,
+    carry_flattened_effects,
     get_psd_layer_background,
     get_psd_layer_boxes,
+    get_psd_layer_effect_reach,
+    font_covers_text,
     get_psd_layer_foreground,
     _reconstruct_box_background,
     get_psd_group_text,
@@ -128,7 +136,7 @@ from src.providers import (
     get_provider,
 )
 from src.storage import SUPPORTED_EXTENSIONS
-from src.text_check import TextCheckResult, find_text, ocr_available, remove_text, scrub_text
+from src.text_check import TextCheckResult, detector_description, find_text, ocr_available, remove_text, scrub_text
 
 # Sane bounds for a user-supplied font size, in pixels -- just a safety
 # valve against nonsense input (0, negative, absurdly huge); the autofit
@@ -189,7 +197,10 @@ PICTURE_UPLOAD_EXTENSIONS = ALLOWED_LAYER_IMAGE_EXTENSIONS + (".psd",)
 # separate from SUPPORTED_EXTENSIONS so the general hero image field stays
 # plain-image/video only; PSD only enters through this dedicated section.
 ALLOWED_PSD_TEMPLATE_EXTENSIONS = (".psd",)
-MAX_PSD_TEMPLATES = 4
+MAX_PSD_TEMPLATES = 12
+# Rows open on the form to begin with; the rest sit hidden behind the
+# "+ Add another size" button (see index.html).
+PSD_TEMPLATE_ROWS_SHOWN = 4
 
 # The "quick campaign" single-input mode: upload just this one flagship
 # size and every other exported size comes from default_templates/.
@@ -292,9 +303,8 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_description_font_family", "layer_description_font_size", "layer_description_text_color",
     "layer_legal_text",
     "layer_legal_font_family", "layer_legal_font_size", "layer_legal_text_color",
-    "psd_size_1", "psd_size_2", "psd_size_3", "psd_size_4",
-    "psd_as_is",
-)
+    "psd_as_is", "psd_as_is_hero", "copy_language", "psd_make_saved",
+) + tuple(f"psd_size_{i}" for i in range(1, MAX_PSD_TEMPLATES + 1))
 # Layers offered a "hide" checkbox. Deliberately not "background": it
 # sits behind everything and hiding it leaves a hole rather than a
 # cleaner creative -- the way to change a backdrop is to replace it,
@@ -314,7 +324,7 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "ai_hero_enabled",
     "upload_custom_hero_enabled",
     "upload_hero_from_template",
-    "upload_ai_enabled",
+    "upload_ai_enabled", "upload_ai_send_references",
     "upload_ai_keep",
     "upload_ai_allow_text",
     "upload_ai_full_ad",
@@ -536,9 +546,41 @@ AI_TEXT_RETRY_LIMIT = max(0, _env_int("AI_TEXT_RETRIES", 2))
 # and one run came back with a caption sitting in exactly that space.
 BACKGROUND_PROMPT_GUIDANCE = (
     "sharp focus, crisp fine detail, high resolution, professional photography, "
-    "no faces, no logos, "
+    "no faces, no logos, no product shot, no bottle, no can, no packaging, no labels, "
     "even lighting, plenty of clean empty negative space, uncluttered composition"
 )
+
+
+def _keep_the_product_out_of_a_backdrop_prompt(prompt: str, product_name: str):
+    """A backdrop prompt with the product in it, minus the product.
+
+    The template's own product layer supplies the bottle, and a model
+    asked for "HydroBoost sports drink" draws a bottle with HydroBoost
+    written on it -- lettering the text check then has to smear out,
+    which is the "bad image" that came back. Returns (prompt, what was
+    taken out) -- the names and the words that ask for the product
+    itself; the scene ("beach volleyball, sand and water") stays."""
+    if not prompt:
+        return prompt, []
+    removed = []
+    names = []
+    if product_name:
+        compact = re.sub(r"\s+", "", product_name)
+        names = [re.escape(product_name.strip())]
+        if compact.lower() != product_name.strip().lower():
+            names.append(re.escape(compact))
+    for pattern in names + [
+        r"(?:sports?|energy|soft)\s+drinks?", r"\bbottles?\b", r"\bcans?\b", r"\bpackaging\b",
+        r"\bproduct(?:\s+shot)?\b",
+    ]:
+        for match in re.finditer(pattern, prompt, flags=re.IGNORECASE):
+            removed.append(match.group(0))
+        prompt = re.sub(pattern, " ", prompt, flags=re.IGNORECASE)
+    # Tidy what the removals leave behind: doubled spaces, empty
+    # comma-separated parts, a leading comma.
+    parts = [part.strip() for part in re.split(r"[,;]", prompt)]
+    parts = [re.sub(r"\s{2,}", " ", part) for part in parts if part and re.search(r"[A-Za-z]", part)]
+    return ", ".join(parts), removed
 
 # The same guidance for a run that WANTS type in the picture. The
 # no-logos/leave-room-for-text half of the clause above exists to keep a
@@ -1414,6 +1456,116 @@ CONTENT_PSD_SNAP_RATIO_TOLERANCE = 0.05   # aspect ratio within 5%
 CONTENT_PSD_SNAP_SIZE_TOLERANCE = 0.10    # each dimension within 10%
 
 
+SAME_RATIO_TOLERANCE = 0.005  # 1080x1080 and 1200x1200 are the same shape; 1200x1200 and 1200x1250 are not
+
+
+def _same_ratio_source(size, sources):
+    """The uploaded size whose proportions match `size`, or None.
+
+    Exact shape, not "close": a template scaled onto a size of the same
+    ratio lands every layer where the designer put it, while one a few
+    percent off would need a crop or a squash. Ties go to the nearest
+    pixel size, so a 1200x1200 takes the 1080x1080 over a 300x300.
+    """
+    width, height = size
+    if not width or not height:
+        return None
+    ratio = width / height
+    best = None
+    for candidate in sources:
+        candidate_width, candidate_height = candidate
+        if not candidate_width or not candidate_height:
+            continue
+        if abs(candidate_width / candidate_height - ratio) / ratio > SAME_RATIO_TOLERANCE:
+            continue
+        distance = abs(candidate_width - width) + abs(candidate_height - height)
+        if best is None or distance < best[0]:
+            best = (distance, candidate)
+    return best[1] if best else None
+
+
+NEAR_MISS_SIZE_TOLERANCE = 0.12  # each side within 12%: catches a transposed digit, not a different format
+
+
+def _near_miss_size(size, known):
+    """The known size `size` is probably a typo of, or None.
+
+    A different aspect ratio is what makes a typo expensive here -- same-
+    ratio near misses already snap or carry -- so this asks for both
+    sides to be close and the shape to differ, e.g. 3480x2160 vs
+    3840x2160, or 1290x1080 vs 1920x1080.
+    """
+    width, height = size
+    if not width or not height:
+        return None
+    best = None
+    for candidate in known:
+        cw, ch = candidate
+        if not cw or not ch or candidate == size:
+            continue
+        if abs(cw / ch - width / height) / (width / height) <= SAME_RATIO_TOLERANCE:
+            continue  # same shape: it carries over as designed, nothing to flag
+        # Two ways to be a near miss: both sides close (3480x2160 for
+        # 3840x2160), or one side right and the other its digits
+        # shuffled (1290x1080 for 1920x1080) -- the latter ranks first.
+        shuffled = (cw == width and sorted(str(ch)) == sorted(str(height))) or (
+            ch == height and sorted(str(cw)) == sorted(str(width))
+        )
+        close = abs(cw - width) / cw <= NEAR_MISS_SIZE_TOLERANCE and abs(ch - height) / ch <= NEAR_MISS_SIZE_TOLERANCE
+        # One side exactly right and the other off by a digit (1920x1280
+        # for 1920x1080) is the other common slip.
+        one_side = (cw == width and abs(ch - height) / ch <= 0.25) or (ch == height and abs(cw - width) / cw <= 0.25)
+        if not shuffled and not close and not one_side:
+            continue
+        distance = (0 if shuffled else 1, abs(cw - width) + abs(ch - height))
+        if best is None or distance < best[0]:
+            best = (distance, candidate)
+    return best[1] if best else None
+
+
+def _ratio_label(width: int, height: int) -> str:
+    return ratio_label(width, height)
+
+
+def _template_scale(canvas_size, target_size, fit_mode: str) -> float:
+    """How much a template's pixels grow (or shrink) when its canvas is
+    fitted onto the output size -- the same factor map_box_through_fit()
+    applies to its boxes, so type sizes read from the PSD can follow."""
+    if not canvas_size:
+        return 1.0
+    src_w, src_h = canvas_size
+    target_w, target_h = target_size
+    if src_w <= 0 or src_h <= 0 or (src_w, src_h) == (target_w, target_h):
+        return 1.0
+    if fit_mode == "contain":
+        return min(target_w / src_w, target_h / src_h)
+    return max(target_w / src_w, target_h / src_h)
+
+
+ROW_SNAP_TOLERANCE = 0.03  # a canvas a few pixels off a known size is that size; 1200 vs 1080 is not
+
+
+def _snap_row_size(size, known) -> tuple:
+    """A row's size snapped to a known size it is within 3% of on both
+    sides (728x480 -> 720x480), else unchanged. Tighter than the content
+    PSD's snap on purpose: 1200x1200 is 10% off 1080x1080 and is its own
+    size."""
+    width, height = size
+    if not width or not height or size in known:
+        return size
+    best = None
+    for candidate in known:
+        cw, ch = candidate
+        if not cw or not ch:
+            continue
+        if abs(cw - width) / width > ROW_SNAP_TOLERANCE or abs(ch - height) / height > ROW_SNAP_TOLERANCE:
+            continue
+        distance = abs(cw - width) + abs(ch - height)
+        if best is None or distance < best[0]:
+            best = (distance, candidate)
+    return best[1] if best else size
+
+
 def _snap_to_template_size(size, template_sizes) -> tuple:
     """Map a content PSD's own pixel size onto a near-identical saved
     template size, so an uploaded 728x480 updates the existing 720x480
@@ -1823,8 +1975,114 @@ def _carry_forward_upload(field_name, uploads_dir: Path, prior_job_dir, prior_fo
         return None
     dest_path = uploads_dir / prior_rel
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(prior_path, dest_path)
+    # A link, not a copy: a carried-forward 4K template is 30-50 MB,
+    # and every Edit copied every one again -- a thousand runs later the
+    # output folder was 108 GB and the disk full. The file is never
+    # rewritten in place (a fresh upload gets a new name), so the link
+    # is safe; a filesystem that can't link gets the copy.
+    try:
+        if dest_path.exists():
+            dest_path.unlink()
+        os.link(prior_path, dest_path)
+    except OSError:
+        shutil.copy2(prior_path, dest_path)
     return dest_path
+
+
+# The output folder is working space, not an archive: runs older than
+# the newest JOB_KEEP_COUNT go, and older still if what's left is over
+# JOB_DISK_BUDGET_GB. Sessions referenced by the session index and the
+# run a fresh form carries files from are kept regardless.
+JOB_KEEP_COUNT = 40
+JOB_KEEP_MIN = 10
+JOB_DISK_BUDGET_GB = 8.0
+_last_prune_at = 0.0
+
+
+def _folder_size(path: Path) -> int:
+    total = 0
+    for root, _dirs, files in os.walk(path):
+        for name in files:
+            try:
+                total += (Path(root) / name).stat().st_size
+            except OSError:
+                pass
+    return total
+
+
+def _protected_job_ids() -> set:
+    keep = set()
+    prefs = _load_preferences()
+    if prefs.get("last_job_id"):
+        keep.add(prefs["last_job_id"])
+    sessions_dir = JOBS_DIR / "_sessions"
+    if sessions_dir.is_dir():
+        # Only the newest few sessions' jobs: an index for every session
+        # ever would protect everything.
+        recent = sorted(sessions_dir.glob("*.json"), key=lambda p: p.stat().st_mtime, reverse=True)[:5]
+        for path in recent:
+            try:
+                index = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if isinstance(index, dict):
+                keep.update(str(v) for v in index.values() if isinstance(v, str))
+    return keep
+
+
+def prune_job_folders(force: bool = False) -> list:
+    """Delete old run folders (and their browsable zips) so the output
+    folder stays a working set. Returns the ids removed. Runs at most
+    every ten minutes unless forced."""
+    global _last_prune_at
+    now = time.time()
+    if not force and now - _last_prune_at < 600:
+        return []
+    _last_prune_at = now
+    if not JOBS_DIR.is_dir():
+        return []
+    jobs = []
+    for path in JOBS_DIR.iterdir():
+        if not path.is_dir() or not re.fullmatch(r"(draft_)?[0-9a-f]{12,32}", path.name):
+            continue
+        try:
+            jobs.append((path.stat().st_mtime, path))
+        except OSError:
+            continue
+    jobs.sort(key=lambda item: item[0], reverse=True)  # newest first
+    protected = _protected_job_ids()
+    removed = []
+    keep, candidates = [], []
+    for _mtime, path in jobs:
+        if path.name in protected or len(keep) < JOB_KEEP_MIN:
+            keep.append(path)
+        elif len(keep) < JOB_KEEP_COUNT:
+            keep.append(path)
+        else:
+            candidates.append(path)
+    budget = JOB_DISK_BUDGET_GB * (1024 ** 3)
+    kept_size = sum(_folder_size(p) for p in keep)
+    # Over budget even after the count cut: the oldest kept go too, down
+    # to the minimum and never the protected ones.
+    while kept_size > budget and len(keep) > JOB_KEEP_MIN:
+        oldest = keep.pop()
+        if oldest.name in protected:
+            keep.insert(0, oldest)
+            break
+        kept_size -= _folder_size(oldest)
+        candidates.append(oldest)
+    for path in candidates:
+        try:
+            shutil.rmtree(path)
+            removed.append(path.name)
+        except OSError:
+            continue
+        for stale in DOWNLOADS_DIR.glob(f"*{path.name[:12]}*") if DOWNLOADS_DIR.is_dir() else []:
+            try:
+                stale.unlink()
+            except OSError:
+                pass
+    return removed
 
 
 def _session_index_path(session_id: str) -> Path:
@@ -2001,6 +2259,12 @@ def _inject_settings():
         "reference_limit": REFERENCE_LIMIT,
         "reference_slots": REFERENCE_SLOTS,
         "content_psd_label": CONTENT_PSD_LABEL,
+        "max_psd_templates": MAX_PSD_TEMPLATES,
+        "known_sizes": sorted(
+            {f"{w}x{h}" for w, h in list(SIZE_NAMES) + list(DEFAULT_SIZES) + list(_default_template_paths())}
+        ),
+        "copy_languages": COPY_LANGUAGES,
+        "psd_rows_shown": PSD_TEMPLATE_ROWS_SHOWN,
     }
 
 
@@ -2070,14 +2334,255 @@ def set_ideogram_key():
     return redirect(url_for("index"))
 
 
+# Form settings remembered from one run to the next even on a fresh form
+# (the Edit page carries a whole run forward; this is for the handful of
+# things that belong to the brand rather than to a run). Kept in a small
+# JSON next to the jobs, so a test's temp JOBS_DIR gets its own.
+BRAND_COLOR_FIELD_NAMES = tuple(
+    name for i in (1, 2, 3) for name in (f"brand_color_{i}", f"brand_color_{i}_enabled")
+)
+# Everything in the "custom hero image" and "size-specific PSD" sections:
+# with an ad in progress, a fresh form should open on the same layout,
+# copy, hide boxes and rows as the last run, not blank.
+SECTION_FIELD_PREFIXES = ("layer_", "psd_", "upload_hero", "upload_custom_hero", "upload_ai_enabled")
+REMEMBERED_SECTION_FIELDS = tuple(
+    name for name in EDIT_TEXT_FIELD_NAMES + EDIT_CHECKBOX_FIELD_NAMES
+    if name.startswith(SECTION_FIELD_PREFIXES)
+)
+REMEMBERED_FIELD_NAMES = BRAND_COLOR_FIELD_NAMES + ("copy_language", "psd_make_saved") + REMEMBERED_SECTION_FIELDS
+# The files those sections hold (hero image, layer images, PSD rows)
+# are carried from the last run on a fresh form too: a form that
+# remembers the hide boxes but forgets the hero would be half a memory.
+REMEMBERED_FILE_PREFIXES = ("upload_hero_image", "layer_", "psd_file_")
+
+# Languages the copy typed on the form can be drawn in. The English stays
+# on the form; each run translates it on the way into the templates.
+COPY_LANGUAGES = (("en", "English"), ("fr", "Français"), ("es", "Español"))
+COPY_LANGUAGE_NAMES = {code: name for code, name in COPY_LANGUAGES}
+COPY_LANGUAGE_ENGLISH_NAMES = {"en": "English", "fr": "French", "es": "Spanish"}
+
+
+def _translation_cache_path() -> Path:
+    return JOBS_DIR / "translations.json"
+
+
+def _translate_copy(text, language: str, cache: dict):
+    """(translated text, ok). Repeats of a phrase come from the cache
+    so an edit-and-rerun doesn't call the translator again for copy
+    that hasn't changed; a failed call returns the English with ok=False
+    so the run can say so instead of quietly shipping the wrong
+    language."""
+    if not text or language == "en":
+        return text, True
+    key = f"{language}\u0000{text}"
+    if key in cache:
+        return cache[key], True
+    # Two tries: the translator is a free public endpoint that drops the
+    # odd call, and line-by-line copy means more calls per run -- one
+    # dropped line left a header half translated.
+    for _attempt in range(2):
+        translated, ok = localize_message(text, language)
+        if ok and translated:
+            # Words that came back unchanged are already in the language
+            # (or the translator gave up quietly): not a translation, so
+            # not cached as one -- a cached "French of the French" was
+            # standing in front of the real English behind those words.
+            if translated.strip() != text.strip():
+                cache[key] = translated
+            return translated, True
+        time.sleep(0.5)
+    return text, False
+
+
+def _english_behind_translations() -> dict:
+    """{translated text: the English it was made from}, from the
+    translation cache, every language together. A template that is
+    itself an export from a French or Spanish run carries that language
+    in its type layers; this is how the run finds the English again --
+    to draw it when the language is set back to English, and to
+    translate from it (not from the Spanish) when another is chosen."""
+    try:
+        cache = json.loads(_translation_cache_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cache, dict):
+        return {}
+    reverse = {}
+    for key, translated in cache.items():
+        if "\u0000" not in key or not isinstance(translated, str):
+            continue
+        english = key.split("\u0000", 1)[1]
+        # A phrase the translator handed back unchanged maps to itself;
+        # that entry says nothing about the English and, taken first,
+        # hid the real one -- the header stayed French with English
+        # chosen because "RÉHYDRATER..." pointed at "RÉHYDRATER...".
+        if translated.strip() == english.strip():
+            continue
+        reverse.setdefault(translated.strip(), english.strip())
+    return reverse
+
+
+def _same_words(a, b) -> bool:
+    """Whether two pieces of copy say the same thing, ignoring how the
+    lines are broken and spaced (a type layer breaks lines with \\r, the
+    form with \\n, and either may carry a trailing space)."""
+    def norm(text):
+        lines = [
+            " ".join(line.split())
+            for line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+        ]
+        return "\n".join(line for line in lines if line)
+    return norm(a) == norm(b)
+
+
+def _english_source_of(words: str, reverse: dict):
+    """The English behind `words` (line by line, so a header translated
+    line by line reverses the same way), or None if `words` isn't a
+    translation this machine made."""
+    lines = [line.strip() for line in words.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line.strip()]
+    if not lines or not reverse:
+        return None
+
+    def back(text):
+        # One step back; None when `text` isn't a translation. Followed
+        # repeatedly below: a Spanish template translated again on a
+        # later run is Spanish-of-Spanish, and the English is two steps
+        # behind it.
+        source = reverse.get(text)
+        return source if source and source != text else None
+
+    def all_the_way(text):
+        seen = {text}
+        current = text
+        for _ in range(10):
+            previous = back(current)
+            if not previous or previous in seen:
+                break
+            seen.add(previous)
+            current = previous
+        return current if current != text else None
+
+    if len(lines) == 1:
+        return all_the_way(lines[0])
+    english_lines = [all_the_way(line) or line for line in lines]
+    if english_lines != lines:
+        return "\r".join(english_lines)
+    return all_the_way("\r".join(lines))
+
+
+def _localize_form_copy(language: str, fields: dict, notes: list, warnings: list) -> dict:
+    """Translate every non-empty copy field into `language`. Returns the
+    same dict with the translations in place, and writes one note per
+    translated field (the English beside the translation, so what the
+    creative says can be checked without knowing the language) and one
+    warning if the translator couldn't be reached."""
+    if language == "en" or not any(fields.values()):
+        return fields
+    try:
+        cache = json.loads(_translation_cache_path().read_text(encoding="utf-8"))
+        if not isinstance(cache, dict):
+            cache = {}
+    except (OSError, ValueError):
+        cache = {}
+    before = dict(cache)
+    failed = []
+    out = {}
+    for name, text in fields.items():
+        translated, ok = _translate_copy(text, language, cache)
+        out[name] = translated
+        if text and ok and translated != text:
+            notes.append(
+                f"{COPY_LANGUAGE_ENGLISH_NAMES.get(language, language)} copy -- {name}: \"{text}\" -> \"{translated}\"."
+            )
+        elif text and not ok:
+            failed.append(name)
+    if failed:
+        warnings.append(
+            f"Couldn't translate the {', '.join(failed)} into "
+            f"{COPY_LANGUAGE_ENGLISH_NAMES.get(language, language)} -- the translator (Google Translate via "
+            "deep-translator) didn't answer, so those are drawn in English. Check the connection and run again."
+        )
+    if cache != before:
+        try:
+            _translation_cache_path().write_text(json.dumps(cache, indent=2, ensure_ascii=False), encoding="utf-8")
+        except OSError:
+            pass
+    return out
+
+
+def _preferences_path() -> Path:
+    return JOBS_DIR / "preferences.json"
+
+
+def _load_preferences() -> dict:
+    try:
+        data = json.loads(_preferences_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _remember_form_fields(form) -> None:
+    """Save the remembered fields' values from this submission, so the
+    next fresh form opens with them: the brand colours, and which of
+    them are ticked -- re-picking three swatches every run was the
+    complaint. An unticked box is saved as unticked (an absent checkbox
+    is what "unticked" looks like in a form), not left as it was."""
+    prefs = _load_preferences()
+    for name in REMEMBERED_FIELD_NAMES:
+        prefs[name] = (form.get(name) or "").strip()
+    try:
+        _preferences_path().parent.mkdir(parents=True, exist_ok=True)
+        _preferences_path().write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _remembered_prefill() -> dict:
+    prefs = _load_preferences()
+    # Empty values come through too: an unticked box that defaults to
+    # ticked (psd_make_saved) has to be remembered as unticked.
+    return {name: prefs[name] for name in REMEMBERED_FIELD_NAMES if name in prefs}
+
+
+def _remembered_files():
+    """(job id, {field: filename}) for the section files of the last
+    run, when that run's folder is still there; (None, {}) otherwise."""
+    prefs = _load_preferences()
+    job_id = (prefs.get("last_job_id") or "").strip()
+    if not job_id or not re.fullmatch(r"[0-9a-f]{12,32}", job_id):
+        return None, {}
+    state_path = JOBS_DIR / job_id / "form_state.json"
+    try:
+        state = json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None, {}
+    files = {
+        name: filename
+        for name, filename in (state.get("files") or {}).items()
+        if name.startswith(REMEMBERED_FILE_PREFIXES) and filename
+        and (JOBS_DIR / job_id / "uploads" / filename).is_file()
+    }
+    return (job_id if files else None), files
+
+
 @app.route("/", methods=["GET"])
 def index():
+    try:
+        prune_job_folders()
+    except Exception:  # noqa: BLE001
+        pass
     return render_template(
         "index.html",
         size_presets=SIZE_PRESET_CHOICES,
         video_extensions=VIDEO_EXTENSIONS,
         build_stamp=BUILD_STAMP,
-        campaigns=[{"prefill": {}, "prefill_files": {}, "edit_job_id": None}],
+        campaigns=[{
+            "prefill": _remembered_prefill(),
+            "prefill_files": _remembered_files()[1],
+            "edit_job_id": None,
+            "carry_job_id": _remembered_files()[0],
+        }],
         session_id=uuid.uuid4().hex,
         editable_text_layers=_editable_text_layers(),
         present_text_layers=_present_text_layers(),
@@ -2235,15 +2740,26 @@ def _keep_submission(message: str):
 
 @app.route("/generate", methods=["POST"])
 def generate():
+    # Old runs go before this one writes anything: a full disk was a
+    # 500 on the very first file copy.
+    try:
+        prune_job_folders()
+    except Exception:  # noqa: BLE001
+        pass
     # Editing a prior job (see /edit/<job_id>) carries a hidden
     # edit_job_id field -- load that job's saved form_state.json so file
     # fields the user didn't re-upload this time can be carried forward
     # (see _carry_forward_upload()) instead of forcing a re-upload.
     edit_job_id = (request.form.get("edit_job_id") or "").strip() or None
+    # A fresh form remembers the last run's section files (see
+    # _remembered_files()): they are carried forward exactly as on Edit,
+    # but nothing else about that run -- its approvals in particular --
+    # comes along.
+    carry_job_id = edit_job_id or (request.form.get("carry_files_job_id") or "").strip() or None
     prior_job_dir = None
     prior_form_state: dict = {}
-    if edit_job_id and re.fullmatch(r"(draft_)?[0-9a-f]{12,32}", edit_job_id):
-        candidate_dir = JOBS_DIR / edit_job_id
+    if carry_job_id and re.fullmatch(r"(draft_)?[0-9a-f]{12,32}", carry_job_id):
+        candidate_dir = JOBS_DIR / carry_job_id
         state_path = candidate_dir / "form_state.json"
         if state_path.is_file():
             try:
@@ -2257,7 +2773,7 @@ def generate():
     # regenerated, and in normal mode its backdrop is pinned for the
     # other sizes -- see approved_prior_sizes below.
     approved_prior_sizes = set()
-    if prior_job_dir is not None and not prior_job_dir.name.startswith("draft_"):
+    if edit_job_id and prior_job_dir is not None and not prior_job_dir.name.startswith("draft_"):
         for label, entry in load_approvals(prior_job_dir.name).items():
             if not (isinstance(entry, dict) and entry.get("approved")):
                 continue
@@ -2524,6 +3040,7 @@ def generate():
     for i in (1, 2, 3):
         if request.form.get(f"brand_color_{i}_enabled"):
             brand_colors.append(_parse_hex_color(request.form.get(f"brand_color_{i}"), default=(0, 0, 0)))
+    _remember_form_fields(request.form)
 
     headline = (request.form.get("header") or "").strip() or None
     message = (request.form.get("description") or "").strip() or None
@@ -2615,6 +3132,17 @@ def generate():
     # carried forward from a prior edit) -- scanned for profanity in their
     # text layers below, once content_psd's own fresh-upload is known too.
     fresh_psd_uploads = []
+    # Sizes whose file was chosen THIS run, and which row holds each
+    # size: a file uploaded now carries onto same-shape sizes whose own
+    # file is only a carry-over from an earlier run (see below).
+    fresh_psd_sizes: set = set()
+    psd_row_by_size: dict = {}
+    # Rows whose file is (or became) the saved template for its size --
+    # written to form_state.json so a later run that carries the row
+    # knows the saved template supersedes the file in it.
+    prior_promoted_rows = {int(r) for r in (prior_form_state.get("promoted_psd_rows") or []) if str(r).isdigit()}
+    promoted_psd_rows: set = set()
+    psd_size_snaps: list = []  # (row, as typed, used) -- noted once background_notes exists
     for i in range(1, MAX_PSD_TEMPLATES + 1):
         psd_size_raw = (request.form.get(f"psd_size_{i}") or "").strip()
         psd_file = request.files.get(f"psd_file_{i}")
@@ -2650,12 +3178,45 @@ def generate():
             psd_width, psd_height = parse_size(psd_size_raw)
         except ValueError as exc:
             return _keep_submission(f"PSD template row {i}: {exc}")
+        # A size a few pixels off one the app knows is that size: a
+        # 728x480 canvas dropped for the 720x480 slot goes to 720x480,
+        # the same snap the content PSD has always had. (Otherwise the
+        # row opened a 728x480 of its own and the 720x480 slot kept
+        # rendering from the saved template -- "it's not using the
+        # current PSD".)
+        snapped = _snap_row_size(
+            (psd_width, psd_height), set(_default_template_paths()) | set(SIZE_NAMES) | set(DEFAULT_SIZES)
+        )
+        if snapped != (psd_width, psd_height):
+            psd_size_snaps.append((i, (psd_width, psd_height), snapped))
+            psd_width, psd_height = snapped
+        # A row remembered from an earlier run whose file WAS made the
+        # saved template for this size (recorded in that run's
+        # form_state as promoted) stays on the form as the chip that
+        # says what was dropped, but the saved template is what
+        # renders: it is that file, plus whatever later runs wrote into
+        # it, and the older copy in the row would only shadow it. A row
+        # that was never promoted -- dropped with the box unticked, or
+        # carried from before -- renders from its own file, exactly as
+        # uploaded. A freshly dropped file is the new template.
+        if (
+            not psd_file_fresh
+            and i in prior_promoted_rows
+            and (psd_width, psd_height) in _default_template_paths()
+        ):
+            promoted_psd_rows.add(i)
+            if request.form.get("psd_as_is") and not upload_ai_enabled:
+                psd_as_is_sizes.add((psd_width, psd_height))
+            continue
         try:
             psd_templates[(psd_width, psd_height)] = open_as_rgb(psd_path)
         except ValueError as exc:
             return _keep_submission(f"PSD template row {i}: {exc}")
         psd_template_paths[(psd_width, psd_height)] = psd_path
-        if request.form.get("psd_as_is"):
+        psd_row_by_size[(psd_width, psd_height)] = i
+        if psd_file_fresh:
+            fresh_psd_sizes.add((psd_width, psd_height))
+        if request.form.get("psd_as_is") and not upload_ai_enabled:
             psd_as_is_sizes.add((psd_width, psd_height))
 
     # "Quick campaign" single-input mode: upload just the one flagship
@@ -2787,10 +3348,17 @@ def generate():
     upload_ai_reference_images = []
     upload_ai_reference_bytes_list = []
     upload_ai_reference_notes = []
+    # A mood board is a LOOK -- palette, lighting, mood -- and that is
+    # what goes to the model, in words. The pictures themselves go as
+    # Ideogram style references only when asked: a style reference is
+    # copied as a whole, layout and typography included, so a board of
+    # finished ads came back as a poster with invented brand names on
+    # it, and no amount of "no text" in the prompt could stop that.
+    upload_ai_send_references = bool(request.form.get("upload_ai_send_references"))
     for path in upload_ai_reference_paths:
         try:
             reference = Image.open(path).convert("RGB")
-            reference_bytes = path.read_bytes()
+            reference_bytes = path.read_bytes() if upload_ai_send_references else None
             if not upload_ai_allow_text:
                 # See _textless_reference(): a reference with words on it
                 # is a request for words, whatever the negative prompt says.
@@ -2811,9 +3379,10 @@ def generate():
                     buffer = io.BytesIO()
                     reference.save(buffer, format="PNG")
                     (path.parent / f"{path.stem}_textless.png").write_bytes(buffer.getvalue())
-                    upload_ai_reference_notes.append(
-                        f"{path.name} was described in the prompt only, not sent as a style reference."
-                    )
+                    if upload_ai_send_references:
+                        upload_ai_reference_notes.append(
+                            f"{path.name} was described in the prompt only, not sent as a style reference."
+                        )
                     reference_bytes = None
             upload_ai_reference_images.append(reference)
             if reference_bytes is not None:
@@ -2974,6 +3543,31 @@ def generate():
                 f"{upload_ai_prompt_text}, {reference_look_phrase(upload_ai_reference_image)}"
             )
         if upload_ai_background_style:
+            if upload_ai_prompt and not upload_ai_allow_text:
+                # A backdrop goes UNDER the template's own product layer,
+                # so the prompt mustn't ask for the product: asked for
+                # "HydroBoost sports drink" the model drew a labelled
+                # bottle, and the label is text.
+                trimmed, left_out = _keep_the_product_out_of_a_backdrop_prompt(
+                    upload_ai_prompt_text, product_name
+                )
+                if left_out:
+                    # A prompt that was only the product ("a bottle of
+                    # Hydro Boost") has no scene left once it goes: the
+                    # automatic backdrop scene stands in.
+                    if len(trimmed.split()) < 3:
+                        trimmed = (
+                            f"{_backdrop_scene(product_name, campaign_message, audience, textless=True)}, "
+                            "unbranded, open uncluttered space, soft lighting"
+                        )
+                    upload_ai_prompt_text = trimmed
+                    upload_ai_prompt_notes.append(
+                        "Backdrop mode: "
+                        + ", ".join(f'"{w}"' for w in dict.fromkeys(left_out))
+                        + " left out of your prompt -- the product comes from the template's own "
+                        "product layer, and a model asked to draw it letters the label, which is text. "
+                        "Untick \"generate a background\" to have the picture include the product."
+                    )
             upload_ai_prompt_text = (
                 f"{upload_ai_prompt_text}, "
                 f"{BACKGROUND_PROMPT_GUIDANCE_WITH_TEXT if upload_ai_allow_text else BACKGROUND_PROMPT_GUIDANCE}"
@@ -3022,7 +3616,8 @@ def generate():
                     + (
                         f" (sent to Ideogram as {'style references' if len(upload_ai_reference_paths) > 1 else 'a style reference'}, and described in the prompt)."
                         if sent_as_file
-                        else " (described in the prompt only)."
+                        else " (their palette, lighting and mood described in the prompt; the pictures themselves were not sent -- "
+                        "tick \"Send the mood board to Ideogram as style references\" to send them, which copies their layout and lettering too)."
                     )
                 )
             if upload_ai_allow_text:
@@ -3049,6 +3644,12 @@ def generate():
                     "Couldn't check the generated backdrop for text -- no text detector is "
                     f"available ({_text_detector_problem()}). The image may have lettering "
                     "baked into it; give it a look before shipping."
+                )
+            if not upload_ai_allow_text and upload_ai_text.available and "Tesseract only" in detector_description():
+                background_warnings_pending.append(
+                    "The text check is running on Tesseract alone, which misses stylised headlines and "
+                    f"lettering in pictures -- the scene-text detector isn't running ({_text_detector_problem()}). "
+                    "Until it is, treat the backdrop's text check as a rough one and look the image over."
                 )
             if (
                 upload_ai_image.width < upload_ai_width
@@ -3170,6 +3771,10 @@ def generate():
         or upload_ai_full_ad
         or upload_custom_hero_enabled
         or layer_image_supplied
+        # The saved templates ARE the live design once uploads are
+        # promoted into them (see psd_make_saved below): a run with
+        # that on always starts from them.
+        or bool(request.form.get("psd_make_saved"))
     ):
         default_templates, default_template_paths = _default_size_templates()
     else:
@@ -3198,7 +3803,137 @@ def generate():
         size_template_paths[content_psd_size] = content_psd_path
     size_templates.update(psd_templates)
     size_template_paths.update(psd_template_paths)
+    # "Exactly as uploaded" covers the saved templates too: once uploads
+    # are promoted into default_templates/ the saved files ARE the
+    # current designs, and putting the hero behind them or typed copy
+    # over them is the same unwanted repaint it was for a row's file.
+    if request.form.get("psd_as_is") and not upload_ai_enabled:
+        psd_as_is_sizes.update(default_templates.keys())
+        if content_psd_size is not None:
+            psd_as_is_sizes.add(content_psd_size)
+    elif request.form.get("psd_as_is") and upload_ai_enabled:
+        # The generator is on: its backdrop goes into every template.
+        # "Exactly as uploaded" is the custom-hero mode's setting and
+        # comes back the moment that mode is picked again.
+        background_notes.append(
+            "AI hero image on: the generated backdrop goes into every template. \"Use these files exactly as "
+            "uploaded\" applies in the custom hero mode, not here."
+        )
 
+    # A size-specific upload carries onto every other size in the batch
+    # with the same proportions that has no upload of its own: a fresh
+    # 1080x1080 PSD is the new 1200x1200 too, and a 1080x1920 the new
+    # 720x1280, scaled to fit (same ratio, so no crop). Without this the
+    # square that was just updated sat next to the saved square from
+    # last time, and both had to be uploaded to change one design.
+    # A size typed on a row that is a near miss for a size the batch or
+    # the app already knows (3480x2160 for 3840x2160) is almost always a
+    # typo -- and a costly one, since it exports as a size of its own
+    # (29:18) instead of updating the one meant, and carries onto
+    # nothing. Flagged, not corrected: the row is used as typed.
+    known_sizes = (set(size_templates.keys()) | set(SIZE_NAMES) | set(DEFAULT_SIZES)) - set(psd_template_paths)
+    for typed in sorted(psd_template_paths):
+        if typed in known_sizes:
+            continue
+        near = _near_miss_size(typed, known_sizes)
+        if near is not None:
+            background_warnings.append(
+                f"{size_label(*typed)} on a PSD row isn't a size this batch or the app knows, but it is close to "
+                f"{size_label(*near)} -- if that's the size you meant, fix the Size field on that row: as typed it "
+                f"exports as a new {_ratio_label(*typed)} size instead of updating {size_label(*near)}."
+            )
+    # {target size: source size} for the notes and the as-is flag.
+    ratio_matched_templates: dict = {}
+    uploaded_sources = dict(psd_templates)
+    if content_psd_size is not None:
+        uploaded_sources[content_psd_size] = content_psd_image
+    batch_sizes = set(size_templates.keys()) | set(sizes)
+    # A file chosen this run beats a same-shape row still carrying last
+    # run's file: with a 720x1280 and a 1080x1920 row both kept from
+    # earlier runs, dropping a new file on one of them is meant to
+    # update both -- otherwise the other row quietly kept the old
+    # design and "the 9:16s don't update each other".
+    fresh_sources = {size: image for size, image in uploaded_sources.items() if size in fresh_psd_sizes}
+    superseded_rows: dict = {}
+    for target in sorted(batch_sizes):
+        if target in uploaded_sources:
+            if target in fresh_psd_sizes or not fresh_sources:
+                continue
+            source = _same_ratio_source(target, fresh_sources)
+            if source is None:
+                continue
+            size_templates[target] = uploaded_sources[source]
+            size_template_paths[target] = psd_template_paths[source]
+            ratio_matched_templates[target] = source
+            superseded_rows[target] = source
+            # The row keeps the new file too, so the next Edit carries
+            # it forward instead of the one it just replaced.
+            row = psd_row_by_size.get(target)
+            if row is not None:
+                psd_file_paths[row] = psd_template_paths[source]
+            continue
+        source = _same_ratio_source(target, uploaded_sources)
+        if source is None:
+            continue
+        size_templates[target] = uploaded_sources[source]
+        size_template_paths[target] = (
+            psd_template_paths.get(source) if source in psd_template_paths else content_psd_path
+        )
+        ratio_matched_templates[target] = source
+        if source in psd_as_is_sizes:
+            psd_as_is_sizes.add(target)
+
+    # "Make these the saved templates": a file uploaded this run becomes
+    # the template in default_templates/ for its size -- and for every
+    # same-shape size it carried onto -- so the saved set is always the
+    # current design and every future run (a fresh form included)
+    # starts from it. The file each one replaces is kept in
+    # _template_backups/. The row is then let go: the saved template
+    # is the live one, and a row holding the same file would only
+    # shadow it.
+    form_field_overrides: dict = {}
+    for row, typed, used in psd_size_snaps:
+        background_notes.append(
+            f"PSD row {row}: {size_label(*typed)} is a few pixels off {size_label(*used)}, so the file went to the "
+            f"{size_label(*used)} slot (the Size field is set to that)."
+        )
+        form_field_overrides[f"psd_size_{row}"] = size_label(*used)
+    if request.form.get("psd_make_saved") and fresh_psd_sizes:
+        saved_paths = _default_template_paths()
+        stamp = _datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        promoted = []
+        targets: dict = {}
+        for size in fresh_psd_sizes:
+            targets[size] = size
+        for target, source in ratio_matched_templates.items():
+            if source in fresh_psd_sizes and target in saved_paths and target not in targets:
+                targets[target] = source
+        for target, source in sorted(targets.items()):
+            source_path = psd_template_paths.get(source)
+            if source_path is None:
+                continue
+            dest = saved_paths.get(target) or (DEFAULT_TEMPLATES_DIR / f"template-{size_label(*target)}.psd")
+            try:
+                DEFAULT_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+                if dest.exists():
+                    TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+                    shutil.copy(dest, TEMPLATE_BACKUPS_DIR / f"{dest.stem}.{stamp}{dest.suffix}")
+                shutil.copy(source_path, dest)
+                promoted.append((target, source, dest))
+            except OSError as exc:
+                background_warnings.append(
+                    f"Couldn't save the {size_label(*target)} template into default_templates/: {exc}"
+                )
+        for target, source, dest in promoted:
+            background_notes.append(
+                f"{size_label(*target)}: the file you uploaded"
+                + (f" for {size_label(*source)}" if source != target else "")
+                + f" is now the saved template ({dest.name}); the previous one is in _template_backups/. "
+                "Every run starts from it from here on; the row keeps the file as a reminder of what was dropped."
+            )
+            row = psd_row_by_size.get(target)
+            if row is not None and target == source:
+                promoted_psd_rows.add(row)
     # Every template in play this request -- whether a per-request PSD
     # template row, the content_psd trigger's saved defaults, or both --
     # must have "logo", "description", and "product" named layers. The
@@ -3396,6 +4131,51 @@ def generate():
     layer_cta_stroke_color = _parse_hex_color(
         request.form.get("layer_cta_stroke_color"), default=(0, 0, 0)
     )
+
+    # The language the copy is drawn in. Everything typed stays English
+    # on the form (and in the saved run, so Edit shows what was typed);
+    # the translation happens here, on the way into the templates.
+    copy_language = (request.form.get("copy_language") or "en").strip().lower()
+    if copy_language not in COPY_LANGUAGE_NAMES:
+        copy_language = "en"
+    # (source text -> translation) pairs already shown on this run's
+    # results page, so a template phrase shared by several sizes is
+    # listed once.
+    translations_noted: set = set()
+    english_behind = _english_behind_translations()
+    # What was typed, before translation: the "save this copy into the
+    # templates" path writes THIS into the saved templates, so a French
+    # run doesn't quietly turn the English masters French.
+    typed_copy_english = {
+        "header": layer_header_text,
+        "description": layer_description_text,
+        "legal": layer_legal_text,
+        "cta": layer_cta_text,
+    }
+    if copy_language != "en":
+        localized = _localize_form_copy(
+            copy_language,
+            {
+                "header": headline,
+                "message": message,
+                "CTA": cta_text,
+                "header layer": layer_header_text,
+                "description layer": layer_description_text,
+                "legal layer": layer_legal_text,
+                "CTA layer": layer_cta_text,
+                "AI headline": upload_ai_headline,
+            },
+            background_notes,
+            background_warnings,
+        )
+        headline = localized["header"]
+        message = localized["message"]
+        cta_text = localized["CTA"]
+        layer_header_text = localized["header layer"]
+        layer_description_text = localized["description layer"]
+        layer_legal_text = localized["legal layer"]
+        layer_cta_text = localized["CTA layer"]
+        upload_ai_headline = localized["AI headline"]
 
     # Layers to leave out of every size entirely. A hide wins over any
     # content supplied for the same layer: "hide it" and "put this in it"
@@ -3842,9 +4622,29 @@ def generate():
         # this text" and "you can retype this text".
         source_psd_filename = None
         if (width, height) in psd_as_is_sizes:
+            if request.form.get("psd_as_is_hero") and "background" in layer_image_overrides:
+                background_notes.append(
+                    f"{size_label(width, height)} used the template as uploaded, with the hero image put into its "
+                    "background layer -- its own text and layers stand, no typed copy or hide boxes applied."
+                )
+            else:
+                background_notes.append(
+                    f"{size_label(width, height)} used your uploaded PSD exactly as uploaded (\"Use these files exactly "
+                    "as uploaded\" ticked): its own background and text, with no hero image, typed copy or hide boxes applied."
+                )
+        elif (width, height) in superseded_rows:
+            source = superseded_rows[(width, height)]
             background_notes.append(
-                f"{size_label(width, height)} used your uploaded PSD exactly as uploaded (\"Use these files exactly "
-                "as uploaded\" ticked): its own background and text, with no hero image, typed copy or hide boxes applied."
+                f"{size_label(width, height)} used the PSD you uploaded this run for {size_label(*source)}, scaled "
+                f"to fit -- same proportions -- in place of the file its own row was still carrying from an "
+                "earlier run. Its row now holds the new file."
+            )
+        elif (width, height) in ratio_matched_templates:
+            source = ratio_matched_templates[(width, height)]
+            background_notes.append(
+                f"{size_label(width, height)} used the PSD you uploaded for {size_label(*source)}, scaled to fit "
+                "-- same proportions, so the layout carries over as designed. Upload a file on a "
+                f"{size_label(width, height)} row to give this size its own."
             )
         elif (width, height) in psd_templates:
             background_notes.append(
@@ -3952,7 +4752,116 @@ def generate():
             # untouched. It went unnoticed because the AI generator puts
             # a background override in layer_image_overrides, which held
             # the gate open for every run that used it.
+            # Localized copy for THIS size. In English every layer draws
+            # what was typed (nothing, mostly). In another language a
+            # layer with nothing typed draws the template's own words
+            # translated -- the file's header, description and legal in
+            # French or Spanish, in the template's own font, size and
+            # colour -- so choosing a language changes the creative even
+            # when the form is otherwise blank. A size marked "exactly as
+            # uploaded" gets only that: its own words in the language,
+            # nothing typed and no other override.
+            text_only_size = (width, height) in psd_as_is_sizes
+            # The hide boxes are a custom-hero-mode setting: an as-uploaded
+            # size ignores them on the preview, so its PSDs and clip
+            # ignore them too -- with every box ticked, the download was
+            # opening with every layer switched off.
+            size_hidden_layer_names = set() if text_only_size else hidden_layer_names
+            # "...but put the hero image in their background": an
+            # as-uploaded size keeps its own text and layers and takes
+            # the hero into its background layer, nothing else.
+            hero_into_as_is = (
+                text_only_size
+                and bool(request.form.get("psd_as_is_hero"))
+                and "background" in layer_image_overrides
+            )
+            size_image_overrides = (
+                {"background": layer_image_overrides["background"]} if hero_into_as_is
+                else ({} if text_only_size else layer_image_overrides)
+            )
+            size_text = {
+                "header": None if text_only_size else layer_header_text,
+                "description": None if text_only_size else layer_description_text,
+                "legal": None if text_only_size else layer_legal_text,
+                "cta": None if text_only_size else layer_cta_text,
+            }
+            # The rule every size is held to: a text layer is redrawn
+            # only when its WORDS change (a language chosen, copy typed).
+            # Otherwise its pixels are the file's pixels, untouched --
+            # the design is the PSD, not this app's rendering of it.
+            own_text_layers: dict = {}
+            if (width, height) in size_template_paths:
+                # visible_only: a layer switched off in Photoshop has no
+                # words on the creative to translate.
+                own_text_layers = get_psd_text_layers(size_template_paths.get((width, height)), visible_only=True) or {}
+                for layer_key in ("header", "description", "legal"):
+                    # A hide box doesn't apply to an as-uploaded size, so
+                    # its words are on the creative and get the language
+                    # like any other -- skipping them here left half the
+                    # sizes in English with every hide box ticked.
+                    if size_text[layer_key] or (layer_key in hidden_layer_names and not text_only_size):
+                        continue
+                    own_words = (own_text_layers.get(layer_key) or "").strip()
+                    if not own_words:
+                        continue
+                    file_words = own_words
+                    # A template that is an export from an earlier
+                    # French or Spanish run holds that language in its
+                    # type layers. The English it came from is what
+                    # every language starts from -- set back to English,
+                    # the English is drawn; set to French, the French
+                    # comes from the English, not from the Spanish.
+                    english_source = _english_source_of(own_words, english_behind)
+                    if english_source:
+                        if (own_words, english_source) not in translations_noted:
+                            translations_noted.add((own_words, english_source))
+                            background_notes.append(
+                                f"The template's {layer_key} is a translation this app made "
+                                f"(\"{own_words.replace(chr(13), ' / ')}\"); working from the English behind it: "
+                                f"\"{english_source.replace(chr(13), ' / ')}\"."
+                            )
+                        own_words = english_source
+                    if copy_language == "en":
+                        if english_source:
+                            size_text[layer_key] = english_source
+                        continue
+                    # Line by line when the designer broke the lines:
+                    # the translation then keeps the same lines, each in
+                    # the style its English line had. (One line of
+                    # context per call -- the trade for keeping the
+                    # layout, and why the pairs are worth a read.)
+                    own_lines = [line.strip() for line in own_words.replace("\r\n", "\n").replace("\r", "\n").split("\n") if line.strip()]
+                    if len(own_lines) >= 2:
+                        translated_lines = _localize_form_copy(
+                            copy_language, {f"line {n}": line for n, line in enumerate(own_lines, 1)}, [], background_warnings
+                        )
+                        own_words = "\r".join(own_lines)
+                        translated = "\r".join(translated_lines[f"line {n}"] for n in range(1, len(own_lines) + 1))
+                    else:
+                        translated = _localize_form_copy(
+                            copy_language, {f"{layer_key} (template's own)": own_words}, [], background_warnings
+                        )[f"{layer_key} (template's own)"]
+                    # Already saying this in the chosen language -- a
+                    # file saved from Photoshop after a Spanish run, say
+                    # -- is left exactly as saved: Photoshop's own
+                    # rendering of it, effects and all, beats a redraw.
+                    if translated and translated.strip() != file_words.strip() and translated != own_words:
+                        size_text[layer_key] = translated
+                        if (own_words, translated) not in translations_noted:
+                            translations_noted.add((own_words, translated))
+                            background_notes.append(
+                                f"{COPY_LANGUAGE_ENGLISH_NAMES.get(copy_language, copy_language)} copy -- "
+                                f"the template's {layer_key}: \"{own_words.replace(chr(13), ' / ')}\" -> "
+                                f"\"{translated.replace(chr(13), ' / ')}\"."
+                            )
+            localized_template_text = bool(
+                any(size_text[k] and size_text[k] != {
+                    "header": layer_header_text, "description": layer_description_text, "legal": layer_legal_text,
+                }[k] for k in ("header", "description", "legal"))
+            )
+
             if (
+                (
                 layer_header_text
                 or layer_description_text
                 or layer_legal_text
@@ -3981,7 +4890,10 @@ def generate():
                 or layer_cta_stroke_size
                 or layer_image_overrides
                 or hidden_layer_names
-            ) and (width, height) in size_template_paths and (width, height) not in psd_as_is_sizes:
+                ) and not text_only_size
+                or localized_template_text
+                or hero_into_as_is
+            ) and (width, height) in size_template_paths:
                 psd_path_for_size = size_template_paths.get((width, height))
                 layer_boxes = get_psd_layer_boxes(psd_path_for_size)
                 applied_layers = []
@@ -3994,6 +4906,9 @@ def generate():
                 # that export shows exactly the new content on its own
                 # layer instead of a single flattened image.
                 export_layer_patches: dict = {}
+                # The same words without the form's background box --
+                # what goes inside the type layers (see below).
+                words_only_patches: dict = {}
                 # layer name -> the font size apply_layer_text_override()
                 # settled on for it this size. See where it is filled.
                 rendered_font_sizes: dict = {}
@@ -4083,8 +4998,15 @@ def generate():
                 # doesn't reintroduce the old (just-replaced) background
                 # underneath whatever it's about to redraw -- see the
                 # branch inside _clean_layer_box() just below.
-                background_replaced_this_request = "background" in layer_image_overrides and not (
-                    "background" in propagated_layer_names and (width, height) == content_psd_size
+                # ...and never on a text-only ("exactly as uploaded")
+                # size: its background is not replaced, so the box wipe
+                # below must use the file's own backdrop. With this
+                # wrongly True the wipe found no new backdrop to wipe
+                # to and quietly did nothing, and the template's old
+                # words showed through under the new ones.
+                background_replaced_this_request = (
+                    "background" in size_image_overrides
+                    and not ("background" in propagated_layer_names and (width, height) == content_psd_size)
                 )
                 # Every layer actually being replaced on THIS size. The
                 # masked restore in _clean_layer_box() below reaches back
@@ -4092,9 +5014,9 @@ def generate():
                 # layers are no longer supposed to come from there.
                 overridden_layer_names = {
                     name
-                    for name in layer_image_overrides
+                    for name in size_image_overrides
                     if not (name in propagated_layer_names and (width, height) == content_psd_size)
-                } | hidden_layer_names
+                } | (set() if text_only_size else hidden_layer_names)
                 # final_image as it stood with the new background painted
                 # in but before every other layer was composited back on
                 # top -- the "clear the whole box" case below needs a
@@ -4103,7 +5025,7 @@ def generate():
                 # the wrong one to use. Stays None unless that happens.
                 background_only_image = None
 
-                def _clean_layer_box(target_box, layer_name, full_box=False):
+                def _clean_layer_box(target_box, layer_name, full_box=False, restore_others=False):
                     # Patch in the PSD's own true pixels for this box with
                     # the named layer hidden (see get_psd_layer_background())
                     # before drawing anything new there -- this is real
@@ -4117,10 +5039,26 @@ def generate():
                     if full_box and background_replaced_this_request:
                         # Same "wipe the whole box" intent as below, but
                         # against the background this request just put
-                        # there rather than the PSD's original one.
+                        # there rather than the PSD's original one...
                         if background_only_image is None:
                             return
                         final_image.paste(background_only_image.crop(target_box), target_box[:2])
+                        # ...and then every OTHER layer's own pixels back
+                        # on top of it, inside the box: the panel behind
+                        # the description, a gradient plate, a rule --
+                        # the design's own layers that the new hero
+                        # sits under. Without this the box showed the
+                        # bare hero plate (its dark edge colour, where
+                        # the hero was fitted rather than cropped) as a
+                        # band behind the redrawn words.
+                        others = get_psd_layer_foreground(
+                            psd_path_for_size,
+                            sorted({layer_name, f"{layer_name} (rendered)", "background"} | overridden_layer_names),
+                        )
+                        if others is not None:
+                            others = _fit_rgba_like_final_image(others)
+                            patch = others.crop(target_box)
+                            final_image.paste(patch, target_box[:2], mask=patch.split()[3])
                         return
                     if background_replaced_this_request and layer_name != "background":
                         # The background this request started with is
@@ -4203,6 +5141,21 @@ def generate():
                         else:
                             clean_bg = center_crop_to_ratio(clean_bg, final_image.size)
                     final_image.paste(clean_bg.crop(target_box), target_box[:2])
+                    if full_box and restore_others:
+                        # The box was widened past the layer's own edge
+                        # (to take its effects with it), so put every
+                        # OTHER layer's pixels back in that ring: the
+                        # composite with this layer, its rendered
+                        # companion and the backdrop hidden, through its
+                        # own alpha.
+                        others = get_psd_layer_foreground(
+                            psd_path_for_size,
+                            [layer_name, f"{layer_name} (rendered)", "background"],
+                        )
+                        if others is not None:
+                            others = _fit_rgba_like_final_image(others)
+                            patch = others.crop(target_box)
+                            final_image.paste(patch, target_box[:2], mask=patch.split()[3])
 
                 # Process "background" first, no matter which order the
                 # form fields were uploaded in -- a background override
@@ -4214,10 +5167,10 @@ def generate():
                 # logo/cta/product/text steps below land on the *new*
                 # background exactly like they would on the original one.
                 ordered_layer_names = sorted(
-                    layer_image_overrides.keys(), key=lambda name: name != "background"
+                    size_image_overrides.keys(), key=lambda name: name != "background"
                 )
                 for layer_name in ordered_layer_names:
-                    override_image = layer_image_overrides[layer_name]
+                    override_image = size_image_overrides[layer_name]
                     box = layer_boxes.get(layer_name)
                     if box is None:
                         continue
@@ -4240,18 +5193,33 @@ def generate():
                             final_image, box, override_image, fit=background_fit
                         )
                         background_only_image = final_image.copy()
-                        foreground_mask_source = (
-                            get_psd_layer_foreground(psd_path_for_size, layer_name)
+                        # The layers go back over the new backdrop as
+                        # Photoshop drew them -- pixels AND layer styles
+                        # -- lifted from the file's own flattened picture
+                        # (pristine_final_image): see
+                        # carry_flattened_effects(). The layers' own
+                        # alpha (no approximated effects) says where the
+                        # pixels are; the styles come from how the
+                        # picture differs from the bare backdrop.
+                        layers_alpha_source = (
+                            get_psd_layer_foreground(psd_path_for_size, layer_name, effects=False)
                             if psd_path_for_size is not None
                             else None
                         )
-                        if foreground_mask_source is not None:
-                            foreground_mask_source = _fit_rgba_like_final_image(foreground_mask_source)
-                            # Only the alpha channel is used, as a mask --
-                            # see the comment above pristine_final_image
-                            # for why the *pixels* being restored come
-                            # from there instead of this RGBA composite.
-                            final_image.paste(pristine_final_image, mask=foreground_mask_source.split()[3])
+                        old_backdrop = (
+                            get_psd_backdrop(psd_path_for_size, keep_layer_names=(layer_name,))
+                            if psd_path_for_size is not None
+                            else None
+                        )
+                        if layers_alpha_source is not None and old_backdrop is not None:
+                            layers_alpha_source = _fit_rgba_like_final_image(layers_alpha_source)
+                            old_backdrop = _fit_rgba_like_final_image(old_backdrop.convert("RGBA"))
+                            final_image = carry_flattened_effects(
+                                pristine_final_image, old_backdrop, final_image, layers_alpha_source.split()[3]
+                            )
+                        elif layers_alpha_source is not None:
+                            layers_alpha_source = _fit_rgba_like_final_image(layers_alpha_source)
+                            final_image.paste(pristine_final_image, mask=layers_alpha_source.split()[3])
                         export_layer_patches[layer_name] = apply_layer_background_override(
                             Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
                             box,
@@ -4319,7 +5287,7 @@ def generate():
                         name
                         for name in get_psd_layer_names(psd_path_for_size)
                         if name not in visible_in_template
-                        and name not in hidden_layer_names
+                        and name not in size_hidden_layer_names
                     )
                     if switched_off_here:
                         background_notes.append(
@@ -4331,7 +5299,7 @@ def generate():
                             "the template to use it."
                         )
 
-                for layer_name in sorted(hidden_layer_names):
+                for layer_name in sorted([] if text_only_size else hidden_layer_names):
                     hidden_box = layer_boxes.get(layer_name)
                     if hidden_box is None:
                         # This size's template simply has no such layer.
@@ -4382,7 +5350,7 @@ def generate():
                     # apply_layer_text_override() for the actual
                     # shrink-to-fit/leading-scaling behavior.
                     nonlocal final_image
-                    if layer_key in hidden_layer_names:
+                    if layer_key in size_hidden_layer_names:
                         # Hidden wins over any styling or wording set for
                         # the same layer. The two instructions contradict
                         # each other, and drawing the text would mean
@@ -4428,12 +5396,50 @@ def generate():
                     # _clean_layer_box() for why a text layer needs this
                     # and an image layer doesn't.
                     if clean:
-                        _clean_layer_box(box, layer_key, full_box=True)
+                        # Wipe wherever this layer's words have ever been
+                        # drawn, not just where they go now: the layer's
+                        # designed box, and the box of the "(rendered)"
+                        # companion an earlier export left beside it. A
+                        # template that is itself an export carries last
+                        # run's words in its stored preview, at last
+                        # run's box -- wiping only the current box left
+                        # the part that stuck out, so the description
+                        # showed twice.
+                        wipe = box
+                        for extra in (layer_boxes.get(layer_key), layer_boxes.get(f"{layer_key} (rendered)")):
+                            if extra:
+                                wipe = (
+                                    min(wipe[0], extra[0]), min(wipe[1], extra[1]),
+                                    max(wipe[2], extra[2]), max(wipe[3], extra[3]),
+                                )
+                        # ...plus the layer's own effects: a drop shadow
+                        # or glow Photoshop drew around the old words
+                        # reaches past the box, and left a dark frame
+                        # and a band under the redrawn header.
+                        reach = get_psd_layer_effect_reach(psd_path_for_size, layer_key) if psd_path_for_size else 0
+                        pad = int(math.ceil(reach * _template_scale(psd_canvas_size, (width, height), fit_mode))) + 2
+                        wipe = (
+                            max(0, wipe[0] - pad), max(0, wipe[1] - pad),
+                            min(final_image.width, wipe[2] + pad), min(final_image.height, wipe[3] + pad),
+                        )
+                        _clean_layer_box(wipe, layer_key, full_box=True, restore_others=True)
                     psd_text_style = (
                         get_psd_layer_text_style(psd_path_for_size, layer_key)
                         if psd_path_for_size is not None
                         else None
                     ) or {}
+                    # The template's sizes are in ITS pixels. When the
+                    # output is a different size -- a 1280x720 file
+                    # standing in for 1920x1080, a 1080x1080 upload
+                    # carried onto 1200x1200, a 1920x1080 onto 4K -- the
+                    # boxes were scaled through the fit above, and the
+                    # type has to scale with them or it comes out small
+                    # in a big box.
+                    template_scale = _template_scale(psd_canvas_size, (width, height), fit_mode)
+                    if psd_text_style and template_scale != 1.0:
+                        for key in ("font_size", "line_height"):
+                            if psd_text_style.get(key):
+                                psd_text_style[key] = max(int(round(psd_text_style[key] * template_scale)), 1)
                     if not psd_text_style:
                         # Surfaced on the results page rather than just
                         # silently falling back -- if this shows up
@@ -4457,6 +5463,19 @@ def generate():
                     effective_font_name = None if font_family else psd_text_style.get("font_name")
                     if align == "template":
                         align = psd_text_style.get("align") or "left"
+                    if effective_font_name and not font_covers_text(effective_font_name, text):
+                        # Installed, but without the letters this copy
+                        # needs -- Apple Symbols has no accented Latin,
+                        # so Spanish set in it came out as boxes.
+                        if (effective_font_name, "glyphs") not in missing_fonts_reported:
+                            missing_fonts_reported.add((effective_font_name, "glyphs"))
+                            background_warnings.append(
+                                f"The template's {layer_key} is set in {effective_font_name}, which has no glyphs "
+                                f"for some of the letters in this copy (accents, most likely), so the redrawn text "
+                                f"uses a bundled {effective_family} face instead. Set the layer in a font with those "
+                                "letters to match the design."
+                            )
+                        effective_font_name = None
                     if effective_font_name and find_font_file(effective_font_name) is None:
                         if effective_font_name not in missing_fonts_reported:
                             missing_fonts_reported.add(effective_font_name)
@@ -4477,6 +5496,63 @@ def generate():
                     # edges (see the "clamped" note appended below when
                     # that happens, so it's visible rather than a silent
                     # "why didn't my font size change anything").
+                    # Copy with the template's own line breaks, on a
+                    # layer whose lines were set at their own sizes (a
+                    # header set "REHYDRATE / with a new summer /
+                    # REFRESHING / DRINK"): each line is drawn at its own
+                    # size, so a translation keeps the layout it had in
+                    # English. Only when nothing on the form restyles
+                    # the layer -- typed styling means one style.
+                    text_lines = [line.strip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+                    text_lines = [line for line in text_lines if line]
+                    styled_lines = psd_text_style.get("lines") or []
+                    restyled = bool(
+                        font_family or font_size or use_custom_color or glow or show_background or stroke_size
+                    )
+                    if (
+                        len(text_lines) >= 2
+                        and len(styled_lines) == len(text_lines)
+                        and not restyled
+                        and all(line.get("font_size") for line in styled_lines)
+                    ):
+                        lines_to_draw = [
+                            dict(
+                                style,
+                                text=words,
+                                font_name=(
+                                    style.get("font_name")
+                                    if find_font_file(style.get("font_name")) is not None
+                                    and font_covers_text(style.get("font_name"), words)
+                                    else None
+                                ),
+                            )
+                            for style, words in zip(styled_lines, text_lines)
+                        ]
+                        line_shadow = None
+                        if (psd_text_style.get("effects") or {}).get("shadow"):
+                            line_shadow = dict(psd_text_style["effects"]["shadow"])
+                            line_shadow["distance"] = line_shadow["distance"] * template_scale
+                            line_shadow["size"] = line_shadow["size"] * template_scale
+                        text_debug = {}
+                        final_image = apply_layer_styled_lines(
+                            final_image, box, lines_to_draw, align=align, scale=template_scale, debug=text_debug,
+                            shadow=line_shadow,
+                        )
+                        export_layer_patches[layer_key] = apply_layer_styled_lines(
+                            Image.new("RGBA", final_image.size, (0, 0, 0, 0)), box, lines_to_draw,
+                            align=align, scale=template_scale, keep_alpha=True, shadow=line_shadow,
+                        )
+                        words_only_patches[layer_key] = export_layer_patches[layer_key]
+                        applied_layers.append(layer_key)
+                        if text_debug.get("font_size"):
+                            rendered_font_sizes[layer_key] = text_debug["font_size"]
+                        background_notes.append(
+                            f"{size_label(width, height)}: {layer_key} drawn line by line at the template's own "
+                            f"sizes -- {', '.join(f'{px}px' for px in text_debug.get('line_sizes', []))}, "
+                            f"in {text_debug.get('font_used') or '?'} (the template asks for "
+                            f"{psd_text_style.get('font_name') or '?'})."
+                        )
+                        return
                     exact_font_size = font_size
                     ceiling_font_size = None if exact_font_size else psd_text_style.get("font_size")
                     # The PSD's own leading (line spacing) is scaled
@@ -4495,6 +5571,29 @@ def generate():
                         effective_color = text_color
                     else:
                         effective_color = psd_text_style.get("color", (26, 26, 26))
+                    # The layer's own effects, scaled with the box, unless
+                    # the form restyled the layer: the drop shadow the
+                    # design has stays on a translated header, the glow
+                    # and stroke too -- no trip through Photoshop needed.
+                    template_fx = psd_text_style.get("effects") or {}
+                    fx_scale = template_scale
+                    design_shadow = None
+                    if template_fx.get("shadow") and not restyled:
+                        design_shadow = dict(template_fx["shadow"])
+                        design_shadow["distance"] = design_shadow["distance"] * fx_scale
+                        design_shadow["size"] = design_shadow["size"] * fx_scale
+                    design_size = psd_text_style.get("font_size") or 1
+                    if template_fx.get("glow") and not restyled and not glow and design_size:
+                        glow = True
+                        glow_color = tuple(template_fx["glow"]["color"])
+                        glow_size = max(1, int(round(template_fx["glow"]["size"] * fx_scale / design_size * 100)))
+                        glow_opacity = int(round(template_fx["glow"]["opacity"]))
+                    if template_fx.get("stroke") and not restyled and not stroke_size and design_size:
+                        stroke_size = max(1, int(round(template_fx["stroke"]["size"] * fx_scale / design_size * 100)))
+                        stroke_color = tuple(template_fx["stroke"]["color"])
+                    # The design's own size and box, as Photoshop shows
+                    # them, whenever no size was typed for the layer.
+                    keep_design_size = not exact_font_size and bool(ceiling_font_size)
                     text_debug: dict = {}
                     final_image = apply_layer_text_override(
                         final_image,
@@ -4520,36 +5619,49 @@ def generate():
                         debug=text_debug,
                         stroke_size=stroke_size,
                         stroke_color=stroke_color,
+                        keep_size=keep_design_size,
+                        shadow=design_shadow,
                     )
                     # Same call again, but onto a transparent canvas with
                     # keep_alpha=True -- isolates just the new glyphs as
                     # their own layer (see export_layer_patches above),
                     # for the downloadable PSD.
-                    export_layer_patches[layer_key] = apply_layer_text_override(
-                        Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
-                        box,
-                        text,
-                        text_color=effective_color,
-                        font_family=effective_family,
-                        font_name=effective_font_name,
-                        font_size=ceiling_font_size,
-                        exact_font_size=exact_font_size,
-                        bold=effective_bold,
-                        leading=effective_leading,
-                        leading_reference_size=leading_reference_size,
-                        glow=glow,
-                        glow_color=glow_color,
-                        glow_size=glow_size,
-                        glow_opacity=glow_opacity,
-                        align=align,
-                        show_background=show_background,
-                        background_color=background_color,
-                        background_opacity=background_opacity,
-                        background_blur=background_blur,
-                        keep_alpha=True,
-                        stroke_size=stroke_size,
-                        stroke_color=stroke_color,
-                    )
+                    def _patch(with_background):
+                        return apply_layer_text_override(
+                            Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
+                            box,
+                            text,
+                            text_color=effective_color,
+                            font_family=effective_family,
+                            font_name=effective_font_name,
+                            font_size=ceiling_font_size,
+                            exact_font_size=exact_font_size,
+                            bold=effective_bold,
+                            leading=effective_leading,
+                            leading_reference_size=leading_reference_size,
+                            glow=glow,
+                            glow_color=glow_color,
+                            glow_size=glow_size,
+                            glow_opacity=glow_opacity,
+                            align=align,
+                            show_background=with_background,
+                            background_color=background_color,
+                            background_opacity=background_opacity,
+                            background_blur=background_blur,
+                            keep_alpha=True,
+                            stroke_size=stroke_size,
+                            stroke_color=stroke_color,
+                            keep_size=keep_design_size,
+                            shadow=design_shadow,
+                        )
+                    export_layer_patches[layer_key] = _patch(show_background)
+                    # The picture kept INSIDE a type layer (and its
+                    # "(rendered)" twin) is the words alone: a box drawn
+                    # behind them is this form's setting, not the
+                    # layer's, and stored in the layer it travelled into
+                    # every later template as a band behind the text no
+                    # setting could switch off.
+                    words_only_patches[layer_key] = _patch(False) if show_background else export_layer_patches[layer_key]
                     applied_layers.append(layer_key)
                     # The size the words were ACTUALLY laid out at, which
                     # is what the renderer measures a glow radius and a
@@ -4565,10 +5677,18 @@ def generate():
                     background_notes.append(
                         f"{size_label(width, height)}: {layer_key} debug -- "
                         f"read from PSD: {psd_text_style or 'none'} | "
-                        f"used: {text_debug.get('font_size')}px {text_debug.get('family')} "
-                        f"(bold={text_debug.get('bold')}), leading {text_debug.get('line_height')}px, "
+                        f"used: {text_debug.get('font_size')}px in {text_debug.get('font_used') or text_debug.get('family')} "
+                        f"(the template asks for {psd_text_style.get('font_name') or '?'}; bold={text_debug.get('bold')}), "
+                        f"leading {text_debug.get('line_height')}px, "
                         f"{text_debug.get('lines')} line(s), color {effective_color}."
                     )
+                    if text_debug.get("clipped_lines"):
+                        background_warnings.append(
+                            f"{size_label(width, height)}: {layer_key} -- at the design's {text_debug.get('font_size')}px, "
+                            f"{text_debug['clipped_lines']} line(s) of this copy don't fit the layer's box and are not "
+                            "shown, exactly as Photoshop's text box would clip them. Shorten the copy, or type a "
+                            "smaller font size for the layer to fit it all in."
+                        )
                     if text_debug.get("clamped"):
                         # The text is always shrunk to actually fit the
                         # box (see apply_layer_text_override()) -- if that
@@ -4586,8 +5706,11 @@ def generate():
 
                 # Any of these on their own is a reason to redraw the
                 # layer: new words, a colour, a family, a size.
-                if (
-                    layer_header_text
+                if text_only_size:
+                    if size_text["header"]:
+                        _apply_text_layer_override("header", size_text["header"], "", None, False, (0, 0, 0), align="template")
+                elif (
+                    size_text["header"]
                     or layer_header_glow
                     or layer_header_background
                     or layer_header_use_custom_color
@@ -4597,7 +5720,7 @@ def generate():
                 ):
                     _apply_text_layer_override(
                         "header",
-                        layer_header_text,
+                        size_text["header"],
                         layer_header_font_family,
                         layer_header_font_size,
                         layer_header_use_custom_color,
@@ -4614,8 +5737,11 @@ def generate():
                         stroke_size=layer_header_stroke_size,
                         stroke_color=layer_header_stroke_color,
                     )
-                if (
-                    layer_description_text
+                if text_only_size:
+                    if size_text["description"]:
+                        _apply_text_layer_override("description", size_text["description"], "", None, False, (0, 0, 0), align="template")
+                elif (
+                    size_text["description"]
                     or layer_description_glow
                     or layer_description_background
                     or layer_description_use_custom_color
@@ -4625,7 +5751,7 @@ def generate():
                 ):
                     _apply_text_layer_override(
                         "description",
-                        layer_description_text,
+                        size_text["description"],
                         layer_description_font_family,
                         layer_description_font_size,
                         layer_description_use_custom_color,
@@ -4642,8 +5768,11 @@ def generate():
                         stroke_size=layer_description_stroke_size,
                         stroke_color=layer_description_stroke_color,
                     )
-                if (
-                    layer_legal_text
+                if text_only_size:
+                    if size_text["legal"]:
+                        _apply_text_layer_override("legal", size_text["legal"], "", None, False, (0, 0, 0), align="template")
+                elif (
+                    size_text["legal"]
                     or layer_legal_glow
                     or layer_legal_background
                     or layer_legal_use_custom_color
@@ -4653,7 +5782,7 @@ def generate():
                 ):
                     _apply_text_layer_override(
                         "legal",
-                        layer_legal_text,
+                        size_text["legal"],
                         layer_legal_font_family,
                         layer_legal_font_size,
                         layer_legal_use_custom_color,
@@ -4678,7 +5807,8 @@ def generate():
                 # do nothing until something was typed into a field they
                 # have no relationship with.
                 if (
-                    (
+                    not text_only_size
+                    and (
                         layer_cta_text
                         or layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT
                         or layer_cta_glow
@@ -4691,7 +5821,7 @@ def generate():
                         or layer_cta_font_size
                     )
                     and "cta" not in layer_image_overrides
-                    and "cta" not in hidden_layer_names
+                    and "cta" not in size_hidden_layer_names
                 ):
                     # Skipped when a CTA image was uploaded for this run:
                     # that upload IS the button, and drawing one over it
@@ -4924,10 +6054,10 @@ def generate():
                             # against the template's own layer boxes,
                             # which needs no fit mapping at all.
                             source_layer_images = {}
-                            if layer_image_overrides:
+                            if size_image_overrides:
                                 source_boxes = get_psd_layer_boxes(psd_path_for_size)
                                 source_size = get_psd_canvas_size(psd_path_for_size) or (width, height)
-                                for name, override_image in layer_image_overrides.items():
+                                for name, override_image in size_image_overrides.items():
                                     box = source_boxes.get(name)
                                     if box is None:
                                         continue
@@ -4968,11 +6098,17 @@ def generate():
                             # names the group; the label inside it is
                             # what actually gets rewritten (see
                             # _named_type_layers()).
+                            # size_text, not the typed fields: it holds
+                            # this size's localized copy too -- the
+                            # template's own header in French, say -- so
+                            # the live type layers read what the creative
+                            # shows, in the layer's own font, size and
+                            # colour (the rewrite keeps the run's style).
                             live_text_updates = {
-                                "header": layer_header_text,
-                                "description": layer_description_text,
-                                "legal": layer_legal_text,
-                                "cta": layer_cta_text,
+                                "header": size_text["header"],
+                                "description": size_text["description"],
+                                "legal": size_text["legal"],
+                                "cta": size_text["cta"],
                             }
                             if any(live_text_updates.values()):
                                 retyped = set_type_layer_text(
@@ -5123,7 +6259,7 @@ def generate():
                             # away instead of a re-render away.
                             live_text_rasters = {}
                             for key in ("header", "description", "legal"):
-                                patch = export_layer_patches.get(key)
+                                patch = words_only_patches.get(key, export_layer_patches.get(key))
                                 if patch is not None:
                                     live_text_rasters[key] = patch
                             if cta_label_patch is not None:
@@ -5159,10 +6295,10 @@ def generate():
                             # Layers hidden on the form open switched off
                             # in the editable file too, so it matches the
                             # preview; nothing is deleted, the eye is off.
-                            if hidden_layer_names:
+                            if size_hidden_layer_names:
                                 set_layer_visibility(
                                     job_dir / source_candidate_filename,
-                                    {name: False for name in hidden_layer_names},
+                                    {name: False for name in size_hidden_layer_names},
                                 )
                             set_flattened_preview(
                                 job_dir / source_candidate_filename, final_image
@@ -5193,12 +6329,29 @@ def generate():
                                 and psd_path_for_size is not None
                                 and psd_path_for_size.parent == DEFAULT_TEMPLATES_DIR
                             ):
-                                template_updates = {
-                                    "header": layer_header_text,
-                                    "description": layer_description_text,
-                                    "legal": layer_legal_text,
-                                    "cta": layer_cta_text,
-                                }
+                                template_updates = dict(typed_copy_english)
+                                # Words go into the template only with a
+                                # picture of those same words beside
+                                # them (see template_rasters below). On
+                                # a French run the picture is French and
+                                # the typed words English: saving the
+                                # words alone left the template reading
+                                # one thing and showing another, and
+                                # every later run showed the picture.
+                                held_back = [
+                                    key for key, words in template_updates.items()
+                                    if words and not _same_words(words, size_text.get(key) or words)
+                                ]
+                                for key in held_back:
+                                    template_updates[key] = ""
+                                if held_back:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: the typed {', '.join(held_back)} was not "
+                                        f"saved into {psd_path_for_size.name} on a "
+                                        f"{COPY_LANGUAGE_ENGLISH_NAMES.get(copy_language, copy_language)} run -- "
+                                        "the template keeps English words with an English picture; run in "
+                                        "English to save the copy into it."
+                                    )
                                 # Anything at all to carry, not just
                                 # words: restyling the CTA button and
                                 # typing nothing is a perfectly ordinary
@@ -5262,9 +6415,24 @@ def generate():
                                         # placeholder copy despite holding
                                         # the new string -- see the
                                         # live-text download above.
-                                        if live_text_rasters:
+                                        # ...but only a picture that shows
+                                        # the words the template now holds.
+                                        # The run drew size_text (the
+                                        # French, say) and the template got
+                                        # the typed English, or kept its own
+                                        # words unretyped: a picture of
+                                        # other words beside them is what
+                                        # left templates reading one thing
+                                        # and showing another.
+                                        template_rasters = {}
+                                        for raster_key, raster in live_text_rasters.items():
+                                            holds = template_updates.get(raster_key) or own_text_layers.get(raster_key)
+                                            shows = size_text.get(raster_key) or own_text_layers.get(raster_key)
+                                            if holds and shows and _same_words(holds, shows):
+                                                template_rasters[raster_key] = raster
+                                        if template_rasters:
                                             set_type_layer_raster(
-                                                psd_path_for_size, live_text_rasters
+                                                psd_path_for_size, template_rasters
                                             )
                                         # Last: the file's own flattened
                                         # snapshot, rebuilt from the layers
@@ -5328,7 +6496,7 @@ def generate():
                             for name in (
                                 psd_hidden_layer_names(psd_path_for_size)
                                 if psd_path_for_size is not None else set()
-                            ) | hidden_layer_names
+                            ) | size_hidden_layer_names
                             if name not in export_layer_patches
                         }
                         save_layered_psd(
@@ -5538,6 +6706,7 @@ def generate():
     # is a convenience, never something that should fail a render that
     # already succeeded.
     form_state_fields = {name: (request.form.get(name) or "") for name in EDIT_TEXT_FIELD_NAMES}
+    form_state_fields.update(form_field_overrides)
     # As applied, not as typed: the form's select needs the normalised value to reselect.
     form_state_fields["upload_ai_speed"] = upload_ai_speed
     # These already have a validated/defaulted Python variable (the raw
@@ -5591,12 +6760,20 @@ def generate():
                 {
                     "fields": form_state_fields,
                     "files": form_state_files,
+                    "promoted_psd_rows": sorted(promoted_psd_rows),
                     "session_id": session_id,
                     "campaign_slot": campaign_slot,
                 },
                 indent=2,
             )
         )
+    except OSError:
+        pass
+    # ...and as the run a fresh form carries its section files from.
+    try:
+        prefs = _load_preferences()
+        prefs["last_job_id"] = job_id
+        _preferences_path().write_text(json.dumps(prefs, indent=2), encoding="utf-8")
     except OSError:
         pass
 
@@ -5868,7 +7045,10 @@ def motion(job_id):
         fields = (json.loads((job_dir / "form_state.json").read_text()).get("fields") or {})
     except Exception:  # noqa: BLE001
         fields = {}
-    hidden |= {name for name in HIDEABLE_LAYER_NAMES if fields.get(f"layer_{name}_hidden")}
+    # ...unless the run used its templates as uploaded, where the hide
+    # boxes don't apply (see size_hidden_layer_names in generate()).
+    if not (fields.get("psd_as_is") and not fields.get("upload_ai_enabled")):
+        hidden |= {name for name in HIDEABLE_LAYER_NAMES if fields.get(f"layer_{name}_hidden")}
     try:
         info = render_motion_clip(
             psd if psd.is_file() else None, out, fallback_image=png, hidden=hidden

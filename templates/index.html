@@ -287,10 +287,18 @@
       {% set prefill = campaign.prefill %}
       {% set prefill_files = campaign.prefill_files %}
       {% set edit_job_id = campaign.edit_job_id %}
+      {# The run a fresh form carries its section files from (hero, layer
+         images, PSD rows) -- thumbnails and carry-forward come from it,
+         nothing else about that run does. #}
+      {% set carry_job_id = campaign.get('carry_job_id') %}
+      {% set files_job_id = edit_job_id or carry_job_id %}
       <div class="campaign-card" data-campaign-index="{{ loop.index }}">
         <form class="creative-form" action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
         <input type="hidden" name="session_id" value="{{ session_id }}">
         <input type="hidden" name="campaign_slot" value="{{ loop.index }}">
+      {% if not edit_job_id and carry_job_id %}
+        <input type="hidden" name="carry_files_job_id" value="{{ carry_job_id }}">
+      {% endif %}
       {% if edit_job_id %}
         <input type="hidden" name="edit_job_id" value="{{ edit_job_id }}" data-edit-only>
         <div class="hint" style="margin-bottom: 1rem;" data-edit-only>Editing a previous batch -- any file field you don't change keeps its previous file automatically.</div>
@@ -314,6 +322,19 @@
             <span style="white-space: nowrap;">Market</span>
             <input type="text" id="market" name="market" placeholder="e.g. US, UK" value="{{ prefill.get('market', '') }}" required>
           </label>
+          <label for="copy_language" style="font-weight: 400; flex: 0 1 200px;" title="The header, description, legal and CTA you type are translated into this language as they are drawn into the creatives. Type them in English; the English stays on the form.">
+            <span style="white-space: nowrap;">Copy language</span>
+            <select id="copy_language" name="copy_language">
+              {% for code, name in copy_languages %}
+                <option value="{{ code }}" {% if prefill.get('copy_language', 'en') == code %}selected{% endif %}>{{ name }}</option>
+              {% endfor %}
+            </select>
+          </label>
+        </div>
+        <div class="hint" style="margin-top: 0.3rem;">
+          Copy language: the header, description, legal and CTA you type below are translated into it as they are
+          drawn into the creatives (type them in English -- the English stays on the form, and the results page shows
+          each translation beside it). English draws the copy as typed.
         </div>
         <div class="inline-controls" style="margin-top: 0.6rem; align-items: flex-start;">
           <label for="audience" style="font-weight: 400; flex: 1 1 200px;">
@@ -361,7 +382,7 @@
         {# Not .inline-controls: that row is gap-6 and every field in it is
            w-full, so the file input wrapped onto its own line under the
            checkbox. Explicit flex with the width overridden inline, and the
-           input in a wrapper of its own so the "Location:" hint the script
+           input in a wrapper of its own so the "Chosen" chip the script
            inserts after it lands underneath rather than beside it. #}
         <div style="display: flex; align-items: center; gap: 0.6rem; margin: 0;">
           <input type="checkbox" id="upload_custom_hero_enabled" name="upload_custom_hero_enabled" value="1"
@@ -383,8 +404,8 @@
                prose saying one is there. #}
             {% if prefill_files.get('upload_hero_image') %}
               <div class="layer-image-cached" data-role="layer-cached-upload_hero_image" data-prefill-hint style="margin-top: 0.4rem;">
-                {% if edit_job_id %}
-                  <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get('upload_hero_image')) }}" alt="Custom hero image">
+                {% if files_job_id %}
+                  <img src="{{ url_for('serve_upload', job_id=files_job_id, filename=prefill_files.get('upload_hero_image')) }}" alt="Custom hero image">
                 {% endif %}
                 <div class="layer-image-cached-meta">
                   <strong>Kept from your last run</strong>
@@ -929,8 +950,8 @@
                 {% for field_name, label in layer_image_fields %}
                   {% if prefill_files.get(field_name) %}
                     <div class="layer-image-cached" data-role="layer-cached-{{ field_name }}">
-                      {% if edit_job_id %}
-                        <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get(field_name)) }}" alt="{{ label }} layer image">
+                      {% if files_job_id %}
+                        <img src="{{ url_for('serve_upload', job_id=files_job_id, filename=prefill_files.get(field_name)) }}" alt="{{ label }} layer image">
                       {% endif %}
                       <div class="layer-image-cached-meta">
                         <strong>{{ label }}</strong>
@@ -1002,6 +1023,10 @@
                 <div data-role="reference-url-list"></div>
                 <div class="hint" data-role="reference-status" hidden style="margin: 0.3rem 0 0; color: #fcd34d;"></div>
                 <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures or short videos here, choose files, or drag pictures straight off web pages -- up to {{ reference_limit }} together. PNG, JPEG, WebP, PSD (flattened), iPhone HEIC, TIFF, GIF; a video's middle frame is used. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
+                <div class="checkbox-row" style="margin-top: 0.4rem;">
+                  <input type="checkbox" id="upload_ai_send_references" name="upload_ai_send_references" value="1" {% if prefill.get('upload_ai_send_references') %}checked{% endif %}>
+                  <span>Send the mood board to Ideogram as style references <span style="font-weight: 400; color: var(--muted);">(copies the pictures' whole look -- layout and lettering included, so a board of finished ads comes back as an ad. Off, only their palette, lighting and mood are described to the model, which is what a clean hero wants.)</span></span>
+                </div>
               </div>
               {% for slot in reference_slots %}
                 {% if prefill_files.get(slot) %}
@@ -1155,15 +1180,33 @@
             provided if some requested size has no matching template.
           </div>
           <div class="hint">
-            A row here only ever affects the exact size you upload it for -- it never pulls in anything else.
-            <code>default_templates/</code> saved templates are only brought in when you use the content PSD
-            field above, not from a row here.
+            A row's file also carries onto any other size in the batch with exactly the same proportions that has
+            no file of its own, scaled to fit -- a 1080x1080 updates the 1200x1200, a 720x1280 the 1080x1920.
+            It never pulls in anything else: <code>default_templates/</code> saved templates are only brought in
+            when you use the content PSD field above, not from a row here.
           </div>
           <div class="checkbox-row" style="margin-top: 0.4rem;">
             <input type="checkbox" id="psd_as_is" name="psd_as_is" value="1" {% if prefill.get('psd_as_is') %}checked{% endif %}>
             <span>Use these files exactly as uploaded <span style="font-weight: 400; color: var(--muted);">(their own background and text stand: the hero image is not put behind them and nothing typed on this form is drawn over them. Unticked, each file is a layout -- the hero goes into its background layer and typed copy into its text layers.)</span></span>
           </div>
-          {% for i in range(1, 5) %}
+          <div class="checkbox-row" style="margin-top: 0.3rem; margin-left: 1.6rem;">
+            <input type="checkbox" id="psd_as_is_hero" name="psd_as_is_hero" value="1" {% if prefill.get('psd_as_is_hero') %}checked{% endif %}>
+            <span>...but put the hero image in their background <span style="font-weight: 400; color: var(--muted);">(a new hero goes into every template's background layer; the templates' own text and layers still stand, nothing typed is drawn.)</span></span>
+          </div>
+          <div class="checkbox-row" style="margin-top: 0.4rem;">
+            <input type="checkbox" id="psd_make_saved" name="psd_make_saved" value="1" {% if prefill.get('psd_make_saved', '1') %}checked{% endif %}>
+            <span>The most recent upload is the template <span style="font-weight: 400; color: var(--muted);">(a file uploaded here becomes the saved template for its size -- and for the same-shape sizes it carries onto -- in <code>default_templates/</code>, so every run from then on starts from it. The file it replaces is kept in <code>_template_backups/</code>. Untick to use an upload for this run only.)</span></span>
+          </div>
+          <div class="drop-zone" data-role="psd-drop-zone" style="margin-top: 0.6rem; text-align: center; color: var(--muted); font-size: 0.85rem;">
+            Drop updated PSDs here -- one or several. Each goes to the row for its size (read from the file), replacing
+            the file that row was keeping; a size with no row yet gets a new one.
+          </div>
+          {# Every row the server accepts is in the page; the first
+             psd_rows_shown are open and the rest hidden until the "+"
+             below reveals them one at a time -- a hidden row that came
+             back filled from a previous run is opened straight away. #}
+          {% for i in range(1, max_psd_templates + 1) %}
+            <div class="psd-template-row" data-role="psd-row-{{ i }}" {% if i > psd_rows_shown and not (prefill.get('psd_size_' ~ i) or prefill_files.get('psd_file_' ~ i)) %}hidden{% endif %}>
             <div class="inline-controls" style="margin-top: {% if i == 1 %}0.4rem{% else %}0.6rem{% endif %};">
               <label for="psd_size_{{ i }}" style="font-weight: 400;">
                 <span style="white-space: nowrap;">Size</span>
@@ -1171,7 +1214,7 @@
               </label>
               <label for="psd_file_{{ i }}" style="font-weight: 400; flex: 1 1 auto;">
                 <span style="white-space: nowrap;">PSD file</span>
-                <input type="file" id="psd_file_{{ i }}" name="psd_file_{{ i }}" accept=".psd" style="width: auto;">
+                <input type="file" id="psd_file_{{ i }}" name="psd_file_{{ i }}" accept=".psd" style="flex: 1 1 auto; min-width: 0; width: 100%;">
               </label>
               <input type="hidden" id="psd_size_{{ i }}_clear" name="psd_size_{{ i }}_clear" value="">
             </div>
@@ -1182,8 +1225,8 @@
                from the thumbnail route rather than the raw upload. #}
             {% if prefill_files.get('psd_file_' ~ i) %}
               <div class="layer-image-cached" id="psd_currently_{{ i }}" data-role="psd-currently-{{ i }}" data-prefill-hint style="margin-top: 0.3rem; margin-bottom: 0.5rem;">
-                {% if edit_job_id %}
-                  <img src="{{ url_for('serve_upload_thumb', job_id=edit_job_id, filename=prefill_files.get('psd_file_' ~ i)) }}" alt="{{ prefill.get('psd_size_' ~ i, '') or 'Template' }} template">
+                {% if files_job_id %}
+                  <img src="{{ url_for('serve_upload_thumb', job_id=files_job_id, filename=prefill_files.get('psd_file_' ~ i)) }}" alt="{{ prefill.get('psd_size_' ~ i, '') or 'Template' }} template">
                 {% endif %}
                 <div class="layer-image-cached-meta">
                   <strong>Kept from your last run</strong>
@@ -1192,7 +1235,9 @@
                 <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" data-role="psd-clear-btn-{{ i }}" data-prefill-hint title="Remove this template -- use the hero image for this size instead">&times;</button>
               </div>
             {% endif %}
+            </div>
           {% endfor %}
+          <button type="button" class="create-campaign-btn" data-role="psd-add-row" style="margin-top: 0.7rem;" title="Add another size row (up to {{ max_psd_templates }})">+ Add another size</button>
 
         </div>
       </div>
@@ -1532,13 +1577,14 @@
         var syncCustomHero = function () {
           customHeroBody.hidden = !customHeroToggle.checked;
         };
+        // Custom hero and AI hero are the two ways in, and exactly one
+        // is on: ticking one unticks the other, and unticking one ticks
+        // the other -- there is no "neither".
         customHeroToggle.addEventListener("change", function () {
-          if (customHeroToggle.checked) {
-            var aiBox = root.querySelector('[name="upload_ai_enabled"]');
-            if (aiBox && aiBox.checked) {
-              aiBox.checked = false;
-              aiBox.dispatchEvent(new Event("change"));
-            }
+          var aiBox = root.querySelector('[name="upload_ai_enabled"]');
+          if (aiBox && aiBox.checked === customHeroToggle.checked) {
+            aiBox.checked = !customHeroToggle.checked;
+            aiBox.dispatchEvent(new Event("change"));
           }
           syncCustomHero();
         });
@@ -1561,9 +1607,9 @@
           aiBody.hidden = !aiEnabled.checked;
         };
         aiEnabled.addEventListener("change", function () {
-          if (aiEnabled.checked && customHeroToggle && customHeroToggle.checked) {
-            customHeroToggle.checked = false;
-            if (customHeroBody) customHeroBody.hidden = true;
+          if (customHeroToggle && customHeroToggle.checked === aiEnabled.checked) {
+            customHeroToggle.checked = !aiEnabled.checked;
+            if (customHeroBody) customHeroBody.hidden = !customHeroToggle.checked;
           }
           syncAiBody();
         });
@@ -1716,7 +1762,141 @@
       // on that path alone. The folder now drives every batch, so those
       // fields apply to every run and the panel stays visible.
 
-      for (var i = 1; i <= 4; i++) {
+      var MAX_PSD_ROWS = {{ max_psd_templates }};
+      var psdAddBtn = root.querySelector('[data-role="psd-add-row"]');
+      if (psdAddBtn) {
+        var nextHiddenRow = function () {
+          for (var i = 1; i <= MAX_PSD_ROWS; i++) {
+            var row = root.querySelector('[data-role="psd-row-' + i + '"]');
+            if (row && row.hidden) return row;
+          }
+          return null;
+        };
+        if (!nextHiddenRow()) psdAddBtn.hidden = true;
+        psdAddBtn.addEventListener("click", function () {
+          var row = nextHiddenRow();
+          if (!row) { psdAddBtn.hidden = true; return; }
+          row.hidden = false;
+          var sizeInput = row.querySelector('input[type="text"]');
+          if (sizeInput) sizeInput.focus();
+          if (!nextHiddenRow()) psdAddBtn.hidden = true;
+        });
+      }
+
+      // A PSD's own canvas size sits in its first 26 bytes (height at
+      // 14, width at 18, big-endian) -- read on the spot, so a dropped
+      // file names its own row without anyone typing the size.
+      function readPsdSize(file) {
+        return new Promise(function (resolve) {
+          var reader = new FileReader();
+          reader.onload = function () {
+            try {
+              var view = new DataView(reader.result);
+              if (view.byteLength < 26 || view.getUint32(0) !== 0x38425053) return resolve(null);  // "8BPS"
+              var height = view.getUint32(14), width = view.getUint32(18);
+              resolve(width && height ? width + "x" + height : null);
+            } catch (e) { resolve(null); }
+          };
+          reader.onerror = function () { resolve(null); };
+          reader.readAsArrayBuffer(file.slice(0, 26));
+        });
+      }
+      // A file's canvas is often a few pixels off the slot it is for
+      // (a 728x480 file for the 720x480 slot): the size goes to the
+      // nearest size the app knows or a row already has, so the file
+      // lands on the right slot instead of opening a new 728x480 one.
+      var KNOWN_SIZES = {{ known_sizes | tojson }};
+      function snapSize(size) {
+        if (!size) return size;
+        var parts = size.split("x"); var w = +parts[0], h = +parts[1];
+        var candidates = KNOWN_SIZES.slice();
+        for (var i = 1; i <= MAX_PSD_ROWS; i++) {
+          var r = psdRow(i);
+          if (r.size && r.size.value.trim()) candidates.push(r.size.value.trim().replace(/\s+/g, "").toLowerCase());
+        }
+        if (candidates.indexOf(size) >= 0) return size;
+        var best = null, bestDist = Infinity;
+        candidates.forEach(function (c) {
+          var cp = c.split("x"); var cw = +cp[0], ch = +cp[1];
+          if (!cw || !ch) return;
+          if (Math.abs(cw - w) / w > 0.03 || Math.abs(ch - h) / h > 0.03) return;
+          var d = Math.abs(cw - w) + Math.abs(ch - h);
+          if (d < bestDist) { bestDist = d; best = c; }
+        });
+        return best || size;
+      }
+      function psdRow(i) {
+        return {
+          row: root.querySelector('[data-role="psd-row-' + i + '"]'),
+          size: root.querySelector('[name="psd_size_' + i + '"]'),
+          file: root.querySelector('[name="psd_file_' + i + '"]'),
+          clear: root.querySelector('[name="psd_size_' + i + '_clear"]'),
+          chip: root.querySelector('[data-role="psd-currently-' + i + '"]'),
+        };
+      }
+      function rowHoldsFile(r) {
+        return (r.file && r.file.files && r.file.files.length) || (r.chip && !r.chip.hidden && !r.chip.classList.contains("is-cleared"));
+      }
+      function placePsd(file, size) {
+        // The row already set to this size, else the first row with
+        // nothing in it (opened if it was hidden). Dropping on a row
+        // that keeps last run's file replaces that file.
+        var target = null;
+        for (var i = 1; i <= MAX_PSD_ROWS && !target; i++) {
+          var r = psdRow(i);
+          if (r.size && size && r.size.value.trim().replace(/\s+/g, "").toLowerCase() === size) target = r;
+        }
+        for (var j = 1; j <= MAX_PSD_ROWS && !target; j++) {
+          var e = psdRow(j);
+          if (e.size && !e.size.value.trim() && !rowHoldsFile(e)) target = e;
+        }
+        if (!target || !target.file) return false;
+        if (target.row) target.row.hidden = false;
+        if (psdAddBtn && !nextHiddenRow()) psdAddBtn.hidden = true;
+        if (size && !target.size.value.trim()) target.size.value = size;
+        var dt = new DataTransfer();
+        dt.items.add(file);
+        try { target.file.files = dt.files; } catch (e) { return false; }
+        if (target.clear) target.clear.value = "";
+        target.file.dispatchEvent(new Event("change", { bubbles: true }));
+        return true;
+      }
+      var psdZone = root.querySelector('[data-role="psd-drop-zone"]');
+      if (psdZone) {
+        ["dragenter", "dragover"].forEach(function (evt) {
+          psdZone.addEventListener(evt, function (e) { e.preventDefault(); psdZone.classList.add("is-dragover"); });
+        });
+        ["dragleave", "drop"].forEach(function (evt) {
+          psdZone.addEventListener(evt, function () { psdZone.classList.remove("is-dragover"); });
+        });
+        psdZone.addEventListener("drop", function (e) {
+          e.preventDefault();
+          var files = Array.prototype.filter.call(e.dataTransfer.files || [], function (f) { return /\.psd$/i.test(f.name); });
+          if (!files.length) return;
+          // One after another, so two files of one size don't race for
+          // the same row.
+          files.reduce(function (chain, file) {
+            return chain.then(function () { return readPsdSize(file).then(function (size) { placePsd(file, snapSize(size)); }); });
+          }, Promise.resolve());
+        });
+      }
+      // A file chosen or dropped on a row's own input names the row's
+      // size: the file IS the creative, so its canvas (snapped to the
+      // slot it is a few pixels off) goes in the Size field, replacing
+      // whatever was there.
+      for (var k = 1; k <= MAX_PSD_ROWS; k++) {
+        (function (k) {
+          var r = psdRow(k);
+          if (!r.file || !r.size) return;
+          r.file.addEventListener("change", function () {
+            var file = r.file.files && r.file.files[0];
+            if (!file) return;
+            readPsdSize(file).then(function (size) { if (size) r.size.value = snapSize(size); });
+          });
+        })(k);
+      }
+
+      for (var i = 1; i <= MAX_PSD_ROWS; i++) {
         (function (i) {
           var btn = root.querySelector('[data-role="psd-clear-btn-' + i + '"]');
           if (!btn) return;
@@ -1756,11 +1936,7 @@
         });
       });
 
-      // A "Location: <name>" line under every image/PSD upload field,
-      // updated the instant a file is chosen -- a browser only ever
-      // exposes the picked file's *name* to page JS (never its real path
-      // on disk, for the same security reason the content-PSD comment
-      // above mentions), so that's what shows here.
+      // Drag highlight on every upload field.
       root.querySelectorAll('input[type="file"]').forEach(function (fileInput) {
         ["dragenter", "dragover"].forEach(function (evt) {
           fileInput.addEventListener(evt, function () { fileInput.classList.add("is-dragover"); });
@@ -1769,43 +1945,50 @@
           fileInput.addEventListener(evt, function () { fileInput.classList.remove("is-dragover"); });
         });
       });
-      // ...and, for a picture, a thumbnail of it: the same chip the
-      // kept-file cards use, so what was just chosen or dropped is seen,
-      // not just named. The mood board draws its own chips.
+      // A chip under every upload field showing what was just chosen or
+      // dropped: a thumbnail for a picture, a labelled tile for a PSD or
+      // video the browser can't draw, and the full file name either way
+      // (the input itself shows the name too, but shortens a long one).
+      // A browser only ever exposes the picked file's *name* to page JS,
+      // never its real path on disk. The mood board draws its own chips.
       root.querySelectorAll('input[type="file"]').forEach(function (fileInput) {
         if (fileInput.name === "upload_ai_reference") return;
-        var locationHint = document.createElement("div");
-        locationHint.className = "hint upload-location-hint";
-        locationHint.hidden = true;
-        fileInput.insertAdjacentElement("afterend", locationHint);
         var chip = document.createElement("div");
         chip.className = "layer-image-cached upload-preview-chip";
         chip.hidden = true;
         chip.style.marginTop = "0.4rem";
         chip.innerHTML = '<img alt=""><div class="layer-image-cached-meta"><strong>Chosen</strong>' +
-          '<span class="layer-image-cached-name"></span></div>';
-        locationHint.insertAdjacentElement("afterend", chip);
-        // Anything that isn't a picture (a PSD, a video) keeps the text line only.
+          '<span class="layer-image-cached-name" style="max-width: 24rem;"></span></div>';
+        // Inside a label that shares a row with other controls, the chip
+        // goes after the label so the input keeps the row's width.
+        var host = fileInput.parentElement && fileInput.parentElement.tagName === "LABEL" ? fileInput.parentElement : fileInput;
+        host.insertAdjacentElement("afterend", chip);
+        var img = chip.querySelector("img");
+        var tile = document.createElement("div");
+        tile.style.cssText = "width:2.5rem;height:2.5rem;border-radius:4px;background:#1e293b;color:#94a3b8;font-size:0.6rem;display:flex;align-items:center;justify-content:center;font-weight:700;flex:none;";
+        tile.hidden = true;
+        chip.insertBefore(tile, img);
         fileInput.addEventListener("change", function () {
           var file = fileInput.files && fileInput.files[0];
-          var old = chip.querySelector("img").src;
-          if (old && old.indexOf("blob:") === 0) URL.revokeObjectURL(old);
-          if (file) {
-            locationHint.textContent = "Location: " + file.name;
-            locationHint.hidden = false;
-            if (/^image\//.test(file.type)) {
-              chip.querySelector("img").src = URL.createObjectURL(file);
-              chip.querySelector(".layer-image-cached-name").textContent = file.name;
-              chip.querySelector("strong").textContent =
-                fileInput.files.length > 1 ? "Chosen (" + fileInput.files.length + " files, first shown)" : "Chosen";
-              chip.hidden = false;
-            } else {
-              chip.hidden = true;
-            }
+          if (img.src && img.src.indexOf("blob:") === 0) URL.revokeObjectURL(img.src);
+          if (!file) { chip.hidden = true; return; }
+          var ext = (file.name.split(".").pop() || "").toLowerCase();
+          var drawable = /^image\//.test(file.type) && ext !== "psd" && ext !== "heic" && ext !== "heif";
+          if (drawable) {
+            img.src = URL.createObjectURL(file);
+            img.hidden = false;
+            tile.hidden = true;
           } else {
-            locationHint.hidden = true;
-            chip.hidden = true;
+            img.removeAttribute("src");
+            img.hidden = true;
+            tile.textContent = ext === "psd" ? "PSD" : (/^video\//.test(file.type) ? "VIDEO" : "FILE");
+            tile.hidden = false;
           }
+          chip.querySelector(".layer-image-cached-name").textContent = file.name;
+          chip.querySelector(".layer-image-cached-name").title = file.name;
+          chip.querySelector("strong").textContent =
+            fileInput.files.length > 1 ? "Chosen (" + fileInput.files.length + " files, first shown)" : "Chosen";
+          chip.hidden = false;
         });
       });
     }

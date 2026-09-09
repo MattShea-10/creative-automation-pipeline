@@ -142,30 +142,33 @@ class PipelineSmokeTest(unittest.TestCase):
         self.assertTrue((self.output_dir / "hydroboost" / "mobile" / "hydroboost_320x50.png").exists())
         self.assertTrue((self.output_dir / "hydroboost" / "desktop" / "hydroboost_728x90.png").exists())
 
-    def test_728x480_is_recognized_but_not_in_the_web_top7_preset(self):
+    def test_720x480_is_recognized_but_not_in_the_web_top7_preset(self):
         from src.image_ops import WEB_AD_SIZES, device_category, size_name
 
-        # 728x480 was dropped from the web-top7 preset, but it's still a
-        # recognized size: requested explicitly it keeps its friendly name
-        # and desktop placement.
-        self.assertNotIn((728, 480), WEB_AD_SIZES)
-        self.assertEqual(size_name(728, 480), "Wide Rectangle")
-        self.assertEqual(device_category(728, 480), "desktop")
+        # 720x480 -- the templates' own wide delivery size -- isn't in
+        # the web-top7 preset, but it's a recognized size: requested
+        # explicitly it keeps its friendly name and desktop placement.
+        # (It replaced a 728x480 entry that was a near miss of it, and
+        # made typing the real size look like a typo.)
+        self.assertNotIn((720, 480), WEB_AD_SIZES)
+        self.assertEqual(size_name(720, 480), "Wide Rectangle")
+        self.assertEqual(device_category(720, 480), "desktop")
+        self.assertEqual(size_name(728, 480), "1.52:1")
 
         repo_root = Path(__file__).resolve().parent.parent
         brief = load_brief(str(repo_root / "briefs" / "sample_campaign.yaml"))
         store = LocalAssetStore(input_dir=str(repo_root / "assets"), cache_dir=str(self.cache_dir))
         pipeline = CreativePipeline(
-            provider=MockImageProvider(), store=store, output_dir=str(self.output_dir), sizes=[(728, 480)]
+            provider=MockImageProvider(), store=store, output_dir=str(self.output_dir), sizes=[(720, 480)]
         )
         report = pipeline.run(brief)
         self.assertEqual(len(report.creatives), 2)  # 2 products x 1 size
-        out_path = Path(self.output_dir / "hydroboost" / "desktop" / "hydroboost_728x480.png")
+        out_path = Path(self.output_dir / "hydroboost" / "desktop" / "hydroboost_720x480.png")
         self.assertTrue(out_path.exists())
         from PIL import Image as PILImage
 
         with PILImage.open(out_path) as img:
-            self.assertEqual(img.size, (728, 480))
+            self.assertEqual(img.size, (720, 480))
 
     def test_default_sizes_stay_uncategorized(self):
         # Social defaults aren't classic display ad units, so they should

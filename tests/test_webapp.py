@@ -25,6 +25,29 @@ from PIL import Image, ImageDraw
 import webapp
 
 
+def _pristine_template(name, tmp_dir):
+    """The project template as committed -- the app rewrites the working
+    copy in default_templates/ run after run (that is the point of the
+    saved templates), so a test that reads its English words needs the
+    version under git, not whatever the last run left. Falls back to
+    the working copy without git; None when neither is there."""
+    import subprocess
+
+    working = Path("default_templates") / name
+    try:
+        blob = subprocess.run(
+            ["git", "show", f"HEAD:default_templates/{name}"],
+            capture_output=True, check=True, timeout=30,
+        ).stdout
+        if blob[:4] == b"8BPS":
+            target = Path(tmp_dir) / f"pristine-{name}"
+            target.write_bytes(blob)
+            return target
+    except Exception:  # noqa: BLE001
+        pass
+    return working if working.is_file() else None
+
+
 class _CampaignBriefAutoFillClient:
     """Wraps a Flask test client so a POST to /generate gets sensible
     defaults merged in for the four now-required campaign-brief fields
@@ -2144,6 +2167,470 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         # default_templates/.
         self.assertEqual(r.data.count(b'class="card"'), 3)
 
+    def test_an_uploaded_psd_carries_onto_other_sizes_of_the_same_shape(self):
+        # Updating the 1080x1080 is updating the 1200x1200 too: same
+        # proportions, so the upload scales onto it as designed. A size
+        # that is only nearly square keeps the hero image -- close is a
+        # squash, not the same creative. And a size with its own upload
+        # keeps that upload.
+        data = {
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "psd_size_1": "1080x1080",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(108, 108), color=(200, 30, 30))), "square.psd"),
+            "psd_size_2": "300x300",
+            "psd_file_2": (io.BytesIO(self._sample_psd_bytes(size=(80, 80), color=(30, 200, 30))), "small.psd"),
+            "custom_sizes": "1200x1200, 1200x1250",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"1200x1200 used the PSD you uploaded for 1080x1080, scaled to fit", r.data)
+        self.assertNotIn(b"1200x1250 used the PSD you uploaded", r.data)
+        self.assertNotIn(b"300x300 used the PSD you uploaded", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_1200x1200.png") as img:
+            self.assertEqual(img.size, (1200, 1200))
+            r_, g_, b_ = img.getpixel((600, 600))
+        self.assertGreater(r_, 150)
+        self.assertLess(b_, 100)
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_1200x1250.png") as img:
+            r_, g_, b_ = img.getpixel((600, 600))
+        self.assertGreater(b_, 150)
+        self.assertLess(r_, 100)
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_300x300.png") as img:
+            r_, g_, b_ = img.getpixel((150, 150))
+        self.assertGreater(g_, 150)
+        self.assertLess(r_, 100)
+
+    def test_more_size_rows_open_behind_the_add_button(self):
+        # Four rows open to begin with, the rest in the page but hidden
+        # until "+ Add another size" reveals them; a row filled on a
+        # hidden slot works like any other and comes back open on Edit.
+        page = self.client.get("/").data
+        self.assertIn(b'data-role="psd-add-row"', page)
+        for i in range(1, webapp.MAX_PSD_TEMPLATES + 1):
+            self.assertIn(f'name="psd_file_{i}"'.encode(), page)
+            row = re.search(rf'<div class="psd-template-row" data-role="psd-row-{i}"([^>]*)>'.encode(), page)
+            self.assertIsNotNone(row, i)
+            self.assertEqual(b"hidden" in row.group(1), i > webapp.PSD_TEMPLATE_ROWS_SHOWN, i)
+        self.assertNotIn(f'name="psd_file_{webapp.MAX_PSD_TEMPLATES + 1}"'.encode(), page)
+
+        slot = webapp.PSD_TEMPLATE_ROWS_SHOWN + 3
+        data = {
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            f"psd_size_{slot}": "300x250",
+            f"psd_file_{slot}": (io.BytesIO(self._sample_psd_bytes(color=(200, 30, 30))), "seventh.psd"),
+            "custom_sizes": "300x250",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"300x250 used your uploaded PSD template", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        edit_page = self.client.get(f"/edit/{job_id}").data
+        row = re.search(rf'<div class="psd-template-row" data-role="psd-row-{slot}"([^>]*)>'.encode(), edit_page)
+        self.assertNotIn(b"hidden", row.group(1))
+        self.assertIn(b"Currently: <strong>seventh.psd</strong>", edit_page)
+        # The size typed on the extra row is remembered too -- without it
+        # the carried-forward file had no size on resubmit and the run
+        # stopped with "choose a target size".
+        self.assertIn(f'name="psd_size_{slot}" placeholder="{webapp.CONTENT_PSD_LABEL}" style="width: 7rem;" value="300x250"'.encode(), edit_page)
+        second = self.client.post(
+            "/generate",
+            data={"edit_job_id": job_id, f"psd_size_{slot}": "300x250", "custom_sizes": "300x250", "header": "", "description": ""},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(second.status_code, 200, second.data[:300])
+        self.assertIn(b"300x250 used your uploaded PSD template", second.data)
+
+    def test_a_typo_size_on_a_row_is_flagged_against_the_size_it_is_close_to(self):
+        # 3480x2160 for 3840x2160: the row is used as typed (a 29:18
+        # export), but the run says what it probably was meant to be,
+        # since as typed it updates nothing.
+        data = {
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "psd_size_1": "3480x2160",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(348, 216), color=(200, 30, 30))), "uhd.psd"),
+            "custom_sizes": "1920x1080",
+            "header": "",
+            "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"3480x2160 on a PSD row isn&#39;t a size this batch or the app knows, but it is close to 3840x2160", r.data)
+        self.assertIn(b"exports as a new 29:18 size instead of updating 3840x2160", r.data)
+        self.assertNotIn(b"1920x1080 used the PSD you uploaded", r.data)
+        self.assertIsNone(webapp._near_miss_size((1080, 1080), {(1200, 1200), (1080, 1920)}))
+        self.assertEqual(webapp._near_miss_size((1290, 1080), {(1200, 1200), (1920, 1080)}), (1920, 1080))
+        self.assertEqual(webapp._near_miss_size((1920, 1280), {(1200, 1200), (1920, 1080)}), (1920, 1080))
+        self.assertIsNone(webapp._near_miss_size((1200, 627), {(1200, 1200), (1920, 1080)}))
+
+    def test_brand_colors_are_remembered_on_a_fresh_form(self):
+        # The swatches and their ticks come back on the next fresh form
+        # (not just on Edit), and an untick is remembered as an untick.
+        data = {
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "custom_sizes": "300x250",
+            "header": "", "description": "",
+            "brand_color_1": "#112233", "brand_color_1_enabled": "1",
+            "brand_color_2": "#abcdef",
+            "brand_color_3": "#ff8800", "brand_color_3_enabled": "1",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        page = self.client.get("/").data
+        self.assertIn(b'name="brand_color_1_enabled" value="1" checked', page)
+        self.assertIn(b'name="brand_color_1" value="#112233"', page)
+        self.assertNotIn(b'name="brand_color_2_enabled" value="1" checked', page)
+        self.assertIn(b'name="brand_color_2" value="#abcdef"', page)
+        self.assertIn(b'name="brand_color_3_enabled" value="1" checked', page)
+        self.assertIn(b'name="brand_color_3" value="#ff8800"', page)
+
+        data = {
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "custom_sizes": "300x250",
+            "header": "", "description": "",
+            "brand_color_1": "#112233",
+            "brand_color_2": "#abcdef",
+            "brand_color_3": "#ff8800",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        page = self.client.get("/").data
+        self.assertNotIn(b"checked", page[page.index(b'id="brand_color_1_enabled"'):page.index(b'id="brand_color_1"')])
+        self.assertIn(b'name="brand_color_1" value="#112233"', page)
+        self.assertTrue((webapp.JOBS_DIR / "preferences.json").is_file())
+
+    def test_copy_is_translated_into_the_chosen_language(self):
+        from unittest import mock
+
+        # The English stays on the form and in the saved run; the
+        # translation goes into the creatives, with the pair on the
+        # results page. Repeats come from the cache, not the translator.
+        calls = []
+        def fake_translate(text, language):
+            calls.append((text, language))
+            return f"[{language}] {text}", True
+        data = {
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "custom_sizes": "300x250",
+            "header": "", "description": "",
+            "layer_header_text": "Rehydrate this summer", "layer_description_text": "Shop now",
+            "copy_language": "fr",
+        }
+        with mock.patch.object(webapp, "localize_message", side_effect=fake_translate):
+            r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"French copy -- header layer: &#34;Rehydrate this summer&#34; -&gt; &#34;[fr] Rehydrate this summer&#34;.", r.data)
+        self.assertIn(b"French copy -- description layer: &#34;Shop now&#34; -&gt; &#34;[fr] Shop now&#34;.", r.data)
+        self.assertEqual(sorted(calls), [("Rehydrate this summer", "fr"), ("Shop now", "fr")])
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        edit_page = self.client.get(f"/edit/{job_id}").data
+        self.assertIn(b'value="Rehydrate this summer"', edit_page)   # English on the form
+        self.assertIn(b'<option value="fr" selected>', edit_page)
+        self.assertTrue((webapp.JOBS_DIR / "translations.json").is_file())
+
+        # Same copy again: served from the cache, the translator untouched.
+        calls.clear()
+        with mock.patch.object(webapp, "localize_message", side_effect=fake_translate):
+            r = self.client.post("/generate", data=dict(data, hero_image=(self._sample_image_bytes(), "hero.png")), content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(calls, [])
+        self.assertIn(b"French copy -- description layer: &#34;Shop now&#34;", r.data)
+
+        # The translator unreachable: English drawn, and the run says so in red.
+        data["copy_language"] = "es"
+        with mock.patch.object(webapp, "localize_message", return_value=("Shop now", False)):
+            r = self.client.post("/generate", data=dict(data, hero_image=(self._sample_image_bytes(), "hero.png")), content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertIn(b"Couldn&#39;t translate the header layer, description layer into Spanish", r.data)
+        # A fresh form remembers the language.
+        self.assertIn(b'<option value="es" selected>', self.client.get("/").data)
+
+    def test_a_fresh_upload_updates_a_same_shape_row_kept_from_an_earlier_run(self):
+        # Two square rows from an earlier run. Dropping a new file on
+        # one of them updates the other too -- its own file is only a
+        # carry-over -- and that row keeps the new file from then on.
+        first = self.client.post("/generate", data={
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "psd_size_1": "1080x1080",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(108, 108), color=(200, 30, 30))), "square-old.psd"),
+            "psd_size_2": "1200x1200",
+            "psd_file_2": (io.BytesIO(self._sample_psd_bytes(size=(120, 120), color=(30, 200, 30))), "big-old.psd"),
+            "custom_sizes": "1080x1080, 1200x1200", "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(first.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", first.data).group(1).decode()
+
+        second = self.client.post("/generate", data={
+            "edit_job_id": job_id,
+            "psd_size_1": "1080x1080",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(108, 108), color=(30, 30, 200))), "square-new.psd"),
+            "psd_size_2": "1200x1200",
+            "custom_sizes": "1080x1080, 1200x1200", "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(second.status_code, 200, second.data[:300])
+        self.assertIn(b"1200x1200 used the PSD you uploaded this run for 1080x1080", second.data)
+        job2 = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
+        for name in ("creative_campaign1_1080x1080.png", "creative_campaign1_1200x1200.png"):
+            with Image.open(webapp.JOBS_DIR / job2 / name) as img:
+                r_, g_, b_ = img.getpixel((img.width // 2, img.height // 2))
+            self.assertGreater(b_, 150, name)
+            self.assertLess(g_, 100, name)
+        edit_page = self.client.get(f"/edit/{job2}").data
+        self.assertIn(b"Currently: <strong>square-new.psd</strong>", edit_page)
+        self.assertNotIn(b"big-old.psd", edit_page)
+        self.assertEqual(edit_page.count(b"square-new.psd</strong>"), 2)
+
+    def test_an_upload_becomes_the_saved_template_for_its_size_and_shape(self):
+        # "The most recent upload is the template": a fresh 1080x1080
+        # upload replaces the saved 1080x1080 template AND the saved
+        # 1200x1200 it carries onto, the old files go to the backups
+        # folder, the row keeps its chip, and the next run renders from
+        # the new design.
+        self._write_default_template("tester-1080x1080.psd", self._sample_psd_bytes(size=(108, 108), color=(200, 200, 10)))
+        self._write_default_template("tester-1200x1200.psd", self._sample_psd_bytes(size=(120, 120), color=(200, 200, 10)))
+        r = self.client.post("/generate", data={
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "upload_custom_hero_enabled": "1",
+            "psd_size_1": "1080x1080",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(108, 108), color=(200, 30, 30))), "new-square.psd"),
+            "psd_make_saved": "1",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"1080x1080: the file you uploaded is now the saved template (tester-1080x1080.psd)", r.data)
+        self.assertIn(b"1200x1200: the file you uploaded for 1080x1080 is now the saved template (tester-1200x1200.psd)", r.data)
+        backups = list(webapp.TEMPLATE_BACKUPS_DIR.glob("tester-1*.psd"))
+        self.assertEqual(len(backups), 2, backups)
+        from psd_tools import PSDImage
+        self.assertEqual(PSDImage.open(webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd").size, (108, 108))
+        self.assertEqual(PSDImage.open(webapp.DEFAULT_TEMPLATES_DIR / "tester-1200x1200.psd").size, (108, 108))
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        edit_page = self.client.get(f"/edit/{job_id}").data
+        # The dropped file stays on the row as the reminder of what was
+        # dropped -- on the Edit page and on the next fresh form.
+        self.assertIn(b"new-square.psd", edit_page)
+        self.assertIn(b"new-square.psd", self.client.get("/").data)
+        self.assertIn(b'name="psd_make_saved" value="1" checked', edit_page)
+
+        # A fresh form, no rows: the saved (new) design renders.
+        second = self.client.post("/generate", data={
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "upload_custom_hero_enabled": "1", "psd_as_is": "1", "psd_make_saved": "1",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(second.status_code, 200, second.data[:400])
+        job2 = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
+        for name in ("creative_campaign1_1080x1080.png", "creative_campaign1_1200x1200.png"):
+            with Image.open(webapp.JOBS_DIR / job2 / name) as img:
+                r_, g_, b_ = img.getpixel((img.width // 2, img.height // 2))
+            self.assertGreater(r_, 150, name)
+            self.assertLess(g_, 100, name)
+        # The remembered row submitted again (as the fresh form does):
+        # the saved template renders, not the older copy in the row --
+        # here the saved one was rewritten green in between -- and the
+        # chip is still there afterwards.
+        self._write_default_template("tester-1080x1080.psd", self._sample_psd_bytes(size=(108, 108), color=(20, 200, 20)))
+        third = self.client.post("/generate", data={
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "upload_custom_hero_enabled": "1", "psd_as_is": "1", "psd_make_saved": "1",
+            "carry_files_job_id": job_id, "psd_size_1": "1080x1080",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(third.status_code, 200, third.data[:400])
+        job3 = re.search(rb"/download/([0-9a-f]+)", third.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job3 / "creative_campaign1_1080x1080.png") as img:
+            r_, g_, b_ = img.getpixel((img.width // 2, img.height // 2))
+        self.assertGreater(g_, 150, "the saved template renders, not the row's older copy")
+        self.assertIn(b"new-square.psd", self.client.get("/").data)
+        # Unticked, the box stays unticked on the next fresh form.
+        self.client.post("/generate", data={
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "custom_sizes": "300x250", "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        page = self.client.get("/").data
+        self.assertNotIn(b'name="psd_make_saved" value="1" checked', page)
+
+    def test_a_row_size_a_few_pixels_off_a_known_size_goes_to_that_slot(self):
+        # A 728x480 canvas dropped for the 720x480 slot: the row is
+        # 720x480, not a new 728x480 beside it, and the Edit page says so.
+        self._write_default_template("tester-720x480.psd", self._sample_psd_bytes(size=(72, 48), color=(200, 200, 10)))
+        r = self.client.post("/generate", data={
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "upload_custom_hero_enabled": "1", "psd_as_is": "1",
+            "psd_size_1": "728x480",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(728, 480), color=(200, 30, 30))), "wide.psd"),
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"PSD row 1: 728x480 is a few pixels off 720x480, so the file went to the 720x480 slot", r.data)
+        self.assertNotIn(b"728x480 <", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_720x480.png") as img:
+            self.assertEqual(img.size, (720, 480))
+            r_, g_, b_ = img.getpixel((360, 240))
+        self.assertGreater(r_, 150)
+        self.assertLess(g_, 100)
+        self.assertFalse((webapp.JOBS_DIR / job_id / "creative_campaign1_728x480.png").exists())
+        edit_page = self.client.get(f"/edit/{job_id}").data
+        self.assertIn(b'name="psd_size_1" placeholder="1920x1080" style="width: 7rem;" value="720x480"', edit_page)
+
+    def test_a_fresh_form_remembers_the_hero_and_psd_sections_of_the_last_run(self):
+        # With an ad in progress a fresh form opens on the last run's
+        # custom-hero and PSD settings -- typed copy, hide boxes, the
+        # switches -- AND its files, which carry into the next run
+        # without being re-uploaded. Its approvals do not.
+        self._write_default_template("tester-300x250.psd", self._sample_psd_bytes(size=(300, 250), color=(200, 200, 10)))
+        first = self.client.post("/generate", data={
+            "upload_custom_hero_enabled": "1",
+            "upload_hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "layer_description_text": "Remembered words",
+            "layer_logo_hidden": "1",
+            "psd_as_is": "1",
+            "psd_make_saved": "",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(first.status_code, 200, first.data[:400])
+        job_id = re.search(rb"/download/([0-9a-f]+)", first.data).group(1).decode()
+
+        page = self.client.get("/").data
+        self.assertIn(b'name="upload_custom_hero_enabled" value="1"', page)
+        self.assertIn(b'value="Remembered words"', page)
+        self.assertIsNotNone(re.search(rb'name="layer_logo_hidden" value="1"[^>]*\schecked', page))
+        self.assertIn(b'name="psd_as_is" value="1" checked', page)
+        self.assertIn(f'name="carry_files_job_id" value="{job_id}"'.encode(), page)
+        self.assertNotIn(b'name="edit_job_id"', page)
+        self.assertIn(b"Kept from your last run", page)
+        self.assertIn(f"/uploads/{job_id}/hero.png".encode(), page)
+
+        # The fresh form, submitted as it opened: the hero carries in.
+        second = self.client.post("/generate", data={
+            "carry_files_job_id": job_id,
+            "upload_custom_hero_enabled": "1",
+            "layer_description_text": "Remembered words",
+            "custom_sizes": "300x250",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(second.status_code, 200, second.data[:400])
+        job2 = re.search(rb"/download/([0-9a-f]+)", second.data).group(1).decode()
+        self.assertTrue((webapp.JOBS_DIR / job2 / "uploads" / "hero.png").is_file())
+        state = json.loads((webapp.JOBS_DIR / job2 / "form_state.json").read_text())
+        self.assertEqual(state["files"].get("upload_hero_image"), "hero.png")
+
+    def test_the_ai_hero_goes_into_every_template_even_with_as_uploaded_ticked(self):
+        # AI hero on: the generated backdrop is what renders, not the
+        # as-uploaded designs -- "as uploaded" is the custom-hero mode's
+        # setting and the run says so.
+        from src.psd_export import build_layered_psd
+
+        size = (300, 250)
+        def block(colour, box):
+            im = Image.new("RGBA", size, (0, 0, 0, 0)); im.paste(colour, box); return im
+        psd = build_layered_psd(
+            [
+                ("background", Image.new("RGBA", size, (200, 200, 10, 255))),
+                ("logo", block((0, 90, 200, 255), (20, 20, 80, 80))),
+                ("product", block((10, 10, 10, 255), (20, 150, 80, 240))),
+                ("description", block((200, 200, 200, 255), (150, 20, 290, 120))),
+            ],
+            size, layer_names={},
+        )
+        psd.save(webapp.DEFAULT_TEMPLATES_DIR / "tester-300x250.psd")
+        r = self.client.post("/generate", data={
+            "upload_ai_enabled": "1", "upload_ai_provider": "mock", "upload_ai_prompt": "a runner mid-stride",
+            "psd_as_is": "1",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"AI hero image on: the generated backdrop goes into every template.", r.data)
+        self.assertIn(b"300x250: updated layer(s) -- background", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_300x250.png") as img:
+            r_, g_, b_ = img.getpixel((120, 200))
+        # Not the template's own yellow backdrop any more.
+        self.assertFalse(r_ > 180 and g_ > 180 and b_ < 60, (r_, g_, b_))
+
+    def test_as_uploaded_can_still_take_a_new_hero_into_the_background(self):
+        # "...but put the hero image in their background": the file's
+        # own text and layers stand, the hero replaces the backdrop.
+        from src.psd_export import build_layered_psd
+
+        size = (300, 250)
+        def block(colour, box):
+            im = Image.new("RGBA", size, (0, 0, 0, 0)); im.paste(colour, box); return im
+        psd = build_layered_psd(
+            [
+                ("background", Image.new("RGBA", size, (200, 200, 10, 255))),
+                ("logo", block((0, 90, 200, 255), (20, 20, 80, 80))),
+                ("product", block((10, 10, 10, 255), (20, 150, 80, 240))),
+                ("description", block((200, 30, 30, 255), (150, 20, 290, 120))),
+            ],
+            size, layer_names={},
+        )
+        psd.save(webapp.DEFAULT_TEMPLATES_DIR / "tester-300x250.psd")
+        r = self.client.post("/generate", data={
+            "upload_custom_hero_enabled": "1",
+            "upload_hero_image": (self._sample_image_bytes(color=(10, 200, 10)), "hero.png"),
+            "psd_as_is": "1", "psd_as_is_hero": "1",
+            "layer_description_text": "NOT DRAWN",
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"300x250 used the template as uploaded, with the hero image put into its background layer", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job_id / "creative_campaign1_300x250.png") as img:
+            backdrop = img.getpixel((120, 200))   # was yellow, now the green hero
+            logo = img.getpixel((50, 50))         # the file's own logo, untouched
+            description = img.getpixel((220, 70)) # the file's own description block, untouched
+        self.assertGreater(backdrop[1], 150); self.assertLess(backdrop[0], 100)
+        self.assertGreater(logo[2], 150)
+        self.assertGreater(description[0], 150); self.assertLess(description[1], 100)
+
+    def test_old_runs_are_pruned_and_carried_files_are_links(self):
+        # The output folder is a working set: beyond the newest
+        # JOB_KEEP_COUNT runs, old ones go (the last run and the recent
+        # sessions' runs are kept), and a carried-forward file is a hard
+        # link to the earlier copy, not another copy.
+        import os
+        original = (webapp.JOB_KEEP_COUNT, webapp.JOB_KEEP_MIN, webapp._last_prune_at)
+        try:
+            webapp.JOB_KEEP_COUNT, webapp.JOB_KEEP_MIN = 3, 1
+            jobs = []
+            for n in range(5):
+                r = self.client.post("/generate", data={
+                    "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), f"hero{n}.png"),
+                    "custom_sizes": "300x250", "header": "", "description": "",
+                }, content_type="multipart/form-data")
+                self.assertEqual(r.status_code, 200)
+                jobs.append(re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode())
+                os.utime(webapp.JOBS_DIR / jobs[-1], (1_700_000_000 + n * 100, 1_700_000_000 + n * 100))
+            removed = webapp.prune_job_folders(force=True)
+            self.assertEqual(sorted(removed), sorted(jobs[:2]), removed)
+            for job in jobs[2:]:
+                self.assertTrue((webapp.JOBS_DIR / job).is_dir(), job)
+            # A carried-forward file: the same inode as the earlier copy.
+            r = self.client.post("/generate", data={
+                "edit_job_id": jobs[-1], "custom_sizes": "300x250", "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+            job = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+            a = (webapp.JOBS_DIR / jobs[-1] / "uploads" / "hero4.png").stat()
+            b = (webapp.JOBS_DIR / job / "uploads" / "hero4.png").stat()
+            self.assertEqual((a.st_dev, a.st_ino), (b.st_dev, b.st_ino))
+        finally:
+            webapp.JOB_KEEP_COUNT, webapp.JOB_KEEP_MIN, webapp._last_prune_at = original
+
+    def test_same_ratio_source_prefers_the_nearest_size(self):
+        sources = {(1080, 1080): None, (300, 300): None, (1920, 1080): None}
+        self.assertEqual(webapp._same_ratio_source((1200, 1200), sources), (1080, 1080))
+        self.assertEqual(webapp._same_ratio_source((250, 250), sources), (300, 300))
+        self.assertEqual(webapp._same_ratio_source((1280, 720), sources), (1920, 1080))
+        self.assertIsNone(webapp._same_ratio_source((1200, 1250), sources))
+        self.assertIsNone(webapp._same_ratio_source((720, 1280), sources))
+
     def test_per_request_upload_overrides_saved_default_for_same_size(self):
         self._write_default_template("300x250.psd", self._sample_psd_bytes(color=(200, 200, 10)))
 
@@ -4092,6 +4579,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
                     "upload_ai_provider": "ideogram",
                     "upload_ai_prompt": "a bottle on wet slate",
                     "upload_ai_reference": (poster, "ad.jpg"),
+                    "upload_ai_send_references": "1",
                     "product_name": "HydroBoost",
                     "market": "UK",
                     "audience": "runners",
@@ -4651,6 +5139,37 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # read a blurred, half-occluded mark to flag it.
         self.assertNotIn("branded backdrop", prompt)
         self.assertIn("unbranded", prompt)
+
+    def test_a_backdrop_prompt_naming_the_product_has_the_product_taken_out(self):
+        # "hydroboost sports drink, beach volleyball, sand and water" came
+        # back as a bottle with HydroBoost lettered on it -- the label is
+        # text, smeared out by the check, and the template has its own
+        # product layer anyway. The scene stays; the product goes.
+        self._write_template_with_a_background_layer("p3-300x250.psd", (300, 250))
+        prompt = self._prompt_used(
+            product_name="HydroBoost",
+            upload_ai_prompt="hydroboost sports drink, beach volleyball, sand and water",
+            upload_ai_background_style="1",
+        )
+        self.assertTrue(prompt.startswith("beach volleyball, sand and water"), prompt)
+        self.assertNotIn("hydroboost", prompt.lower().split(", sharp focus")[0])
+        self.assertIn("no bottle", prompt)
+        # Nothing but the product in the prompt: the automatic scene
+        # stands in rather than an empty prompt going out.
+        prompt = self._prompt_used(
+            product_name="Hydro Boost",
+            upload_ai_prompt="a bottle of Hydro Boost",
+            upload_ai_background_style="1",
+        )
+        self.assertNotIn("Hydro Boost", prompt.split(", sharp focus")[0])
+        self.assertIn("unbranded", prompt)
+        # Without backdrop mode the prompt is the author's, untouched.
+        prompt = self._prompt_used(
+            product_name="HydroBoost",
+            upload_ai_prompt="hydroboost sports drink on a beach",
+            upload_ai_background_style_seen="1",
+        )
+        self.assertTrue(prompt.startswith("hydroboost sports drink on a beach"), prompt)
 
     def test_background_guidance_is_appended_and_can_be_turned_off(self):
         # Models are worst at faces, hands and lettering, which a backdrop
@@ -6864,10 +7383,19 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         _webapp.get_provider = lambda name, rendering_speed=None: _Ideogramish()
         try:
             with mock.patch("requests.get", lambda url, **kw: _Resp()):
+                # Described only by default: the pictures stay home.
+                r0 = self.client.post("/generate", data={
+                    "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                    "upload_ai_reference": [(io.BytesIO(blue), "blue.png"), (io.BytesIO(red), "red.png")],
+                }, content_type="multipart/form-data")
+                self.assertEqual(r0.status_code, 200)
+                self.assertEqual(sent, [None], "a mood board is described, not sent, unless asked")
+                self.assertIn("the pictures themselves were not sent", r0.data.decode())
                 r = self.client.post("/generate", data={
                     "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
                     "upload_ai_reference": [(io.BytesIO(blue), "blue.png"), (io.BytesIO(red), "red.png")],
                     "upload_ai_reference_url": "https://example.com/green.png",
+                    "upload_ai_send_references": "1",
                 }, content_type="multipart/form-data")
             self.assertEqual(r.status_code, 200)
             self.assertEqual(sent[-1], [blue, red, web])
@@ -6881,7 +7409,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             # Drop just the middle one on a re-run.
             r2 = self.client.post("/generate", data={
                 "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
-                "edit_job_id": job_id, "upload_ai_reference_2_clear": "1",
+                "edit_job_id": job_id, "upload_ai_reference_2_clear": "1", "upload_ai_send_references": "1",
             }, content_type="multipart/form-data")
             self.assertEqual(sent[-1], [blue, web])
             self.assertIn("blue.png, green.png", r2.data.decode())
@@ -6890,6 +7418,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
                 "upload_ai_reference": [(io.BytesIO(blue), "a.png"), (io.BytesIO(red), "b.png"),
                                         (io.BytesIO(blue), "c.png"), (io.BytesIO(red), "d.png")],
+                "upload_ai_send_references": "1",
             }, content_type="multipart/form-data")
             self.assertEqual(len(sent[-1]), 3)
             self.assertIn("A mood board can hold 3 pictures", r3.data.decode())
@@ -8004,9 +8533,13 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
                 img.getpixel((max(0, min(px, img.width - 1)), max(0, min(py, img.height - 1))))[:3]
                 for px, py in background_only_points
             ]
-        for r_, g_, b_ in pixels:
-            self.assertGreater(g_, r_, pixels)
-            self.assertGreater(g_, b_, pixels)
+        # Photoshop's own layer styles ride along onto the new backdrop
+        # (see carry_flattened_effects): the solid core of a 100%-black
+        # drop shadow stays black over green, and the approximated
+        # foreground alpha above doesn't know about it -- so a few
+        # sampled points may legitimately be the shadow, not the hero.
+        green = [g_ > r_ and g_ > b_ for r_, g_, b_ in pixels]
+        self.assertGreaterEqual(sum(green), len(green) * 0.95, pixels)
 
     def test_background_override_preserves_other_layers(self):
         # Matt's actual bug report: overriding just the background was
@@ -9110,6 +9643,37 @@ class TemplateFontTest(unittest.TestCase):
         finally:
             image_ops._SYSTEM_FONT_DIRS, image_ops._font_index_cache = original
 
+    def test_faces_resolve_without_fonttools(self):
+        # macOS ships Avenir Next Condensed as one .ttc of many faces;
+        # the PostScript name Photoshop stores names ONE face. Pillow
+        # can read each face's family and style, so the index resolves
+        # them even where fontTools isn't installed.
+        import sys
+        from src import image_ops
+
+        original = (image_ops._SYSTEM_FONT_DIRS, image_ops._font_index_cache)
+        hidden = {name: sys.modules.get(name) for name in ("fontTools", "fontTools.ttLib")}
+        try:
+            image_ops._SYSTEM_FONT_DIRS = [Path("/usr/share/fonts/truetype/dejavu")]
+            image_ops._font_index_cache = None
+            sys.modules["fontTools"] = None  # import fails -> filename + Pillow keys only
+            sys.modules["fontTools.ttLib"] = None
+            if not Path("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf").is_file():
+                self.skipTest("DejaVu not present")
+            found = image_ops.find_font_file("DejaVuSans-Bold")
+            self.assertIsNotNone(found)
+            self.assertEqual(found[0].name, "DejaVuSans-Bold.ttf")
+            # Family + style key, as Photoshop writes PostScript names.
+            self.assertIsNotNone(image_ops.find_font_file("DejaVu Sans Bold"))
+            self.assertIsNotNone(image_ops.find_font_file("DejaVuSans"))
+        finally:
+            image_ops._SYSTEM_FONT_DIRS, image_ops._font_index_cache = original
+            for name, module in hidden.items():
+                if module is None:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = module
+
     def test_the_psd_style_names_the_runs_font(self):
         from src.image_ops import get_psd_layer_text_style
 
@@ -9176,6 +9740,562 @@ class ScaledTemplateBoxTest(unittest.TestCase):
                        if (lambda p: p[0] > 180 and p[1] < 90 and p[2] < 90)(out.getpixel((x, y))))
         self.assertGreater(red_pixels(600, 780), 50, "the text must be drawn in the scaled column")
         self.assertEqual(red_pixels(300, 400), 0, "and not at the file's own, unscaled coordinates")
+
+
+class SizeLabelTest(unittest.TestCase):
+    def test_linkedin_article_size_is_named_and_odd_ratios_read_as_decimals(self):
+        from src.image_ops import ratio_label, size_name
+
+        self.assertEqual(size_name(1200, 627), "LinkedIn Article")
+        self.assertEqual(ratio_label(1200, 627), "1.91:1")
+        self.assertEqual(ratio_label(1920, 1080), "16:9")
+        self.assertEqual(ratio_label(1080, 1920), "9:16")
+        self.assertEqual(ratio_label(627, 1200), "1:1.91")
+
+
+class TemplateCopyLocalizationTest(unittest.TestCase):
+    """Choosing a language with nothing typed translates the template's
+    OWN words: its header and legal come out in French, in its own
+    style. A size marked "exactly as uploaded" gets only that -- no
+    hero into its background, nothing typed drawn over it."""
+
+    def setUp(self):
+        webapp.app.config["TESTING"] = True
+        self.client = _CampaignBriefAutoFillClient(webapp.app.test_client())
+        self._orig = (webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR)
+        self.tmp = Path(tempfile.mkdtemp())
+        webapp.JOBS_DIR = self.tmp / "jobs"; webapp.DOWNLOADS_DIR = self.tmp / "downloads"
+        webapp.DEFAULT_TEMPLATES_DIR = self.tmp / "templates"; webapp.TEMPLATE_BACKUPS_DIR = self.tmp / "backups"
+        webapp.JOBS_DIR.mkdir(parents=True); webapp.DEFAULT_TEMPLATES_DIR.mkdir(parents=True)
+        self.template = _pristine_template("tester-1080x1080.psd", self.tmp)
+        if self.template is None:
+            self.skipTest("project template not present")
+
+    def tearDown(self):
+        webapp.JOBS_DIR, webapp.DOWNLOADS_DIR, webapp.DEFAULT_TEMPLATES_DIR, webapp.TEMPLATE_BACKUPS_DIR = self._orig
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _png(self, color):
+        buf = io.BytesIO(); Image.new("RGB", (400, 300), color).save(buf, format="PNG"); buf.seek(0); return buf
+
+    def _fake(self, calls):
+        def fake_translate(text, language):
+            calls.append((text, language))
+            return "FR " + text.replace("\n", " "), True
+        return fake_translate
+
+    def test_the_templates_own_header_is_drawn_in_the_language(self):
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        calls = []
+        with mock.patch.object(webapp, "localize_message", side_effect=self._fake(calls)):
+            r = self.client.post(
+                "/generate",
+                data={"upload_custom_hero_enabled": "1", "copy_language": "fr", "header": "", "description": ""},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertTrue(any(t.startswith("REHYDRATE WITH A NEW SUMMER") and lang == "fr" for t, lang in calls), calls)
+        self.assertIn(b"French copy -- the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER", r.data)
+        self.assertIn(b"1080x1080: updated layer(s) -- header.", r.data)
+        # The same words are listed once, even though the header would be
+        # translated again for every size that shares the template.
+        self.assertEqual(r.data.count(b"French copy -- the template&#39;s header:"), 1)
+        # The live-text PSD's header type layer says it in French too --
+        # still a type layer, in the template's own font and size.
+        from psd_tools import PSDImage
+        from src.image_ops import get_psd_layer_text_style
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        live = next((webapp.JOBS_DIR / job_id).glob("*_1080x1080_source-template.psd"))
+        header = next(l for l in PSDImage.open(live) if l.name.lower() == "header")
+        self.assertEqual(header.kind, "type")
+        self.assertTrue(header.text.startswith("FR REHYDRATE WITH A NEW SUMMER"), header.text)
+        before = get_psd_layer_text_style(self.template, "header")
+        after = get_psd_layer_text_style(live, "header")
+        self.assertEqual(after["font_name"], before["font_name"])
+        self.assertEqual(after["font_size"], before["font_size"])
+        self.assertEqual(after["color"], before["color"])
+        # The header was set as two lines at two sizes. It was translated
+        # line by line, drawn line by line at those sizes, and the live
+        # type layer keeps a run per line -- the layout it had in English.
+        self.assertEqual([l["text"] for l in before["lines"]], ["REHYDRATE WITH A NEW SUMMER", "REFRESHING DRINK"])
+        self.assertEqual(
+            [(l["text"], l["font_size"]) for l in after["lines"]],
+            [("FR " + l["text"], l["font_size"]) for l in before["lines"]],
+        )
+        self.assertIn(b"1080x1080: header drawn line by line at the template&#39;s own sizes -- ", r.data)
+        self.assertIn(b"the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER / REFRESHING DRINK&#34; -&gt; &#34;FR REHYDRATE WITH A NEW SUMMER / FR REFRESHING DRINK&#34;", r.data)
+
+    def test_switching_back_to_english_restores_the_english_behind_an_exported_translation(self):
+        # An export from a French run, re-uploaded as the template: its
+        # type layers say French. Set to English, the run draws the
+        # English those words came from; set to Spanish, it translates
+        # from that English rather than from the French.
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        calls = []
+        with mock.patch.object(webapp, "localize_message", side_effect=self._fake(calls)):
+            r = self.client.post(
+                "/generate",
+                data={"upload_custom_hero_enabled": "1", "copy_language": "fr", "header": "", "description": ""},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        french_export = next((webapp.JOBS_DIR / job_id).glob("*_1080x1080_source-template.psd")).read_bytes()
+
+        def run(language):
+            calls.clear()
+            with mock.patch.object(webapp, "localize_message", side_effect=lambda t, l: ("ES " + t.replace("\n", " "), True)):
+                return self.client.post(
+                    "/generate",
+                    data={
+                        "hero_image": (self._png((10, 10, 200)), "hero.png"),
+                        "psd_size_1": "1080x1080",
+                        "psd_file_1": (io.BytesIO(french_export), "french.psd"),
+                        "psd_as_is": "1",
+                        "copy_language": language,
+                        "custom_sizes": "1080x1080",
+                        "header": "", "description": "",
+                    },
+                    content_type="multipart/form-data",
+                )
+        from psd_tools import PSDImage
+        english = run("en")
+        self.assertEqual(english.status_code, 200, english.data[:400])
+        self.assertIn(b"is a translation this app made (&#34;FR REHYDRATE WITH A NEW SUMMER / FR REFRESHING DRINK&#34;); working from the English behind it: &#34;REHYDRATE WITH A NEW SUMMER / REFRESHING DRINK&#34;", english.data)
+        self.assertIn(b"1080x1080: updated layer(s) -- header.", english.data)
+        job = re.search(rb"/download/([0-9a-f]{32})", english.data).group(1).decode()
+        live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
+        header = next(l for l in PSDImage.open(live) if l.name.lower() == "header")
+        self.assertEqual(header.text, "REHYDRATE WITH A NEW SUMMER\rREFRESHING DRINK")
+
+        spanish = run("es")
+        self.assertEqual(spanish.status_code, 200)
+        self.assertIn(b"&#34;ES REHYDRATE WITH A NEW SUMMER / ES REFRESHING DRINK&#34;", spanish.data)
+        self.assertNotIn(b"ES FR ", spanish.data)
+
+    def test_text_is_never_redrawn_unless_its_words_change(self):
+        # The rule: the design is the PSD. A layer whose words already
+        # say it in the chosen language -- or that nothing changes -- is
+        # shown from the file's own pixels, whoever saved the file
+        # last. Only a change of words (a language, typed copy) redraws.
+        from src.psd_export import set_type_layer_text
+        template = webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd"
+        shutil.copy(self.template, template)
+        set_type_layer_text(template, {"header": "RÉHYDRATER\rBOISSON FRAÎCHE"})
+        with mock.patch.object(webapp, "localize_message", side_effect=lambda t, l: (t, True)):
+            r = self.client.post(
+                "/generate",
+                data={"upload_custom_hero_enabled": "1", "copy_language": "fr", "header": "", "description": "",
+                      "custom_sizes": "1080x1080", "psd_as_is": "1"},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertNotIn(b"1080x1080: updated layer(s)", r.data, "nothing changed, nothing redrawn")
+        self.assertNotIn(b"drawn from the template", r.data)
+        # A language that changes the words redraws them, and only them.
+        with mock.patch.object(webapp, "localize_message", side_effect=lambda t, l: ("ES " + t, True)):
+            r = self.client.post(
+                "/generate",
+                data={"upload_custom_hero_enabled": "1", "copy_language": "es", "header": "", "description": "",
+                      "custom_sizes": "1080x1080", "psd_as_is": "1"},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"1080x1080: updated layer(s) -- header.", r.data)
+
+    def test_a_self_translation_in_the_cache_does_not_hide_the_english(self):
+        # The translator handing a French phrase back unchanged had been
+        # cached as "the French of the French", and that entry sat in
+        # front of the real one -- so with English chosen the header
+        # stayed French. Such entries are neither cached nor read.
+        cache = {
+            "fr\u0000RÉHYDRATER": "RÉHYDRATER",
+            "fr\u0000REHYDRATE": "RÉHYDRATER",
+        }
+        (webapp.JOBS_DIR / "translations.json").write_text(json.dumps(cache), encoding="utf-8")
+        self.assertEqual(webapp._english_source_of("RÉHYDRATER", webapp._english_behind_translations()), "REHYDRATE")
+        fresh = {}
+        with mock.patch.object(webapp, "localize_message", side_effect=lambda t, l: (t, True)):
+            self.assertEqual(webapp._translate_copy("RÉHYDRATER", "fr", fresh), ("RÉHYDRATER", True))
+        self.assertEqual(fresh, {}, "words that came back unchanged are not cached as a translation")
+
+    def test_a_saved_template_only_gets_a_picture_of_the_words_it_holds(self):
+        # "Also save this copy into the templates themselves" in French:
+        # the template gets the typed English, the run drew the French.
+        # The French picture must not go in beside the English words --
+        # that is how templates came to read one thing and show another.
+        template = webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd"
+        shutil.copy(self.template, template)
+        from psd_tools import PSDImage
+        before = next(l for l in PSDImage.open(template) if l.name.lower() == "header")
+        before_box, before_text = tuple(before.bbox), before.text
+        rasters = {}
+        real = webapp.set_type_layer_raster
+
+        def spy(path, images):
+            if Path(path) == template:
+                rasters.update({k: True for k in images})
+            return real(path, images)
+
+        with mock.patch.object(webapp, "localize_message", side_effect=lambda t, l: ("FR " + t.replace("\n", " "), True)), \
+             mock.patch.object(webapp, "set_type_layer_raster", side_effect=spy):
+            r = self.client.post(
+                "/generate",
+                data={"upload_custom_hero_enabled": "1", "copy_language": "fr", "header": "", "description": "",
+                      "custom_sizes": "1080x1080", "layer_header_text": "NEW ENGLISH HEADER",
+                      "update_saved_templates": "1"},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        # Held back: the words would not match the picture the run drew.
+        self.assertIn(b"the typed header was not saved into tester-1080x1080.psd on a French run", r.data)
+        self.assertNotIn(b"saved template tester-1080x1080.psd updated -- header", r.data)
+        after = next(l for l in PSDImage.open(template) if l.name.lower() == "header")
+        self.assertEqual(after.text, before_text, "the template's words are untouched on a French run")
+        self.assertEqual(tuple(after.bbox), before_box)
+        self.assertNotIn("header", rasters, "no French picture beside English words")
+        # In English the picture shows the words the template holds, so it goes in.
+        with mock.patch.object(webapp, "set_type_layer_raster", side_effect=spy):
+            r = self.client.post(
+                "/generate",
+                data={"upload_custom_hero_enabled": "1", "copy_language": "en", "header": "", "description": "",
+                      "custom_sizes": "1080x1080", "layer_header_text": "NEWER ENGLISH HEADER",
+                      "update_saved_templates": "1"},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"saved template tester-1080x1080.psd updated -- header", r.data)
+        self.assertEqual(next(l for l in PSDImage.open(template) if l.name.lower() == "header").text, "NEWER ENGLISH HEADER")
+        self.assertIn("header", rasters, "the English picture goes in beside the English words")
+        self.assertTrue(webapp._same_words("A\rB ", "A\nB"))
+        self.assertFalse(webapp._same_words("A", "B"))
+
+    def _live_header(self, response_data):
+        from psd_tools import PSDImage
+        job = re.search(rb"/download/([0-9a-f]{32})", response_data).group(1).decode()
+        live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
+        return job, PSDImage.open(live)
+
+    def test_the_whole_workflow_holds_together(self):
+        # Matt's run, end to end, every setting at once -- the settings
+        # that broke each other one at a time: a PSD dropped on a row
+        # with "make it the saved template", used exactly as uploaded
+        # with the hero put into its background, a language chosen,
+        # every hide box ticked (they carry over), copy typed with
+        # "also save this copy". Then the fresh form, then a row that
+        # was never promoted.
+        from src.psd_export import set_type_layer_text
+        identity = lambda t, l: ("FR " + t.replace("\n", " "), True)
+        hide = {f"layer_{k}_hidden": "1" for k in ("header", "description", "legal", "logo", "cta")}
+        # The saved template says one thing, the dropped file another.
+        saved = webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd"
+        shutil.copy(self.template, saved)
+        set_type_layer_text(saved, {"header": "SAVED TEMPLATE HEADER"})
+        dropped = self.tmp / "dropped.psd"
+        shutil.copy(self.template, dropped)
+        set_type_layer_text(dropped, {"header": "DROPPED FILE HEADER"})
+
+        def post(**extra):
+            data = {"upload_custom_hero_enabled": "1", "psd_as_is": "1", "psd_as_is_hero": "1",
+                    "custom_sizes": "1080x1080", "header": "", "description": "",
+                    "layer_description_text": "Typed description copy", "update_saved_templates": "1",
+                    "upload_hero_image": (self._png((10, 10, 200)), "hero.png"), **hide}
+            data.update(extra)
+            with mock.patch.object(webapp, "localize_message", side_effect=identity):
+                r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200, r.data[:400])
+            return r
+
+        # 1. Drop the file, make it the saved template, French.
+        r = post(copy_language="fr", psd_make_saved="1", psd_size_1="1080x1080",
+                 psd_file_1=(io.BytesIO(dropped.read_bytes()), "my-square.psd"))
+        self.assertIn(b"is now the saved template (tester-1080x1080.psd)", r.data)
+        job1, live = self._live_header(r.data)
+        header = next(l for l in live if l.name.lower() == "header")
+        self.assertEqual(header.text, "FR DROPPED FILE HEADER", "the dropped file's words, in French")
+        self.assertTrue(header.visible, "hide boxes don't reach an as-uploaded size's download")
+        self.assertIn(b"1080x1080: updated layer(s) -- background, header", r.data)
+        # The fresh form remembers the row, file and settings.
+        page = self.client.get("/").data
+        self.assertIn(b"my-square.psd", page)
+        self.assertIn(b'name="psd_size_1"', page)
+        self.assertIn(b'value="1080x1080"', page)
+
+        # 2. The fresh form submitted again (row carried, now promoted):
+        #    English -- the English behind the French, from the saved
+        #    template, and the chip is still there.
+        r = post(copy_language="en", psd_make_saved="1", psd_size_1="1080x1080", carry_files_job_id=job1)
+        _, live = self._live_header(r.data)
+        self.assertEqual(next(l for l in live if l.name.lower() == "header").text, "DROPPED FILE HEADER")
+        self.assertIn(b"my-square.psd", self.client.get("/").data)
+
+        # 3. A row that was never promoted renders from ITS file, not
+        #    the saved template, even with the box ticked now.
+        other = self.tmp / "other.psd"
+        shutil.copy(self.template, other)
+        set_type_layer_text(other, {"header": "ROW ONLY HEADER"})
+        r = post(copy_language="en", psd_make_saved="", psd_size_1="1080x1080",
+                 psd_file_1=(io.BytesIO(other.read_bytes()), "row-only.psd"))
+        job3, live = self._live_header(r.data)
+        self.assertEqual(next(l for l in live if l.name.lower() == "header").text, "ROW ONLY HEADER")
+        r = post(copy_language="en", psd_make_saved="1", psd_size_1="1080x1080", carry_files_job_id=job3)
+        _, live = self._live_header(r.data)
+        self.assertEqual(next(l for l in live if l.name.lower() == "header").text, "ROW ONLY HEADER",
+                         "a carried row that was never promoted still renders as uploaded")
+        self.assertNotIn(b"is now the saved template", r.data, "a carried row is not promoted again")
+
+    def test_photoshops_own_layer_styles_carry_onto_a_new_hero(self):
+        # "The layer style is not the same": a header's drop shadow is
+        # drawn by Photoshop at display time, not stored in any layer's
+        # pixels, so a composite made here could only approximate it.
+        # The file's flattened picture has the real one; over a new
+        # backdrop the shadow keeps its exact coverage.
+        from src.image_ops import carry_flattened_effects
+        old = Image.new("RGB", (40, 20), (200, 100, 50))
+        new = Image.new("RGB", (40, 20), (20, 120, 220))
+        # Photoshop's picture: a black shadow at 60% over the old backdrop
+        # on the left half, the layer's own pixels (white) on the right.
+        preview = old.copy()
+        for x in range(0, 20):
+            for y in range(20):
+                preview.putpixel((x, y), tuple(int(c * 0.4) for c in (200, 100, 50)))
+        for x in range(20, 40):
+            for y in range(20):
+                preview.putpixel((x, y), (255, 255, 255))
+        alpha = Image.new("L", (40, 20), 0)
+        for x in range(20, 40):
+            for y in range(20):
+                alpha.putpixel((x, y), 255)
+        out = carry_flattened_effects(preview, old, new, alpha)
+        shadowed = out.getpixel((5, 5))
+        self.assertTrue(all(abs(c - int(n * 0.4)) <= 2 for c, n in zip(shadowed, (20, 120, 220))), shadowed)
+        self.assertEqual(out.getpixel((30, 5)), (255, 255, 255), "the layer's own pixels are Photoshop's")
+
+    def test_a_type_layers_picture_is_the_words_alone(self):
+        # A background box behind the description is this form's
+        # setting. Stored inside the type layer it travelled into every
+        # later template as a band behind the text -- "a transparency
+        # behind the text like from two days ago".
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        r = self.client.post("/generate", data={
+            "upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+            "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+            "layer_header_text": "Short words", "layer_header_background": "1",
+            "layer_header_background_opacity": "60",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        _, live = self._live_header(r.data)
+        seen = 0
+        for layer in live:
+            if layer.name.lower() in ("header", "header (rendered)"):
+                seen += 1
+                pixels = layer.topil()
+                alpha = pixels.getchannel("A")
+                # A pixel layer psd-tools authored in an RGB document
+                # keeps its transparency as a layer mask.
+                if layer.mask is not None and layer.mask.size == pixels.size:
+                    alpha = layer.mask.topil().convert("L")
+                covered = sum(1 for a in alpha.getdata() if a > 8) / float(alpha.width * alpha.height)
+                self.assertLess(covered, 0.7, f"{layer.name}: a box fills its picture ({covered:.0%})")
+        self.assertEqual(seen, 2)
+
+    def test_an_as_uploaded_size_with_a_hero_on_the_form_still_wipes_the_old_words(self):
+        # The exact setup that showed every size with two headers: a
+        # hero image on the form (so a background override exists) and
+        # "exactly as uploaded" ticked (so it is not applied). The wipe
+        # then thought the background had been replaced, found no new
+        # backdrop to wipe to, and did nothing -- the template's old
+        # header stayed under the translated one.
+        from src.psd_export import set_flattened_preview
+        from src.image_ops import get_psd_layer_boxes
+
+        path = self.tmp / "as-is.psd"
+        shutil.copy(self.template, path)
+        box = get_psd_layer_boxes(path)["header"]
+        preview = Image.new("RGB", (1080, 1080), (255, 255, 255))
+        preview.paste((255, 0, 0), box)  # last run's words, in red, exactly in the header box
+        set_flattened_preview(path, preview)
+        calls = []
+        with mock.patch.object(webapp, "localize_message", side_effect=self._fake(calls)):
+            r = self.client.post(
+                "/generate",
+                data={
+                    "upload_custom_hero_enabled": "1",
+                    "upload_hero_image": (self._png((10, 200, 10)), "hero.png"),
+                    "psd_size_1": "1080x1080",
+                    "psd_file_1": (io.BytesIO(path.read_bytes()), "as-is.psd"),
+                    "psd_as_is": "1",
+                    "copy_language": "fr",
+                    "custom_sizes": "1080x1080",
+                    "header": "", "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:600])
+        self.assertIn(b"1080x1080: updated layer(s) -- header", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        out = Image.open(next((webapp.JOBS_DIR / job_id).glob("*_1080x1080.png"))).convert("RGB")
+        x0, y0, x1, y1 = box
+        red = sum(1 for x in range(x0, x1, 4) for y in range(y0, y1, 4)
+                  if (lambda p: p[0] > 180 and p[1] < 90 and p[2] < 90)(out.getpixel((x, y))))
+        self.assertEqual(red, 0, "the old words must be wiped even though the hero is not applied")
+        # ...and the hero really was kept off the file: the white preview stands elsewhere.
+        self.assertGreater(out.getpixel((1000, 700))[1], 200)
+        self.assertLess(abs(out.getpixel((1000, 700))[0] - out.getpixel((1000, 700))[1]), 40)
+
+    def test_hide_boxes_do_not_reach_an_as_uploaded_sizes_downloads(self):
+        # Every hide box ticked (they carry over) with "exactly as
+        # uploaded" on: the preview ignores them, so the layered PSD and
+        # the live-text PSD must open with the layers on too, and the
+        # language still goes onto the header.
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        from psd_tools import PSDImage
+        calls = []
+        with mock.patch.object(webapp, "localize_message", side_effect=self._fake(calls)):
+            r = self.client.post(
+                "/generate",
+                data={
+                    "upload_custom_hero_enabled": "1", "psd_as_is": "1", "copy_language": "fr",
+                    "layer_header_hidden": "1", "layer_description_hidden": "1", "layer_logo_hidden": "1",
+                    "layer_product_hidden": "1", "layer_cta_hidden": "1", "layer_legal_hidden": "1",
+                    "header": "", "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"1080x1080: updated layer(s) -- header", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        job_dir = webapp.JOBS_DIR / job_id
+        layered = next(job_dir.glob("*_1080x1080.psd"))
+        live = next(job_dir.glob("*_1080x1080_source-template.psd"))
+        for path in (layered, live):
+            visible = {l.name.lower(): l.visible for l in PSDImage.open(path)}
+            for name in ("header", "logo"):
+                self.assertTrue(visible.get(name), (path.name, name, visible))
+        header = next(l for l in PSDImage.open(live) if l.name.lower() == "header")
+        self.assertTrue(header.text.startswith("FR "), header.text)
+
+    def test_an_as_uploaded_size_gets_only_its_own_words_translated(self):
+        with self.template.open("rb") as fh:
+            psd_bytes = fh.read()
+        calls = []
+        with mock.patch.object(webapp, "localize_message", side_effect=self._fake(calls)):
+            r = self.client.post(
+                "/generate",
+                data={
+                    "hero_image": (self._png((10, 10, 200)), "hero.png"),
+                    "psd_size_1": "1080x1080",
+                    "psd_file_1": (io.BytesIO(psd_bytes), "tester.psd"),
+                    "psd_as_is": "1",
+                    "layer_header_text": "TYPED BUT NOT DRAWN",
+                    "copy_language": "fr",
+                    "custom_sizes": "1080x1080",
+                    "header": "", "description": "",
+                },
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"1080x1080 used your uploaded PSD exactly as uploaded", r.data)
+        self.assertIn(b"French copy -- the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER", r.data)
+        self.assertIn(b"1080x1080: updated layer(s) -- header.", r.data)
+        # The typed header was translated (it's copy) but not drawn: the
+        # as-uploaded size draws only its own words.
+        self.assertNotIn(b"the template&#39;s header: &#34;TYPED", r.data)
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        out = Image.open(next((webapp.JOBS_DIR / job_id).glob("*_1080x1080.png"))).convert("RGB")
+        # Its own background stands (no blue hero behind it).
+        blue = sum(1 for x in range(0, 1080, 20) for y in range(0, 1080, 20)
+                   if (lambda p: p[2] > 150 and p[0] < 60 and p[1] < 60)(out.getpixel((x, y))))
+        self.assertLess(blue, 50)
+
+
+class TemplateTypeSizeTest(unittest.TestCase):
+    """The size the type is redrawn at follows the design: the layer's
+    Free Transform scale on top of its set FontSize (a 66 set and scaled
+    1.9x is 126 on the canvas), and the fit from the file's canvas to
+    the output size on top of that (a 1280x720 file for 1920x1080 is
+    1.5x). Read as the bare FontSize, the description came out half the
+    height it was designed at."""
+
+    def test_the_transform_scale_is_part_of_the_font_size(self):
+        from psd_tools import PSDImage
+        from src.image_ops import get_psd_layer_text_style
+
+        path = Path("default_templates/hydroboost-1080x1080.psd")
+        if not path.is_file():
+            self.skipTest("project template not present")
+        psd = PSDImage.open(path)
+        layer = next(l for l in psd if l.name.lower() == "description")
+        set_size = float(layer.engine_dict["StyleRun"]["RunArray"][0]["StyleSheet"]["StyleSheetData"]["FontSize"])
+        scale = layer.transform[3]
+        self.assertGreater(scale, 1.5)  # the layer really was scaled up in Photoshop
+        style = get_psd_layer_text_style(path, "description")
+        self.assertEqual(style["font_size"], round(set_size * scale))
+        self.assertAlmostEqual(style["transform_scale"], scale)
+        self.assertGreaterEqual(style["line_height"], int(style["font_size"] * 0.9))
+
+    def test_the_fit_scale_is_the_boxes_scale(self):
+        self.assertEqual(webapp._template_scale((1280, 720), (1920, 1080), "crop"), 1.5)
+        self.assertEqual(webapp._template_scale((1920, 1080), (3840, 2160), "contain"), 2.0)
+        self.assertEqual(webapp._template_scale((1080, 1080), (1080, 1080), "crop"), 1.0)
+        self.assertEqual(webapp._template_scale(None, (1080, 1080), "crop"), 1.0)
+        # A crop fit grows to cover; a contain fit shrinks to fit.
+        self.assertEqual(webapp._template_scale((400, 300), (800, 800), "crop"), 800 / 300)
+        self.assertEqual(webapp._template_scale((400, 300), (800, 800), "contain"), 2.0)
+
+
+class StaleRenderedTextTest(ScaledTemplateBoxTest):
+    """A template that is itself an app export carries last run's words
+    in its stored preview, at last run's box, beside a hidden
+    "<layer> (rendered)" companion. Redrawing the layer must wipe that
+    old box too, or the description shows twice."""
+
+    def test_last_runs_words_outside_the_current_box_are_wiped(self):
+        from src.psd_export import build_layered_psd, set_flattened_preview
+
+        size = (400, 300)
+        def block(colour, box):
+            im = Image.new("RGBA", size, (0, 0, 0, 0)); im.paste(colour, box); return im
+        psd = build_layered_psd(
+            [
+                ("background", Image.new("RGBA", size, (255, 255, 255, 255))),
+                ("logo", block((0, 90, 200, 255), (20, 20, 120, 120))),
+                ("product", block((10, 10, 10, 255), (20, 200, 120, 290))),
+                # The description box now: the right-hand column.
+                ("description", block((200, 200, 200, 255), (300, 20, 390, 280))),
+                # Where an earlier run drew it: a wider strip that sticks
+                # out to the left of the current box.
+                ("description (rendered)", block((255, 0, 0, 255), (200, 40, 390, 100))),
+            ],
+            size, layer_names={}, hidden={"description (rendered)"},
+        )
+        path = webapp.DEFAULT_TEMPLATES_DIR / "t-400x300.psd"
+        psd.save(path)
+        # The stored preview is what the app renders from, and it still
+        # shows last run's red words in that wider strip.
+        preview = Image.new("RGB", size, (255, 255, 255))
+        preview.paste((255, 0, 0), (200, 40, 390, 100))
+        preview.paste((200, 200, 200), (300, 100, 390, 280))
+        set_flattened_preview(path, preview)
+
+        r = self.client.post(
+            "/generate",
+            data={
+                "upload_custom_hero_enabled": "1",
+                "layer_description_text": "New words",
+                "layer_description_use_custom_color": "1",
+                "layer_description_text_color": "#0000ff",
+                "header": "", "description": "",
+            },
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:600])
+        job_id = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        out = Image.open(next((webapp.JOBS_DIR / job_id).glob("*_400x300.png"))).convert("RGB")
+        red = sum(1 for x in range(200, 300, 2) for y in range(40, 100, 2)
+                  if (lambda p: p[0] > 180 and p[1] < 90 and p[2] < 90)(out.getpixel((x, y))))
+        self.assertEqual(red, 0, "last run's words left of the current box must be gone")
+
 
 
 class PsdTemplateReadTest(unittest.TestCase):

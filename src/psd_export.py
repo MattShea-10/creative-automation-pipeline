@@ -23,6 +23,8 @@ see REUPLOAD_LAYER_NAMES below.
 
 from __future__ import annotations
 
+import copy
+
 from typing import List, Optional, Tuple
 
 from PIL import Image
@@ -358,6 +360,15 @@ def pair_type_layers_with_pixels(psd_path, images: dict, prefer: str = "text") -
                 target.visible = False
                 pixel_name = drawn_name
 
+            # An earlier export's companion of the same name goes: a
+            # template that is re-uploaded run after run was collecting
+            # a "(rendered)" layer per run.
+            for stale in [l for l in list(parent) if l is not target and l.name == pixel_name]:
+                try:
+                    parent.remove(stale)
+                except Exception:  # noqa: BLE001
+                    pass
+            index = list(parent).index(target)
             pixels = PixelLayer.frompil(
                 cropped, psd, name=pixel_name, top=top, left=left
             )
@@ -972,6 +983,31 @@ def set_type_layer_effects(psd_path, effects: dict) -> list:
     return styled
 
 
+def _forget_document_text_engine(psd) -> bool:
+    """Drop the document-level text engine block (Txt2) so Photoshop
+    lays every type layer out from the layer's own engine data.
+
+    Photoshop 2015.5+ keeps a second, whole-document copy of every type
+    layer's engine state in that block, and prefers it when the file
+    opens: a type layer rewritten here showed the new words (the raster
+    is ours) until the layer was clicked, at which point Photoshop
+    re-laid it out from Txt2 -- the template's English -- and the
+    edit looked undone. Without the block Photoshop reads the per-layer
+    data, which is what this module writes, and rebuilds Txt2 itself
+    on save.
+    """
+    try:
+        from psd_tools.constants import Tag
+
+        blocks = psd.tagged_blocks
+        if blocks is not None and Tag.TEXT_ENGINE_DATA in blocks:
+            del blocks[Tag.TEXT_ENGINE_DATA]
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    return False
+
+
 def set_type_layer_text(psd_path, texts: dict) -> list:
     """Rewrite live Photoshop type layers' copy in the PSD at `psd_path`,
     in place, keeping them editable text.
@@ -1015,6 +1051,7 @@ def set_type_layer_text(psd_path, texts: dict) -> list:
 
     if not rewritten:
         return []
+    _forget_document_text_engine(psd)
     try:
         psd.save(psd_path)
     except Exception:  # noqa: BLE001
@@ -1088,6 +1125,7 @@ def set_type_layer_colors(psd_path, colors: dict) -> list:
 
     if not recoloured:
         return []
+    _forget_document_text_engine(psd)
     try:
         psd.save(psd_path)
     except Exception:
@@ -1239,26 +1277,77 @@ def _rewrite_type_layer_text(layer, text: str) -> bool:
     raising, because this only ever decorates a download that is already
     correct.
     """
-    payload = f"{text}\x00"
+    # Photoshop's own files: the descriptor string ends in a NUL, the
+    # engine string in a paragraph return, and the run lengths count
+    # that return. Line breaks in `text` are paragraph returns too.
+    lines = [line for line in text.replace("\r\n", "\n").replace("\n", "\r").split("\r")]
+    if lines and lines[-1] == "":
+        lines = lines[:-1]
+    if not lines:
+        return False
+    engine_text = "\r".join(lines) + "\r"
     try:
-        layer._data.text_data[b"Txt "].value = payload
         engine = layer.engine_dict
-        engine["Editor"]["Text"].value = payload
+        old_text = str(engine["Editor"]["Text"].value)
+        layer._data.text_data[b"Txt "].value = "\r".join(lines) + "\x00"
+        engine["Editor"]["Text"].value = engine_text
     except Exception:
         return False
-    length = len(payload)
+    old_paragraphs = old_text.split("\r")
+    if old_paragraphs and old_paragraphs[-1] == "":
+        old_paragraphs = old_paragraphs[:-1]
+    new_lengths = [len(line) + 1 for line in lines]
     for key in ("StyleRun", "ParagraphRun"):
         try:
             lengths = engine[key]["RunLengthArray"]
             runs = engine[key]["RunArray"]
         except Exception:
             continue
-        while len(lengths) > 1:
-            lengths.pop()
-            if len(runs) > 1:
+        # Same number of lines as before: each line keeps the run its
+        # first real character had -- so a header whose lines were set
+        # at different sizes keeps every size. Otherwise the first run
+        # is stretched over everything, as before.
+        keep = None
+        if len(old_paragraphs) == len(lines) and len(lengths) == len(runs) and len(runs) >= 1:
+            old_lengths = [int(n) for n in lengths]
+            keep = []
+            cursor = 0
+            for paragraph in old_paragraphs:
+                first = cursor
+                for offset, ch in enumerate(paragraph):
+                    if not ch.isspace():
+                        first = cursor + offset
+                        break
+                pos = 0
+                chosen = len(runs) - 1
+                for index, length in enumerate(old_lengths):
+                    if first < pos + length:
+                        chosen = index
+                        break
+                    pos += length
+                keep.append(chosen)
+                cursor += len(paragraph) + 1
+        if keep is not None:
+            kept_runs = [copy.deepcopy(runs[i]) for i in keep]
+            while len(runs) > 0:
                 runs.pop()
-        if lengths:
-            lengths[0].value = length
+            while len(lengths) > 1:
+                lengths.pop()
+            for run in kept_runs:
+                runs.append(run)
+            template_length = lengths[0]
+            lengths[0].value = new_lengths[0]
+            for value in new_lengths[1:]:
+                item = copy.deepcopy(template_length)
+                item.value = value
+                lengths.append(item)
+        else:
+            while len(lengths) > 1:
+                lengths.pop()
+                if len(runs) > 1:
+                    runs.pop()
+            if lengths:
+                lengths[0].value = len(engine_text)
     return True
 
 

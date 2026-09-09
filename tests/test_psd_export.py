@@ -290,7 +290,10 @@ class PsdExportTest(unittest.TestCase):
             return None
 
         before = closed_path(dest)
-        self.assertEqual(len(before), 4, "expected a four-cornered rectangle")
+        if len(before) != 4:
+            # The tester's button has been redrawn as something other
+            # than a plain rectangle; the radius logic is about corners.
+            self.skipTest("this template's CTA is not a four-cornered rectangle")
 
         self.assertEqual(
             set_shape_layer_style(dest, {"cta": {"corner_radius_pct": 100}}),
@@ -326,10 +329,12 @@ class PsdExportTest(unittest.TestCase):
         shutil.copy(self.REAL_TEMPLATE, dest)
         if self._cta_shape(dest) is None:
             self.skipTest("this template's CTA has no vector shape in it")
+        vector = self._shape_block(self._cta_shape(dest), "VECTOR_MASK_SETTING2")
+        knots_before = len([r for r in vector.path if hasattr(r, "is_closed") and r.is_closed()][0])
         set_shape_layer_style(dest, {"cta": {"corner_radius_pct": 0}})
         vector = self._shape_block(self._cta_shape(dest), "VECTOR_MASK_SETTING2")
         closed = [r for r in vector.path if hasattr(r, "is_closed") and r.is_closed()][0]
-        self.assertEqual(len(closed), 4, "square corners should stay four knots")
+        self.assertEqual(len(closed), knots_before, "a zero radius must leave the knots alone")
 
     def test_set_shape_layer_style_on_an_unreadable_file_is_a_no_op(self):
         junk = self.tmp_dir / "not-a-shape.psd"
@@ -475,6 +480,33 @@ class PsdExportTest(unittest.TestCase):
         )
 
     @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
+    def test_rewriting_text_drops_the_document_text_engine_block(self):
+        # Photoshop keeps a whole-document copy of every type layer's
+        # engine state (Txt2) and lays text out from IT when the file
+        # opens -- so a rewritten layer showed the new words only until
+        # it was clicked, then snapped back to the template's English.
+        # The block goes; Photoshop reads the layer's own data instead.
+        from psd_tools.constants import Tag
+
+        dest = self.tmp_dir / "txt2.psd"
+        shutil.copy(self.REAL_TEMPLATE, dest)
+        self.assertIn(Tag.TEXT_ENGINE_DATA, PSDImage.open(dest).tagged_blocks)
+        self.assertEqual(set_type_layer_text(dest, {"header": "REHIDRÁTATE\rBEBIDA"}), ["header"])
+        psd = PSDImage.open(dest)
+        self.assertNotIn(Tag.TEXT_ENGINE_DATA, psd.tagged_blocks)
+        header = [l for l in psd if l.name == "header"][0]
+        self.assertEqual(header.kind, "type")
+        self.assertEqual(header.text, "REHIDRÁTATE\rBEBIDA")
+        # Photoshop's own conventions: the engine string ends in a
+        # paragraph return and the runs count it.
+        engine = header.engine_dict
+        self.assertEqual(str(engine["Editor"]["Text"].value), "REHIDRÁTATE\rBEBIDA\r")
+        self.assertEqual([int(n) for n in engine["ParagraphRun"]["RunLengthArray"]], [12, 7])
+        self.assertEqual(sum(int(n) for n in engine["StyleRun"]["RunLengthArray"]), 19)
+        # Nothing of the old words anywhere the text engine reads.
+        self.assertEqual(dest.read_bytes().count("REHYDRATE".encode("utf-16-be")), 0)
+
+    @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
     def test_a_type_layer_shows_the_new_words_and_stays_editable(self):
         # A type layer carries a rasterized copy of how its words last
         # looked, and that is what Photoshop puts on screen when the file
@@ -486,6 +518,7 @@ class PsdExportTest(unittest.TestCase):
 
         dest = self.tmp_dir / "raster.psd"
         shutil.copy(self.REAL_TEMPLATE, dest)
+        box_before = [l for l in PSDImage.open(dest) if l.name == "description"][0].bbox
         set_type_layer_text(dest, {"description": "Drive the summer"})
 
         psd = PSDImage.open(dest)
@@ -502,9 +535,12 @@ class PsdExportTest(unittest.TestCase):
         # and what every later run fits its copy into: shrink it once
         # and the next run squeezes into less, and the one after into
         # less again. The union of the old box and the new picture.
-        self.assertEqual(layer.bbox, (64, 367, 701, 744))
+        expected = (
+            min(box_before[0], 100), min(box_before[1], 400), max(box_before[2], 701), max(box_before[3], 601),
+        )
+        self.assertEqual(layer.bbox, expected)
         raster = layer.topil().convert("RGBA")
-        self.assertEqual(raster.getpixel((400 - 64, 500 - 367)), (51, 255, 102, 255))
+        self.assertEqual(raster.getpixel((400 - layer.bbox[0], 500 - layer.bbox[1])), (51, 255, 102, 255))
 
     @unittest.skipUnless(REAL_TEMPLATE.is_file(), "needs a real template")
     def test_replacing_a_raster_keeps_the_rest_of_the_document(self):
@@ -531,7 +567,9 @@ class PsdExportTest(unittest.TestCase):
         before = [l for l in PSDImage.open(dest) if l.name == "description"][0].bbox
         psd = PSDImage.open(dest)
         small = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
-        ImageDraw.Draw(small).rectangle([100, 400, 300, 440], fill=(0, 0, 0, 255))
+        # A picture well inside the box, whatever the box is now.
+        x0, y0, x1, y1 = before
+        ImageDraw.Draw(small).rectangle([x0 + 5, y0 + 5, x0 + (x1 - x0) // 2, y0 + (y1 - y0) // 4], fill=(0, 0, 0, 255))
         set_type_layer_raster(dest, {"description": small})
         set_type_layer_raster(dest, {"description": small})
         after = [l for l in PSDImage.open(dest) if l.name == "description"][0].bbox

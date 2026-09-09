@@ -192,11 +192,13 @@ BROADCAST_VIDEO_SIZES: List[Tuple[int, int]] = [
 
 # Friendly names for well-known sizes, used to make filenames/reports more
 # readable when a requested size matches a recognized standard. Includes a
-# few sizes (300x600 "Half Page Ad", 970x250 "Billboard", 728x480 "Wide
+# few sizes (300x600 "Half Page Ad", 970x250 "Billboard", 720x480 "Wide
 # Rectangle") that aren't in the active WEB_AD_SIZES preset above but are
 # still recognized if requested explicitly via --sizes. "Wide Rectangle"
 # isn't an official IAB name -- there isn't one for this size -- just a readable
-# label instead of falling back to an ugly reduced-fraction ratio (91:60).
+# label for the 720x480 (3:2) delivery size these templates use. The
+# 728x480 that used to sit here was a near miss of it, and typing the
+# real size then drew a "did you mean 728x480" warning.
 SIZE_NAMES = {
     (728, 90): "Leaderboard",
     (300, 250): "Medium Rectangle",
@@ -207,12 +209,13 @@ SIZE_NAMES = {
     (200, 200): "Small Square",
     (468, 60): "Banner",
     (970, 90): "Large Leaderboard",
-    (728, 480): "Wide Rectangle",
+    (720, 480): "Wide Rectangle",
     (300, 600): "Half Page Ad",
     (970, 250): "Billboard",
     (1920, 1080): "Full HD / 1080p Broadcast",
     (1280, 720): "720p Broadcast",
     (3840, 2160): "4K UHD Broadcast",
+    (1200, 627): "LinkedIn Article",  # link-share / article image, 1.91:1
 }
 
 SIZE_PRESETS = {
@@ -239,7 +242,7 @@ DEVICE_CATEGORY = {
     (970, 90): "desktop",
     (300, 600): "desktop",
     (970, 250): "desktop",
-    (728, 480): "desktop",
+    (720, 480): "desktop",
 }
 
 
@@ -313,9 +316,19 @@ def parse_sizes(spec: str) -> List[Tuple[int, int]]:
 
 
 def ratio_label(width: int, height: int) -> str:
-    """Derive a human-readable aspect ratio label (e.g. '16:9') from pixel dimensions."""
+    """Derive a human-readable aspect ratio label (e.g. '16:9') from pixel dimensions.
+
+    Sizes that don't reduce to small numbers (1200x627 is 400:209 exactly)
+    are labelled the way their platforms quote them -- '1.91:1' -- since
+    a reduced fraction nobody recognises says less than the decimal.
+    """
     g = math.gcd(width, height) or 1
-    return f"{width // g}:{height // g}"
+    w, h = width // g, height // g
+    if max(w, h) <= 40 or not width or not height:
+        return f"{w}:{h}"
+    if width >= height:
+        return f"{width / height:.2f}:1"
+    return f"1:{height / width:.2f}"
 
 
 def size_label(width: int, height: int) -> str:
@@ -412,6 +425,25 @@ def _font_index() -> dict:
             # Without fontTools this is the only key there is; with it,
             # the name table wins for the same key.
             index.setdefault(_font_key(path.stem), (path, 0))
+            # Pillow can open each face of a file and report its family
+            # and style ("Avenir Next Condensed", "Demi Bold"), which
+            # joined is the PostScript name's key -- so a collection
+            # like macOS's Avenir Next Condensed.ttc resolves face by
+            # face even without fontTools.
+            face_no = 0
+            while face_no < 64:
+                try:
+                    probe = ImageFont.truetype(str(path), 10, index=face_no)
+                    family, style = probe.getname()
+                except Exception:  # noqa: BLE001
+                    break
+                if family:
+                    index.setdefault(_font_key(f"{family}{style or ''}"), (path, face_no))
+                    if (style or "").lower() in ("regular", "book", "roman", "plain", ""):
+                        index.setdefault(_font_key(family), (path, face_no))
+                face_no += 1
+                if path.suffix.lower() not in (".ttc", ".otc"):
+                    break
             if TTFont is None:
                 continue
             try:
@@ -1964,7 +1996,7 @@ def map_box_through_fit(
 
 
 def _psd_composite_with_layers_hidden(
-    psd_path: Union[str, Path], layer_names: Union[str, Iterable[str]]
+    psd_path: Union[str, Path], layer_names: Union[str, Iterable[str]], effects: bool = True
 ) -> Optional[Image.Image]:
     """Shared by get_psd_layer_background() and get_psd_layer_foreground()
     just below: open `psd_path` with psd-tools, hide every top-level
@@ -2047,7 +2079,104 @@ def _psd_composite_with_layers_hidden(
         for layer, visible in original_visibility:
             layer.visible = visible
 
+    # psd-tools draws the layers but not their effects, so a design
+    # recomposited around a new backdrop lost every drop shadow, glow
+    # and stroke -- "the layer styles aren't working". Drawn here from
+    # each visible layer's own alpha, under that layer.
+    if effects:
+        try:
+            composite = _add_layer_effects(psd, composite, {layer for layer, _ in original_visibility})
+        except Exception:  # noqa: BLE001
+            pass
     return composite
+
+
+def _layer_effect_images(layer_rgba: Image.Image, effects: dict) -> list:
+    """RGBA images, canvas-sized like `layer_rgba`, for the layer's drop
+    shadow, outer glow and stroke, in the order they go under it."""
+    out = []
+    alpha = layer_rgba.split()[3]
+    shadow = effects.get("shadow")
+    if shadow and (shadow.get("distance") or shadow.get("size")):
+        angle = math.radians(float(shadow.get("angle", 120) or 0))
+        distance = float(shadow.get("distance", 0) or 0)
+        dx, dy = -distance * math.cos(angle), distance * math.sin(angle)
+        moved = Image.new("L", alpha.size, 0)
+        moved.paste(alpha, (int(round(dx)), int(round(dy))))
+        size = float(shadow.get("size", 0) or 0)
+        if size > 0:
+            moved = moved.filter(ImageFilter.GaussianBlur(radius=max(size / 2.0, 0.5)))
+        opacity = max(0.0, min(100.0, float(shadow.get("opacity", 75) or 0))) / 100.0
+        moved = moved.point(lambda a: int(a * opacity))
+        img = Image.new("RGBA", alpha.size, tuple(shadow.get("color") or (0, 0, 0)) + (0,))
+        img.putalpha(moved)
+        out.append(img)
+    glow = effects.get("glow")
+    if glow and glow.get("size"):
+        size = float(glow["size"])
+        grown = alpha.filter(ImageFilter.MaxFilter(max(3, int(size) // 2 * 2 + 1)))
+        grown = grown.filter(ImageFilter.GaussianBlur(radius=max(size / 2.0, 0.5)))
+        opacity = max(0.0, min(100.0, float(glow.get("opacity", 75) or 0))) / 100.0
+        grown = grown.point(lambda a: int(min(255, a * 1.4) * opacity))
+        img = Image.new("RGBA", alpha.size, tuple(glow.get("color") or (255, 255, 255)) + (0,))
+        img.putalpha(grown)
+        out.append(img)
+    stroke = effects.get("stroke")
+    if stroke and stroke.get("size"):
+        size = max(1, int(round(float(stroke["size"]))))
+        grown = alpha.filter(ImageFilter.MaxFilter(size * 2 + 1))
+        img = Image.new("RGBA", alpha.size, tuple(stroke.get("color") or (0, 0, 0)) + (0,))
+        img.putalpha(grown)
+        out.append(img)
+    return out
+
+
+def _add_layer_effects(psd, composite: Image.Image, hidden_layers) -> Image.Image:
+    """`composite` with every visible top-level layer's effects drawn
+    under that layer. Layers above it end up under its shadow too --
+    the small price of not re-doing psd-tools' whole composite."""
+    hidden = set(hidden_layers)
+    result = composite.convert("RGBA")
+    changed = False
+    for layer in psd:
+        if layer in hidden or not layer.visible:
+            continue
+        try:
+            effects = _psd_layer_effects(layer)
+        except Exception:  # noqa: BLE001
+            continue
+        if not effects:
+            continue
+        try:
+            pixels = layer.composite()
+        except Exception:  # noqa: BLE001
+            continue
+        if pixels is None:
+            continue
+        # Work on a window around the layer, not the whole canvas: a 4K
+        # document's full-frame blurs per layer cost seconds.
+        pixels = pixels.convert("RGBA")
+        x0, y0 = layer.bbox[0], layer.bbox[1]
+        reach = 0.0
+        for effect in effects.values():
+            reach = max(reach, float(effect.get("distance", 0) or 0) + 2 * float(effect.get("size", 0) or 0))
+        pad = int(math.ceil(reach)) + 2
+        wx0, wy0 = max(0, x0 - pad), max(0, y0 - pad)
+        wx1, wy1 = min(result.width, x0 + pixels.width + pad), min(result.height, y0 + pixels.height + pad)
+        if wx1 <= wx0 or wy1 <= wy0:
+            continue
+        window = Image.new("RGBA", (wx1 - wx0, wy1 - wy0), (0, 0, 0, 0))
+        window.paste(pixels, (x0 - wx0, y0 - wy0), pixels)
+        region = result.crop((wx0, wy0, wx1, wy1))
+        touched = False
+        for effect_img in _layer_effect_images(window, effects):
+            region = Image.alpha_composite(region, effect_img)
+            touched = True
+        if touched:
+            region = Image.alpha_composite(region, window)
+            result.paste(region, (wx0, wy0))
+            changed = True
+    return result if changed else composite
 
 
 def get_psd_backdrop(
@@ -2103,6 +2232,58 @@ def get_psd_backdrop(
     return composite.convert("RGB")
 
 
+def carry_flattened_effects(
+    preview: Image.Image,
+    old_backdrop: Image.Image,
+    new_backdrop: Image.Image,
+    foreground_alpha: Image.Image,
+) -> Image.Image:
+    """Photoshop's own rendering of the layers -- effects and all --
+    moved onto a new backdrop.
+
+    `preview` is the file's flattened picture as Photoshop saved it (the
+    layers over the old backdrop, with every layer style rendered by
+    Photoshop itself); `old_backdrop` is the backdrop alone; `new_backdrop`
+    is the picture the layers now go over; `foreground_alpha` is where the
+    layers' own pixels are (an "L" mask).
+
+    A layer style is not in any layer's pixels -- Photoshop draws a drop
+    shadow or glow at display time from the style's numbers -- so a
+    composite made outside Photoshop had to approximate it, and a
+    header's shadow came out soft and faint where Photoshop's was hard
+    and black ("the layer style is not the same"). The preview has the
+    real thing. Where the layers sit, the preview's pixels go over the
+    new backdrop as they are. Everywhere else the preview differs from
+    the old backdrop only by the styles: a darkening (a shadow) is the
+    ratio preview/old, which for a black shadow is exactly its own
+    coverage whatever the backdrop was, so the new backdrop takes the
+    same ratio; a brightening (a glow) is the difference, added on.
+    """
+    try:
+        import numpy as np
+    except ImportError:
+        out = new_backdrop.convert("RGB").copy()
+        out.paste(preview.convert("RGB"), mask=foreground_alpha)
+        return out
+    size = new_backdrop.size
+    P = np.asarray(preview.convert("RGB").resize(size), dtype=np.float32)
+    old_rgba = old_backdrop.convert("RGBA").resize(size)
+    B = np.asarray(old_rgba.convert("RGB"), dtype=np.float32)
+    N = np.asarray(new_backdrop.convert("RGB"), dtype=np.float32)
+    ratio = np.clip(P / np.maximum(B, 1.0), 0.0, 1.0)
+    bright = np.clip(P - B, 0.0, 255.0)
+    # Where the old backdrop had no pixels (a letterboxed fit, a backdrop
+    # smaller than the canvas) there is nothing to compare against: the
+    # new backdrop stands as it is there.
+    known = (np.asarray(old_rgba.getchannel("A"), dtype=np.float32) > 0)[..., None]
+    ratio = np.where(known, ratio, 1.0)
+    bright = np.where(known, bright, 0.0)
+    out = np.clip(N * ratio + bright, 0.0, 255.0)
+    a = np.asarray(foreground_alpha.convert("L").resize(size), dtype=np.float32)[..., None] / 255.0
+    out = out * (1.0 - a) + P * a
+    return Image.fromarray(out.astype(np.uint8), "RGB")
+
+
 def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Optional[Image.Image]:
     """Return the PSD's own full composite with the named layer hidden --
     the *true* original pixels behind that layer, straight from the file,
@@ -2122,8 +2303,155 @@ def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Opt
     return composite.convert("RGB")
 
 
+def get_psd_layer_effect_reach(psd_path: Union[str, Path], layer_name: str) -> int:
+    """How far, in the PSD's own pixels, the named layer's enabled
+    effects reach beyond its pixels: a drop shadow's distance plus its
+    size, an outer glow's or stroke's size. Photoshop draws these into
+    the stored preview outside the layer's box, so a wipe of the box
+    alone leaves a halo of the old words -- the frame and the dark
+    band under a redrawn header."""
+    try:
+        from psd_tools import PSDImage
+
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return 0
+    reach = 0.0
+    for layer in psd:
+        if layer.name.strip().lower() != layer_name.strip().lower():
+            continue
+        try:
+            effects = list(layer.effects or [])
+        except Exception:  # noqa: BLE001
+            effects = []
+        for effect in effects:
+            try:
+                if getattr(effect, "enabled", True) is False:
+                    continue
+                kind = type(effect).__name__.lower()
+                size = float(getattr(effect, "size", 0) or 0)
+                distance = float(getattr(effect, "distance", 0) or 0)
+                if "shadow" in kind:
+                    reach = max(reach, distance + size)
+                elif "glow" in kind or "stroke" in kind:
+                    reach = max(reach, size)
+            except Exception:  # noqa: BLE001
+                continue
+        break
+    return int(math.ceil(reach))
+
+
+_glyph_coverage_cache: dict = {}
+
+
+def font_covers_text(font_name: Optional[str], text: str) -> bool:
+    """Whether the installed font with this PostScript name has a glyph
+    for every letter in `text`. Apple Symbols, say, has no accented
+    Latin letters, so Spanish set in it came out as boxes; the caller
+    falls back to a bundled face that does have them."""
+    found = find_font_file(font_name)
+    if found is None or not text:
+        return True
+    path, index = found
+    letters = {ch for ch in text if not ch.isspace()}
+    try:
+        try:
+            from fontTools.ttLib import TTFont
+
+            key = (str(path), index)
+            cmap = _glyph_coverage_cache.get(key)
+            if cmap is None:
+                font = TTFont(str(path), fontNumber=index, lazy=True)
+                cmap = set(font.getBestCmap().keys())
+                font.close()
+                _glyph_coverage_cache[key] = cmap
+            if not all(ord(ch) in cmap for ch in letters):
+                return False
+            # In the cmap is not the same as drawable: a font can map
+            # a letter to an empty box of its own. The mask check
+            # below settles it either way.
+        except ImportError:
+            pass
+        # Without fontTools: a missing glyph draws as the font's
+        # .notdef box, so a letter whose mask equals a private-use
+        # character's mask (never in any real font) is missing.
+        # U+0378 is unassigned in Unicode, so no font has a glyph for
+        # it: its mask is what a missing letter looks like in this font.
+        # (A private-use code point was the probe before, and Apple
+        # Symbols has real glyphs there -- so nothing ever counted as
+        # missing and the boxes stayed.)
+        probe = ImageFont.truetype(str(path), 40, index=index)
+        missing = probe.getmask("\u0378").tobytes()
+        return all(probe.getmask(ch).tobytes() != missing for ch in letters)
+    except Exception:  # noqa: BLE001
+        return True
+
+
+# The type layers this app ever retypes -- and so the only ones whose
+# cached picture can disagree with their words.
+APP_RETYPED_TEXT_LAYERS = ("header", "description", "legal", "cta")
+
+
+def psd_saved_by_photoshop(psd) -> bool:
+    """Whether Photoshop wrote this document last. Photoshop stores the
+    document-level text engine block (Txt2) on every save of a file
+    with type in it; this app removes that block whenever it retypes a
+    layer (Photoshop would otherwise revert the words to it on click),
+    so a file without it was last written here."""
+    try:
+        from psd_tools.constants import Tag
+
+        blocks = psd.tagged_blocks
+        return blocks is not None and Tag.TEXT_ENGINE_DATA in blocks
+    except Exception:  # noqa: BLE001
+        return True
+
+
+def get_psd_untrusted_type_layers(psd_path: Union[str, Path]) -> set:
+    """Lowercased names of the visible type layers whose cached picture
+    can't be taken as showing their words.
+
+    A type layer carries its words and a picture of how they last
+    looked, and a composite made outside Photoshop shows the picture.
+    Photoshop redraws the picture from the words on every save, so in
+    a file it saved the two agree. In a file this app saved last they
+    need not: the app retypes a layer's words and replaces its picture
+    with its own drawing of them -- but a saved template gets its
+    words from one run's form and its picture from what that run drew,
+    which in French is a different thing, and an export that was never
+    opened in Photoshop keeps whatever the app last wrote. A template
+    in that state showed the old words no matter what language was
+    chosen ("the 720x480 is not updating language"): the words said
+    French, the picture still said English, and "already in French,
+    leave it as saved" left the picture.
+
+    So: a file Photoshop saved is trusted entirely; in one this app
+    saved, every layer it ever retypes is drawn from its words afresh.
+    Returns {} when the file can't be read."""
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return set()
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return set()
+    if psd_saved_by_photoshop(psd):
+        return set()
+    untrusted = set()
+    for layer in psd:
+        name = (layer.name or "").strip().lower()
+        if not layer.visible or name not in APP_RETYPED_TEXT_LAYERS:
+            continue
+        if layer.kind == "type" or (layer.is_group() and any(
+            child.kind == "type" for child in layer.descendants()
+        )):
+            untrusted.add(name)
+    return untrusted
+
+
 def get_psd_layer_foreground(
-    psd_path: Union[str, Path], layer_names: Union[str, Iterable[str]]
+    psd_path: Union[str, Path], layer_names: Union[str, Iterable[str]], effects: bool = True
 ) -> Optional[Image.Image]:
     """Return the PSD's own full composite with `layer_names` hidden
     (a single layer name, or several at once), same construction as
@@ -2150,7 +2478,7 @@ def get_psd_layer_foreground(
 
     Returns None under the same conditions as get_psd_layer_background().
     """
-    composite = _psd_composite_with_layers_hidden(psd_path, layer_names)
+    composite = _psd_composite_with_layers_hidden(psd_path, layer_names, effects=effects)
     if composite is None:
         return None
     return composite.convert("RGBA")
@@ -2207,12 +2535,28 @@ def get_psd_layer_text_style(psd_path: Union[str, Path], layer_name: str) -> Opt
     # builtins, so everything below converts explicitly instead of
     # isinstance-checking, catching whatever conversion errors that turns
     # up as "this field wasn't usable" rather than letting them propagate.
+    # FontSize is the size the type was SET at; if the layer was then
+    # scaled with Free Transform (the norm in these templates -- a
+    # description set at 66 and dragged up to 1.9x reads as 126 on the
+    # canvas), the scale lives in the layer's transform matrix, not in
+    # FontSize. Read without it, the redrawn text came out at the set
+    # size: about half the height of the design in the worst cases.
+    # Leading is stored in the same unscaled units, so it scales too.
+    transform_scale = 1.0
+    try:
+        xx, _xy, _yx, yy, _tx, _ty = target.transform
+        scale = float(yy) if yy else float(xx)
+        if scale and scale > 0:
+            transform_scale = scale
+    except Exception:  # noqa: BLE001
+        pass
+    result["transform_scale"] = transform_scale
     try:
         font_size = float(style_sheet.get("FontSize"))
     except (TypeError, ValueError):
         font_size = None
     if font_size and font_size > 0:
-        result["font_size"] = max(int(round(font_size)), 1)
+        result["font_size"] = max(int(round(font_size * transform_scale)), 1)
 
     result["bold"] = bool(style_sheet.get("FauxBold"))
 
@@ -2234,8 +2578,12 @@ def get_psd_layer_text_style(psd_path: Union[str, Path], layer_name: str) -> Opt
         auto_leading = bool(style_sheet.get("AutoLeading"))
         if not auto_leading and explicit_leading and explicit_leading > 0:
             # An explicit leading value (line-to-line distance) the
-            # template was actually set to in Photoshop -- use it as-is.
-            result["line_height"] = max(int(round(explicit_leading)), 1)
+            # template was actually set to in Photoshop, through the
+            # same transform as the size.
+            # Never tighter than 90% of the size: a leading left over
+            # from an earlier, smaller setting would stack the lines on
+            # top of each other if the words wrap here.
+            result["line_height"] = max(int(round(explicit_leading * transform_scale)), int(result["font_size"] * 0.9), 1)
         else:
             # "Auto" leading (Photoshop's default, and what most text
             # layers actually use) has no single stored value to read --
@@ -2296,7 +2644,247 @@ def get_psd_layer_text_style(psd_path: Union[str, Path], layer_name: str) -> Opt
             family = "serif"
     result["family"] = family
 
+    # The layer's own effects (drop shadow, outer glow, stroke), so a
+    # redraw carries them: without them a translated header lost the
+    # shadow the design had, until the file was opened in Photoshop.
+    try:
+        result["effects"] = _psd_layer_effects(target)
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Per-line styling. A header set as "REHYDRATE / with a new summer /
+    # REFRESHING / DRINK" has a size for each line; drawn at the first
+    # run's size alone the layout was lost. Each paragraph gets the
+    # style of the run its first real character sits in.
+    try:
+        result["lines"] = _psd_type_layer_lines(target, transform_scale, result)
+    except Exception:  # noqa: BLE001
+        pass
+
     return result if "font_size" in result else None
+
+
+def _effect_color(effect):
+    try:
+        color = effect.color
+        return (
+            max(0, min(255, round(float(color[b"Rd  "])))),
+            max(0, min(255, round(float(color[b"Grn "])))),
+            max(0, min(255, round(float(color[b"Bl  "])))),
+        )
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _psd_layer_effects(layer) -> dict:
+    """{"shadow": {...}, "glow": {...}, "stroke": {...}} for the layer's
+    enabled effects, sizes in the PSD's own pixels."""
+    out: dict = {}
+    for effect in list(layer.effects or []):
+        try:
+            if getattr(effect, "enabled", True) is False:
+                continue
+            kind = type(effect).__name__.lower()
+            if kind == "dropshadow" and "shadow" not in out:
+                out["shadow"] = {
+                    "color": _effect_color(effect) or (0, 0, 0),
+                    "opacity": float(getattr(effect, "opacity", 75) or 0),
+                    "angle": float(getattr(effect, "angle", 120) or 0),
+                    "distance": float(getattr(effect, "distance", 0) or 0),
+                    "size": float(getattr(effect, "size", 0) or 0),
+                }
+            elif kind == "outerglow" and "glow" not in out:
+                out["glow"] = {
+                    "color": _effect_color(effect) or (255, 255, 255),
+                    "opacity": float(getattr(effect, "opacity", 75) or 0),
+                    "size": float(getattr(effect, "size", 0) or 0),
+                }
+            elif kind == "stroke" and "stroke" not in out:
+                out["stroke"] = {
+                    "color": _effect_color(effect) or (0, 0, 0),
+                    "size": float(getattr(effect, "size", 0) or 0),
+                }
+        except Exception:  # noqa: BLE001
+            continue
+    return out
+
+
+def _draw_text_shadow(canvas, lines_xy, font, shadow, keep_alpha):
+    """Photoshop-style drop shadow under text: the glyphs in the shadow
+    colour, offset along the light angle, blurred by the size. `lines_xy`
+    is [(x, y, text, font)] so styled lines can pass their own fonts."""
+    if not shadow or not lines_xy:
+        return canvas
+    distance = float(shadow.get("distance", 0) or 0)
+    size = float(shadow.get("size", 0) or 0)
+    opacity = max(0.0, min(100.0, float(shadow.get("opacity", 75) or 0)))
+    if opacity <= 0 or (distance <= 0 and size <= 0):
+        return canvas
+    angle = math.radians(float(shadow.get("angle", 120) or 0))
+    dx = -distance * math.cos(angle)
+    dy = distance * math.sin(angle)
+    color = tuple(shadow.get("color") or (0, 0, 0))
+    layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(layer)
+    for x, y, text, line_font in lines_xy:
+        draw.text((x + dx, y + dy), text, font=line_font or font, fill=(255, 255, 255, 255))
+    alpha = layer.split()[3]
+    if size > 0:
+        alpha = alpha.filter(ImageFilter.GaussianBlur(radius=max(size / 2.0, 0.5)))
+    alpha = alpha.point(lambda a: int(a * opacity / 100.0))
+    shadow_layer = Image.new("RGBA", canvas.size, color + (0,))
+    shadow_layer.putalpha(alpha)
+    if keep_alpha:
+        return Image.alpha_composite(canvas.convert("RGBA"), shadow_layer)
+    return Image.alpha_composite(canvas.convert("RGBA"), shadow_layer).convert("RGB")
+
+
+def _style_sheet_color(style_sheet):
+    fill_color = style_sheet.get("FillColor")
+    if fill_color is None:
+        return None
+    try:
+        color_type = int(fill_color.get("Type"))
+        values = list(fill_color.get("Values"))
+        if color_type == 1 and len(values) == 4:
+            return tuple(max(0, min(255, round(float(v) * 255))) for v in values[1:4])
+    except (TypeError, ValueError, AttributeError):
+        return None
+    return None
+
+
+def _psd_type_layer_lines(target, transform_scale: float, base: dict) -> list:
+    """[{text, font_size, font_name, family, color, bold}] for each
+    paragraph of a type layer, in canvas pixels. Empty when the layer
+    has one paragraph (nothing per-line to keep) or can't be read."""
+    engine = target.engine_dict
+    text = str(engine["Editor"]["Text"].value)
+    paragraphs = text.split("\r")
+    if paragraphs and paragraphs[-1] == "":
+        paragraphs = paragraphs[:-1]
+    if len(paragraphs) < 2:
+        return []
+    run_lengths = [int(n) for n in engine["StyleRun"]["RunLengthArray"]]
+    runs = list(engine["StyleRun"]["RunArray"])
+    font_set = target.resource_dict.get("FontSet") or []
+
+    def style_at(index):
+        pos = 0
+        for length, run in zip(run_lengths, runs):
+            if index < pos + length:
+                return run["StyleSheet"]["StyleSheetData"]
+            pos += length
+        return runs[-1]["StyleSheet"]["StyleSheetData"] if runs else None
+
+    lines = []
+    cursor = 0
+    for paragraph in paragraphs:
+        first = cursor
+        for offset, ch in enumerate(paragraph):
+            if not ch.isspace():
+                first = cursor + offset
+                break
+        sheet = style_at(first)
+        cursor += len(paragraph) + 1
+        line = {"text": paragraph.strip()}
+        try:
+            size = float(sheet.get("FontSize")) * transform_scale
+            line["font_size"] = max(int(round(size)), 1)
+        except (TypeError, ValueError, AttributeError):
+            line["font_size"] = base.get("font_size")
+        try:
+            raw = font_set[int(sheet.get("Font", 0))].get("Name")
+            line["font_name"] = str(raw or "").strip().strip("'\"").strip() or base.get("font_name")
+        except Exception:  # noqa: BLE001
+            line["font_name"] = base.get("font_name")
+        line["color"] = _style_sheet_color(sheet) if sheet is not None else None
+        if line["color"] is None:
+            line["color"] = base.get("color")
+        line["bold"] = bool(sheet.get("FauxBold")) if sheet is not None else base.get("bold", False)
+        line["family"] = base.get("family", "sans")
+        lines.append(line)
+    return lines
+
+
+def apply_layer_styled_lines(
+    base_image: Image.Image,
+    bbox: Tuple[int, int, int, int],
+    lines: list,
+    *,
+    align: str = "left",
+    scale: float = 1.0,
+    keep_alpha: bool = False,
+    debug: Optional[dict] = None,
+    shadow: Optional[dict] = None,
+) -> Image.Image:
+    """Paint `lines` -- [{text, font_size, font_name, family, bold,
+    color}] -- into `bbox`, each line at its own size, stacked from the
+    top of the box, the whole block shrunk uniformly only if it would
+    not fit. This is how a translated header keeps the layout it had in
+    English: the big word stays big, the small line stays small.
+    `scale` is the template-to-output factor already applied to the box.
+    """
+    x0, y0, x1, y1 = bbox
+    box_w, box_h = x1 - x0, y1 - y0
+    lines = [dict(line) for line in lines if line.get("text")]
+    if box_w <= 0 or box_h <= 0 or not lines:
+        return base_image if keep_alpha else base_image.convert("RGB")
+
+    def layout(factor):
+        laid = []
+        total = 0
+        widest = 0
+        for line in lines:
+            size = max(int(round((line.get("font_size") or 20) * scale * factor)), 6)
+            font = _load_font(size, bold=bool(line.get("bold")), family=line.get("family") or "sans", font_name=line.get("font_name"))
+            left, top, right, bottom = font.getbbox(line["text"])
+            width = right - left
+            height = int(round(size * 1.2))
+            laid.append((line, font, width, height, top))
+            total += height
+            widest = max(widest, width)
+        return laid, total, widest
+
+    laid, total, widest = layout(1.0)
+    factor = min(1.0, box_w / widest if widest else 1.0, box_h / total if total else 1.0)
+    if factor < 1.0:
+        laid, total, widest = layout(factor)
+
+    canvas = base_image.convert("RGBA")
+    overlay = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    y = y0
+    used = []
+    placed = []
+    for line, font, width, height, top in laid:
+        if align == "center":
+            x = x0 + (box_w - width) // 2
+        elif align == "right":
+            x = x1 - width
+        else:
+            x = x0
+        placed.append((x, y - top + (height - int(font.size * 1.2)) // 2, line, font))
+        used.append(font.size)
+        y += height
+    if shadow:
+        canvas = _draw_text_shadow(canvas, [(x, y_, line["text"], font) for x, y_, line, font in placed], None, shadow, True)
+    for x, y_, line, font in placed:
+        color = tuple(line.get("color") or (26, 26, 26))
+        draw.text((x, y_), line["text"], font=font, fill=color + (255,))
+    if debug is not None:
+        faces = []
+        for _x, _y, _line, font in placed:
+            try:
+                faces.append(" ".join(part for part in font.getname() if part))
+            except Exception:  # noqa: BLE001
+                faces.append("?")
+        debug.update({
+            "font_size": used[0] if used else None, "line_sizes": used, "lines": len(used),
+            "family": "template", "bold": None, "line_height": None,
+            "font_used": ", ".join(dict.fromkeys(faces)),
+        })
+    out = Image.alpha_composite(canvas, overlay)
+    return out if keep_alpha else out.convert("RGB")
 
 
 def apply_layer_image_override(
@@ -2736,6 +3324,8 @@ def apply_layer_text_override(
     background_blur: int = 0,
     stroke_size: int = 0,
     stroke_color: Tuple[int, int, int] = (0, 0, 0),
+    keep_size: bool = False,
+    shadow: Optional[dict] = None,
 ) -> Image.Image:
     """Return a copy of `base_image` with `text` painted directly into
     `bbox` -- same idea as apply_layer_image_override(): whatever's
@@ -2819,25 +3409,44 @@ def apply_layer_text_override(
     max_text_width = max(box_w - 2 * padding, 10)
     max_text_height = max(box_h - 2 * padding, 10)
     resolved_family = font_family if font_family in VALID_FONT_FAMILIES else "sans"
-
     requested_size = exact_font_size or font_size
-    min_font_size = max(min(int(box_h * 0.12), 14), 7)
-    max_font_size = requested_size if requested_size else None
-    if max_font_size is not None:
-        min_font_size = min(min_font_size, max_font_size)
-    font, lines, line_height = fit_text_block(
-        draw,
-        text,
-        max_text_width,
-        max_text_height,
-        min_font_size=min_font_size,
-        max_font_size=max_font_size,
-        family=resolved_family,
-        bold=bold,
-        leading=leading,
-        leading_reference_size=leading_reference_size,
-        font_name=font_name,
-    )
+    clipped_lines = 0
+    if keep_size and requested_size:
+        # Photoshop's paragraph box: the type keeps its size, wraps at
+        # the box's width from the top, and whatever doesn't fit the
+        # box's height is simply not shown. Shrinking to fit instead
+        # made a translated description come out smaller than the
+        # design, every time.
+        padding = 0
+        max_text_width, max_text_height = box_w, box_h
+        font = _load_font(int(requested_size), bold=bold, family=resolved_family, font_name=font_name)
+        lines = wrap_text_to_width(draw, text, font, max_text_width)
+        if leading and leading_reference_size:
+            line_height = max(int(round(leading * (font.size / float(leading_reference_size)))), 1)
+        else:
+            line_height = max(int(round(font.size * 1.2)), 1)
+        fits = max(int(max_text_height // line_height), 1)
+        if len(lines) > fits:
+            clipped_lines = len(lines) - fits
+            lines = lines[:fits]
+    else:
+        min_font_size = max(min(int(box_h * 0.12), 14), 7)
+        max_font_size = requested_size if requested_size else None
+        if max_font_size is not None:
+            min_font_size = min(min_font_size, max_font_size)
+        font, lines, line_height = fit_text_block(
+            draw,
+            text,
+            max_text_width,
+            max_text_height,
+            min_font_size=min_font_size,
+            max_font_size=max_font_size,
+            family=resolved_family,
+            bold=bold,
+            leading=leading,
+            leading_reference_size=leading_reference_size,
+            font_name=font_name,
+        )
 
     if debug is not None:
         # Populated so a caller (see webapp.py's render loop) can surface
@@ -2849,13 +3458,19 @@ def apply_layer_text_override(
         debug["font_size"] = font.size
         debug["line_height"] = line_height
         debug["family"] = resolved_family
+        try:
+            debug["font_used"] = " ".join(part for part in font.getname() if part)
+        except Exception:  # noqa: BLE001
+            debug["font_used"] = "?"
         debug["bold"] = bold
         debug["lines"] = len(lines)
         debug["requested_font_size"] = requested_size
         debug["clamped"] = bool(requested_size and font.size < requested_size)
-
+        debug["clipped_lines"] = clipped_lines
     total_h = line_height * len(lines)
-    first_text_y = y0 + padding + (max_text_height - total_h) // 2
+    # Top of the box when keeping the design's size (a paragraph box
+    # starts at its top), centred otherwise.
+    first_text_y = y0 if keep_size and requested_size else y0 + padding + (max_text_height - total_h) // 2
 
     def _line_x(line):
         line_w = draw.textlength(line, font=font)
@@ -2952,7 +3567,14 @@ def apply_layer_text_override(
     stroke_rgb = (
         stroke_color if not keep_alpha else (stroke_color[0], stroke_color[1], stroke_color[2], 255)
     )
-
+    if shadow:
+        placed = []
+        shadow_y = first_text_y
+        for line in lines:
+            placed.append((_line_x(line), shadow_y, line, font))
+            shadow_y += line_height
+        canvas = _draw_text_shadow(canvas, placed, font, shadow, keep_alpha)
+        draw = ImageDraw.Draw(canvas)
     text_y = first_text_y
     for line in lines:
         text_x = _line_x(line)

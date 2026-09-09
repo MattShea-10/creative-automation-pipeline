@@ -497,10 +497,10 @@ mobile placement, plus commonly-used additional sizes):
 
 (Kept under the `web-top7` preset name for continuity even though the list
 has grown to 9 entries. Three other sizes sometimes grouped with these --
-300x600 "Half Page Ad", 970x250 "Billboard" and 728x480 "Wide Rectangle" --
+300x600 "Half Page Ad", 970x250 "Billboard" and 720x480 "Wide Rectangle" --
 aren't in this preset but are still recognized with a friendly name if you
 request them explicitly, e.g. `--sizes 300x600`. "Wide Rectangle" isn't an
-official IAB name -- there isn't a standard one for 728x480 -- it's just a
+official IAB name -- there isn't a standard one for 720x480 -- it's just a
 readable label for a size that comes up often as a flattened-creative
 delivery size, e.g. a Photoshop export.)
 
@@ -888,7 +888,13 @@ brief's "actionable insights" goal.
   the report rather than failing the run. Region-to-language mapping is a
   small hardcoded table (`src/localization.py`) covering the example
   briefs' regions plus a few common ones; unmapped regions default to
-  English.
+  English. The web UI has a "Copy language" picker (English / Français /
+  Español) that uses the same translator on the header, description,
+  legal and CTA typed on the form: the English stays on the form and in
+  the saved run, the translation is what's drawn, and the results page
+  lists each pair. Translations are cached (`outputs/web/translations.json`)
+  so unchanged copy isn't re-sent, and a translator failure draws the
+  English and says so in red rather than failing the run.
 - The default `pollinations` provider and the translation fallback both
   require outbound internet access on whatever machine runs this. If
   that's unavailable (e.g. a locked-down sandbox), the pipeline still
