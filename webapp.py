@@ -170,6 +170,82 @@ DOWNLOADS_DIR = BASE_DIR / "downloads"
 
 DEFAULT_TEMPLATES_DIR = BASE_DIR / "default_templates"
 DEFAULT_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+# Campaign brief files (briefs/sample_campaign.json and friends): the
+# same files the command-line pipeline runs from, offered on the form so
+# a campaign can be started from one -- pick a product, the brief
+# fields fill in.
+BRIEFS_DIR = BASE_DIR / "briefs"
+
+
+def _product_folder_name(product_name) -> str:
+    """The folder a product's templates live in under default_templates/:
+    the product name as typed -- "HydroBoost Sports Drink" -- with only
+    what a folder name can't hold taken out (slashes, colons and the
+    like) and runs of spaces collapsed. Empty when nothing usable is
+    left."""
+    name = re.sub(r'[\\/:*?"<>|]+', " ", (product_name or "")).strip()
+    name = re.sub(r"\s+", " ", name).strip(". ")
+    # A name with no letter or digit in it ("---") is no name.
+    if not re.search(r"[A-Za-z0-9]", name):
+        return ""
+    return name
+
+
+def _campaign_folder_parts(product_name, campaign_name=None) -> tuple:
+    """The path under default_templates/ for a campaign's product:
+    ("Winter Glow 2026", "HydroBoost Sports Drink") when the brief names a
+    campaign, ("HydroBoost Sports Drink",) when it doesn't, () for no
+    product at all. Each dropdown entry in "From a brief file" is one
+    such pair, and gets its own folder."""
+    product = _product_folder_name(product_name)
+    if not product:
+        return ()
+    campaign = _product_folder_name(campaign_name)
+    return (campaign, product) if campaign else (product,)
+
+
+def product_templates_dir(product_name, create: bool = False, campaign_name=None) -> Path:
+    """Where this campaign's product's saved templates are --
+    default_templates/<campaign>/<product>/ (or <product>/ alone with no
+    campaign name) -- or the shared default_templates/ when there is no
+    product. With `create`, a missing folder is made and seeded from the
+    backup zip, so it starts from the same templates and keeps its own
+    from then on: every drop and every style saved back goes into its
+    folder, not the shared one."""
+    parts = _campaign_folder_parts(product_name, campaign_name)
+    if not parts:
+        return DEFAULT_TEMPLATES_DIR
+    folder = DEFAULT_TEMPLATES_DIR.joinpath(*parts)
+    if create and not folder.is_dir():
+        try:
+            folder.mkdir(parents=True, exist_ok=True)
+            # Seeded from the backup zip -- the master set every product
+            # starts from and every Reset goes back to. Only when there
+            # is no zip are the loose shared PSDs copied instead.
+            restored, _untouched, error = restore_templates_from_backup(dest_dir=folder)
+            if error or not restored:
+                for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+                    if path.is_file() and path.suffix.lower() == ".psd" and SIZE_IN_NAME_RE_LOOSE.search(path.name):
+                        shutil.copy(path, folder / path.name)
+        except OSError:
+            return DEFAULT_TEMPLATES_DIR
+    return folder
+
+
+def templates_dir() -> Path:
+    """The templates folder for the request in hand: the product's own
+    (set by generate() once it knows the product), else the shared one.
+    Everything that scans, promotes into or saves back to "the
+    templates" reads this rather than DEFAULT_TEMPLATES_DIR directly."""
+    try:
+        from flask import g, has_request_context
+        if has_request_context():
+            chosen = getattr(g, "templates_dir", None)
+            if chosen is not None:
+                return chosen
+    except Exception:  # noqa: BLE001
+        pass
+    return DEFAULT_TEMPLATES_DIR
 # Where a saved template goes before this app writes over it. Editing
 # the templates is the one action here that changes a file the user made
 # by hand, and it cannot be undone from the results page -- so the
@@ -1311,10 +1387,10 @@ def _flagship_template_path():
     # name order is the one that renders, so it is the one whose
     # backdrop is taken.
     best, best_area = None, -1
-    if not DEFAULT_TEMPLATES_DIR.is_dir():
+    if not templates_dir().is_dir():
         return None
     by_size = {}
-    for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+    for path in sorted(templates_dir().iterdir()):
         if not path.is_file() or path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
             continue
         match = _SIZE_IN_FILENAME_RE.search(path.name)
@@ -1395,9 +1471,9 @@ def _default_template_sizes() -> list:
     generated image to fit them, say) shouldn't pay that.
     """
     sizes = []
-    if not DEFAULT_TEMPLATES_DIR.is_dir():
+    if not templates_dir().is_dir():
         return sizes
-    for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+    for path in sorted(templates_dir().iterdir()):
         if not path.is_file() or path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
             continue
         match = _SIZE_IN_FILENAME_RE.search(path.name)
@@ -1456,10 +1532,10 @@ SAVED_TEMPLATE_PREFIX = "tester-"
 def _files_claiming_size(size) -> list:
     """Every PSD in default_templates/ whose name carries `size`, in
     folder order -- the ones _default_template_paths() chooses between."""
-    if not DEFAULT_TEMPLATES_DIR.is_dir():
+    if not templates_dir().is_dir():
         return []
     found = []
-    for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+    for path in sorted(templates_dir().iterdir()):
         if not path.is_file() or path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
             continue
         match = _SIZE_IN_FILENAME_RE.search(path.name)
@@ -1473,9 +1549,9 @@ def _default_template_paths() -> dict:
     any of them. Everything that only needs to know which files exist
     (the form's layer lists) reads this."""
     template_paths: dict = {}
-    if not DEFAULT_TEMPLATES_DIR.is_dir():
+    if not templates_dir().is_dir():
         return template_paths
-    for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+    for path in sorted(templates_dir().iterdir()):
         if not path.is_file():
             continue
         if path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
@@ -1843,13 +1919,15 @@ def _switch_off_form_layer_styling() -> list:
         # drops were looked at: overwrite those entries so the next
         # form opens with the switches off too.
         prefs = _load_preferences()
-        for name in FORM_LAYER_STYLING_FIELDS:
-            if name in REMEMBERED_FIELD_NAMES:
-                prefs[name] = ""
-        try:
-            _preferences_path().write_text(json.dumps(prefs, indent=2), encoding="utf-8")
-        except OSError:
-            pass
+        key = _product_memory_key(request.form.get("product_name"), request.form.get("campaign_name"))
+        targets = [prefs]
+        if key and key in _product_memories(prefs):
+            targets.append(_product_memories(prefs)[key])
+        for target in targets:
+            for name in FORM_LAYER_STYLING_FIELDS:
+                if name in REMEMBERED_FIELD_NAMES:
+                    target[name] = ""
+        _save_preferences(prefs)
     return was_on
 
 
@@ -2360,9 +2438,94 @@ def _ideogram_key_status() -> dict:
     return {"set": bool(key), "hint": key[-4:] if len(key) >= 8 else ""}
 
 
+def _brief_choices() -> list:
+    """One entry per product in every brief file under briefs/ -- the
+    campaign fields it fills (product, market, audience, message), the
+    brand colours, the product's prompt hint and headline. Read fresh
+    each time, so a brief edited while the app runs shows up on the next
+    page load. A file that won't parse is skipped: the form must still
+    open."""
+    try:
+        from src.brief_loader import load_brief
+    except Exception:  # noqa: BLE001
+        return []
+    choices = []
+    try:
+        files = sorted(p for p in BRIEFS_DIR.iterdir() if p.suffix.lower() in (".json", ".yaml", ".yml"))
+    except OSError:
+        return []
+    for path in files:
+        try:
+            brief = load_brief(str(path))
+        except Exception:  # noqa: BLE001
+            continue
+        colors = [c for c in (brief.brand.colors or []) if isinstance(c, str) and c.startswith("#")][:3]
+        for product in brief.products:
+            choices.append({
+                "id": f"{path.name}::{product.slug}",
+                "label": f"{brief.name} -- {product.name}",
+                "file": path.name,
+                "campaign": brief.name,
+                "product_name": product.name,
+                "market": brief.target_region,
+                "audience": brief.target_audience,
+                "campaign_message": brief.message,
+                "headline": product.headline or brief.headline or "",
+                "prompt_hint": product.prompt_hint or "",
+                "language": brief.language or market_copy_languages().get((brief.target_region or "").strip().lower(), ""),
+                "colors": colors,
+            })
+    return choices
+
+
+def seed_product_template_folders() -> list:
+    """At start-up: a templates folder for every product in every brief
+    file -- default_templates/HydroBoost Sports Drink/ and so on -- each
+    unpacked from the backup zip, so the folders are there to look at
+    (and to edit in Photoshop) before a single run. A folder that
+    already exists is left exactly as it is: this never overwrites a
+    product's own templates. Returns the folders it made."""
+    made = []
+    for choice in _brief_choices():
+        name = choice.get("product_name") or ""
+        campaign = choice.get("campaign") or ""
+        parts = _campaign_folder_parts(name, campaign)
+        if not parts:
+            continue
+        folder = DEFAULT_TEMPLATES_DIR.joinpath(*parts)
+        if folder.is_dir():
+            continue
+        try:
+            if product_templates_dir(name, create=True, campaign_name=campaign) == folder and folder.is_dir():
+                made.append(folder)
+        except Exception:  # noqa: BLE001
+            continue
+    return made
+
+
+_seeded_product_folders = False
+
+
+@app.before_request
+def _seed_product_folders_once():
+    """Run the seeding on the first request too, for launches that don't
+    go through the __main__ block (flask run, a WSGI server). Skipped
+    under test, where the folders would land in a scratch directory."""
+    global _seeded_product_folders
+    if _seeded_product_folders or app.config.get("TESTING"):
+        return
+    _seeded_product_folders = True
+    try:
+        seed_product_template_folders()
+    except Exception:  # noqa: BLE001
+        pass
+
+
 @app.context_processor
 def _inject_settings():
     return {
+        "brief_choices": _brief_choices(),
+        "market_copy_languages": market_copy_languages(),
         "ideogram_key": _ideogram_key_status(),
         "env_file": str(ENV_FILE),
         "ideogram_speeds": IDEOGRAM_SPEED_CHOICES,
@@ -2445,15 +2608,18 @@ def template_reset_zip() -> Path | None:
     return zips[0] if len(zips) == 1 else None
 
 
-def restore_templates_from_backup(zip_path: Path | None = None) -> tuple[list[str], list[str], str | None]:
+def restore_templates_from_backup(zip_path: Path | None = None, dest_dir: Path | None = None) -> tuple[list[str], list[str], str | None]:
     """Put the saved templates back to the copies in the backup zip.
 
-    Every tester-WxH.psd in the zip replaces the one in default_templates/
-    (the one being replaced is moved to _template_backups/ first, stamped,
-    so nothing is lost). Sizes the zip does not carry are left as they
-    are. Returns (restored names, untouched sizes, error message)."""
+    Every tester-WxH.psd in the zip replaces the one in `dest_dir` --
+    default_templates/ itself, or a product's own folder under it (the
+    one being replaced is moved to _template_backups/ first, stamped, so
+    nothing is lost). Sizes the zip does not carry are left as they are.
+    Returns (restored names, untouched sizes, error message)."""
     if zip_path is None:
         zip_path = template_reset_zip()
+    if dest_dir is None:
+        dest_dir = DEFAULT_TEMPLATES_DIR
     if zip_path is None or not zip_path.is_file():
         return [], [], (
             f"No backup zip in {DEFAULT_TEMPLATES_DIR.name}/ -- nothing to restore from. "
@@ -2472,7 +2638,8 @@ def restore_templates_from_backup(zip_path: Path | None = None) -> tuple[list[st
                     continue
                 if name.lower().rsplit(".", 1)[-1] != "psd" or not SIZE_IN_NAME_RE_LOOSE.search(name):
                     continue
-                dest = DEFAULT_TEMPLATES_DIR / name
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / name
                 if dest.exists():
                     TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
                     shutil.move(str(dest), str(TEMPLATE_BACKUPS_DIR / f"{dest.stem}.{stamp}{dest.suffix}"))
@@ -2485,32 +2652,55 @@ def restore_templates_from_backup(zip_path: Path | None = None) -> tuple[list[st
     untouched = sorted(
         {
             m.group(0)
-            for m in (SIZE_IN_NAME_RE_LOOSE.search(f.name) for f in DEFAULT_TEMPLATES_DIR.glob("*.psd"))
+            for m in (SIZE_IN_NAME_RE_LOOSE.search(f.name) for f in dest_dir.glob("*.psd"))
             if m and m.group(0).lower() not in restored_sizes
         }
     )
     return restored, untouched, None
 
 
-def forget_remembered_form() -> bool:
-    """Wipe everything the next form would otherwise open with: the
-    remembered fields (campaign brief, brand colours, languages, every
-    section's typed values and switches) and the pointer to the last
+def reset_keeps_fields() -> tuple:
+    """What a reset keeps: the campaign brief (product, market, audience,
+    message), the brand colours and the copy language -- the campaign's
+    identity, which is not what anyone means by "start over"."""
+    return CAMPAIGN_BRIEF_FIELD_NAMES + BRAND_COLOR_FIELD_NAMES + ("copy_language",)
+
+
+def forget_remembered_form(keep_from=None) -> bool:
+    """Wipe what the next form would otherwise open with -- every
+    section's typed values and switches, and the pointer to the last
     run's files (custom hero, logo, product, CTA, references, the
-    size-specific PSD rows). After this the form opens as if the app had
-    never been run. The Ideogram key lives in .env and is not touched.
-    Returns whether anything was there to forget."""
-    path = _preferences_path()
-    had_anything = bool(_load_preferences())
-    try:
-        path.unlink()
-    except FileNotFoundError:
-        pass
-    except OSError:
-        try:
-            path.write_text("{}", encoding="utf-8")
-        except OSError:
-            pass
+    size-specific PSD rows) -- but keep the campaign brief, brand
+    colours and copy language (reset_keeps_fields()), taken from
+    `keep_from` (the form that asked for the reset) when given, else
+    from what was remembered. The Ideogram key lives in .env and is not
+    touched. Returns whether anything was there to forget."""
+    prefs = _load_preferences()
+    had_anything = bool(prefs)
+    products = _product_memories(prefs)
+    key = _product_memory_key(keep_from.get("product_name"), keep_from.get("campaign_name")) if keep_from is not None else ""
+    source = products.get(key) if key else None
+    if source is None:
+        source = prefs
+    kept = {}
+    for name in reset_keeps_fields():
+        if keep_from is not None and keep_from.get(name) is not None:
+            kept[name] = (keep_from.get(name) or "").strip()
+        elif name in source:
+            kept[name] = source[name]
+    if key:
+        # This product only: its entry becomes just the brief; every
+        # other product's memory is untouched. The top level follows
+        # it, since it was the product last used.
+        products = {k: v for k, v in products.items() if k != key}
+        products[key] = dict(kept)
+        new_prefs = dict(kept)
+        new_prefs["products"] = products
+    else:
+        new_prefs = dict(kept)
+        if products:
+            new_prefs["products"] = products
+    _save_preferences(new_prefs)
     return had_anything
 
 
@@ -2521,14 +2711,30 @@ def reset_form():
     templates put back to the ones in default_templates/template-backup.zip:
     the way to undo a run of drops and Photoshop edits and start over
     from the known-good set."""
-    restored, untouched, error = restore_templates_from_backup()
-    forget_remembered_form()
-    cleared = "Every field was cleared, and nothing is carried over from your last run."
+    # The card's Reset posts the whole card, so the product it is for
+    # comes along: its own folder is what gets restored. No product --
+    # the shared set.
+    product_name = (request.form.get("product_name") or "").strip()
+    campaign_name = (request.form.get("campaign_name") or "").strip()
+    dest_dir = product_templates_dir(product_name, campaign_name=campaign_name)
+    restored, untouched, error = restore_templates_from_backup(dest_dir=dest_dir)
+    forget_remembered_form(keep_from=request.form)
+    where = "default_templates/" + (
+        f"{dest_dir.relative_to(DEFAULT_TEMPLATES_DIR).as_posix()}/" if dest_dir != DEFAULT_TEMPLATES_DIR else ""
+    )
+    cleared = (
+        "Every other field was cleared and nothing is carried over from your last run; "
+        "the campaign brief, brand colours and copy language were kept."
+    )
     if error:
         flash(error)
         flash(cleared, "ok")
     else:
-        message = f"Templates restored from {(template_reset_zip() or Path(TEMPLATE_RESET_ZIP_NAME)).name}: {', '.join(restored)}."
+        message = (
+            (f"{product_name}: " if product_name else "")
+            + f"templates restored into {where} from {(template_reset_zip() or Path(TEMPLATE_RESET_ZIP_NAME)).name}: "
+            + ", ".join(restored) + "."
+        )
         if untouched:
             message += f" Not in the zip, so left as they were: {', '.join(untouched)}."
         message += " The replaced files are in _template_backups/. " + cleared
@@ -2576,7 +2782,7 @@ REMEMBERED_SECTION_FIELDS = tuple(
 # The campaign brief too: product, market, audience and message are the
 # same from run to run of one campaign, and retyping them was the
 # first thing every fresh form asked for.
-CAMPAIGN_BRIEF_FIELD_NAMES = ("product_name", "market", "audience", "campaign_message")
+CAMPAIGN_BRIEF_FIELD_NAMES = ("campaign_name", "product_name", "market", "audience", "campaign_message")
 # psd_make_saved starts ticked and stays as last set: ticked, a dropped
 # PSD replaces the saved template for its size; unticked, drops are
 # one-offs -- and the results page says so every time, since an
@@ -2594,6 +2800,25 @@ REMEMBERED_FILE_PREFIXES = ("upload_hero_image", "layer_", "psd_file_")
 # on the form; each run translates it on the way into the templates.
 COPY_LANGUAGES = (("en", "English"), ("fr", "Français"), ("es", "Español"))
 COPY_LANGUAGE_NAMES = {code: name for code, name in COPY_LANGUAGES}
+
+
+def market_copy_languages() -> dict:
+    """{market as typed, lowercased: copy language code} for the markets
+    whose language the form can draw in -- the CLI's region table plus
+    the codes and a few spellings people type ("FR", "France", "Québec").
+    The page script sets Copy language from the Market field with it;
+    a market it doesn't know leaves the language alone."""
+    from src.localization import REGION_TO_LANGUAGE
+
+    offered = {code for code, _ in COPY_LANGUAGES}
+    table = {region: code for region, code in REGION_TO_LANGUAGE.items() if code in offered}
+    table.update({
+        "fr": "fr", "fra": "fr", "french": "fr", "belgium": "fr", "quebec": "fr", "québec": "fr",
+        "switzerland": "fr", "es": "es", "esp": "es", "spanish": "es", "argentina": "es", "colombia": "es",
+        "chile": "es", "peru": "es", "latam": "es", "us": "en", "uk": "en", "gb": "en", "australia": "en",
+        "ireland": "en", "new zealand": "en", "en": "en", "english": "en",
+    })
+    return table
 COPY_LANGUAGE_ENGLISH_NAMES = {"en": "English", "fr": "French", "es": "Spanish"}
 
 
@@ -2757,15 +2982,7 @@ def _load_preferences() -> dict:
     return data if isinstance(data, dict) else {}
 
 
-def _remember_form_fields(form) -> None:
-    """Save the remembered fields' values from this submission, so the
-    next fresh form opens with them: the brand colours, and which of
-    them are ticked -- re-picking three swatches every run was the
-    complaint. An unticked box is saved as unticked (an absent checkbox
-    is what "unticked" looks like in a form), not left as it was."""
-    prefs = _load_preferences()
-    for name in REMEMBERED_FIELD_NAMES:
-        prefs[name] = (form.get(name) or "").strip()
+def _save_preferences(prefs: dict) -> None:
     try:
         _preferences_path().parent.mkdir(parents=True, exist_ok=True)
         _preferences_path().write_text(json.dumps(prefs, indent=2), encoding="utf-8")
@@ -2773,18 +2990,68 @@ def _remember_form_fields(form) -> None:
         pass
 
 
-def _remembered_prefill() -> dict:
+def _product_memory_key(product_name, campaign_name=None) -> str:
+    """How a campaign's product is filed in the remembered form: its
+    folder path ("Winter Glow 2026/HydroBoost Sports Drink", or just the
+    product with no campaign), so the same product in two campaigns is
+    two entries and different spacing is not. Empty for no product."""
+    return "/".join(_campaign_folder_parts(product_name, campaign_name))
+
+
+def _product_memories(prefs: dict) -> dict:
+    """{product key: {field: value, ..., "last_job_id": ...}} -- each
+    product's own remembered form. Products are isolated: what was
+    typed, ticked or uploaded for one never shows up on another."""
+    products = prefs.get("products")
+    return products if isinstance(products, dict) else {}
+
+
+def _remember_form_fields(form) -> None:
+    """Save the remembered fields' values from this submission, so the
+    next fresh form opens with them: the brand colours, and which of
+    them are ticked -- re-picking three swatches every run was the
+    complaint. An unticked box is saved as unticked (an absent checkbox
+    is what "unticked" looks like in a form), not left as it was.
+
+    Saved twice: at the top level (the last product used -- what a form
+    with no products yet opens with) and under the product's own entry,
+    which is what that product's card opens with."""
     prefs = _load_preferences()
+    values = {name: (form.get(name) or "").strip() for name in REMEMBERED_FIELD_NAMES}
+    prefs.update(values)
+    key = _product_memory_key(form.get("product_name"), form.get("campaign_name"))
+    if key:
+        products = _product_memories(prefs)
+        entry = dict(products.get(key) or {})
+        entry.update(values)
+        products[key] = entry
+        # Most recently used last, so the page shows products in the
+        # order they were worked on.
+        products = {k: v for k, v in products.items() if k != key}
+        products[key] = entry
+        prefs["products"] = products
+    _save_preferences(prefs)
+
+
+def _remembered_prefill(product_key: str | None = None) -> dict:
+    prefs = _load_preferences()
+    source = _product_memories(prefs).get(product_key) if product_key else None
+    if source is None:
+        source = prefs
     # Empty values come through too: an unticked box that defaults to
     # ticked (psd_make_saved) has to be remembered as unticked.
-    return {name: prefs[name] for name in REMEMBERED_FIELD_NAMES if name in prefs}
+    return {name: source[name] for name in REMEMBERED_FIELD_NAMES if name in source}
 
 
-def _remembered_files():
+def _remembered_files(product_key: str | None = None):
     """(job id, {field: filename}) for the section files of the last
-    run, when that run's folder is still there; (None, {}) otherwise."""
+    run -- the product's own last run when a product is given -- when
+    that run's folder is still there; (None, {}) otherwise."""
     prefs = _load_preferences()
-    job_id = (prefs.get("last_job_id") or "").strip()
+    source = _product_memories(prefs).get(product_key) if product_key else None
+    if source is None:
+        source = prefs
+    job_id = (source.get("last_job_id") or "").strip()
     if not job_id or not re.fullmatch(r"[0-9a-f]{12,32}", job_id):
         return None, {}
     state_path = JOBS_DIR / job_id / "form_state.json"
@@ -2812,18 +3079,85 @@ def index():
         size_presets=SIZE_PRESET_CHOICES,
         video_extensions=VIDEO_EXTENSIONS,
         build_stamp=BUILD_STAMP,
-        campaigns=[{
-            "prefill": _remembered_prefill(),
-            "prefill_files": _remembered_files()[1],
-            "edit_job_id": None,
-            "carry_job_id": _remembered_files()[0],
-        }],
+        campaigns=_remembered_campaign_cards(),
         session_id=uuid.uuid4().hex,
         editable_text_layers=_editable_text_layers(),
         present_text_layers=_present_text_layers(),
         switched_off_layers=_switched_off_layers(),
         hideable_layers=HIDEABLE_LAYER_NAMES,
     )
+
+
+def _brief_prefill(choice: dict) -> dict:
+    """A card's fields from one brief entry: the campaign brief, the
+    brand colours (ticked), the copy language and the AI prompt hint."""
+    prefill = {
+        "campaign_name": choice.get("campaign") or "",
+        "product_name": choice.get("product_name") or "",
+        "market": choice.get("market") or "",
+        "audience": choice.get("audience") or "",
+        "campaign_message": choice.get("campaign_message") or "",
+    }
+    if choice.get("language"):
+        prefill["copy_language"] = choice["language"]
+    if choice.get("prompt_hint"):
+        prefill["upload_ai_prompt"] = choice["prompt_hint"]
+    if choice.get("headline"):
+        prefill["upload_ai_headline"] = choice["headline"]
+    for i, hex_colour in enumerate((choice.get("colors") or [])[:3], start=1):
+        prefill[f"brand_color_{i}"] = hex_colour.lower()
+        prefill[f"brand_color_{i}_enabled"] = "1"
+    return prefill
+
+
+def _remembered_campaign_cards() -> list:
+    """The cards a fresh form opens with: one per remembered product,
+    each with that product's own fields and kept files -- isolated from
+    the others. With no products remembered yet, one card from the
+    top-level memory (the form as it always was)."""
+    products = _product_memories(_load_preferences())
+    cards = []
+    seen = set()
+    # Every entry of "From a brief file" is a campaign: a card each,
+    # filled from the brief, with whatever that campaign's product has
+    # been given since (its memory) laid over the top.
+    for choice in _brief_choices():
+        key = _product_memory_key(choice.get("product_name"), choice.get("campaign"))
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        prefill = _brief_prefill(choice)
+        if key in products:
+            prefill.update(_remembered_prefill(key))
+        job_id, files = _remembered_files(key) if key in products else (None, {})
+        cards.append({"prefill": prefill, "prefill_files": files, "edit_job_id": None, "carry_job_id": job_id})
+    for key in products:
+        if key in seen:
+            continue
+        seen.add(key)
+        job_id, files = _remembered_files(key)
+        cards.append({
+            "prefill": _remembered_prefill(key),
+            "prefill_files": files,
+            "edit_job_id": None,
+            "carry_job_id": job_id,
+        })
+    # The form as it always was -- the top-level memory -- when it is
+    # not already one of the cards above (the last run was for no
+    # product, or was remembered before products had entries), or when
+    # there is nothing else to show.
+    prefs = _load_preferences()
+    top_key = _product_memory_key(prefs.get("product_name"), prefs.get("campaign_name"))
+    top_prefill = _remembered_prefill()
+    if not cards or (top_key not in seen and (top_prefill or prefs.get("last_job_id"))):
+        job_id, files = _remembered_files()
+        cards.append({
+            "prefill": top_prefill,
+            "prefill_files": files,
+            "edit_job_id": None,
+            "carry_job_id": job_id,
+        })
+    return cards
 
 
 @app.route("/edit/<job_id>", methods=["GET"])
@@ -3193,6 +3527,17 @@ def generate():
     # forward like every other field, so a batch's intent stays attached
     # to it when reviewing or editing later.
     product_name = (request.form.get("product_name") or "").strip() or None
+    # This product's own templates: default_templates/<product>/, made
+    # from the shared set the first time the product runs. From here on
+    # every scan, drop and style saved back in this request uses it.
+    from flask import g as _g
+    campaign_name = (request.form.get("campaign_name") or "").strip() or None
+    _g.templates_dir = product_templates_dir(product_name, create=True, campaign_name=campaign_name)
+    product_templates_created = (
+        _g.templates_dir != DEFAULT_TEMPLATES_DIR
+        and any(_g.templates_dir.glob("*.psd"))
+        and (time.time() - _g.templates_dir.stat().st_mtime) < 5
+    )
     # Used to name downloaded files (PNG/PSD per size, and the zip) after
     # the product this batch is for, alongside each creative's own size --
     # see the `filename = f"{file_name_prefix}_{label}.png"` etc. below.
@@ -3962,6 +4307,16 @@ def generate():
                 )
 
     background_notes = []  # shown on the results page -- flash() only survives a redirect, and this path doesn't redirect
+    if product_templates_created:
+        background_notes.append(
+            f"{product_name}: made its own templates folder, default_templates/{_g.templates_dir.relative_to(DEFAULT_TEMPLATES_DIR).as_posix()}/, "
+            "from the backup zip (the shared PSDs when there is no zip). This product's runs use and save "
+            "into that folder from now on; its Reset puts the zip's copies back."
+        )
+    elif _g.templates_dir != DEFAULT_TEMPLATES_DIR:
+        background_notes.append(
+            f"{product_name}: templates from default_templates/{_g.templates_dir.relative_to(DEFAULT_TEMPLATES_DIR).as_posix()}/ (this product's own)."
+        )
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
     missing_fonts_reported: set = set()  # each uninstalled template font is reported once, not once per size
     if background_notes_pending_hero:
@@ -4163,9 +4518,9 @@ def generate():
             # hydroboost-... left from before -- is moved to the
             # backups folder, so the size has exactly one template and
             # its name says which.
-            dest = DEFAULT_TEMPLATES_DIR / f"{SAVED_TEMPLATE_PREFIX}{size_label(*target)}.psd"
+            dest = templates_dir() / f"{SAVED_TEMPLATE_PREFIX}{size_label(*target)}.psd"
             try:
-                DEFAULT_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+                templates_dir().mkdir(parents=True, exist_ok=True)
                 TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
                 for other in _files_claiming_size(target):
                     if other == dest:
@@ -6569,7 +6924,7 @@ def generate():
                             # a per-run upload keeps the campaign name.
                             source_psd_download_name = (
                                 psd_path_for_size.name
-                                if psd_path_for_size.parent == DEFAULT_TEMPLATES_DIR
+                                if psd_path_for_size.parent == templates_dir()
                                 else None
                             )
                             # The artwork, in the template's own
@@ -6928,7 +7283,7 @@ def generate():
                             if (
                                 update_saved_templates
                                 and psd_path_for_size is not None
-                                and psd_path_for_size.parent == DEFAULT_TEMPLATES_DIR
+                                and psd_path_for_size.parent == templates_dir()
                             ):
                                 template_updates = dict(typed_copy_english)
                                 # Words go into the template only with a
@@ -7380,7 +7735,14 @@ def generate():
     try:
         prefs = _load_preferences()
         prefs["last_job_id"] = job_id
-        _preferences_path().write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+        key = _product_memory_key(request.form.get("product_name"), request.form.get("campaign_name"))
+        if key:
+            products = _product_memories(prefs)
+            entry = dict(products.get(key) or {})
+            entry["last_job_id"] = job_id
+            products[key] = entry
+            prefs["products"] = products
+        _save_preferences(prefs)
     except OSError:
         pass
 
@@ -7800,6 +8162,14 @@ def _open_browser_when_up(url: str) -> None:
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
+    # Every product in briefs/ gets its templates folder now, unpacked
+    # from the backup zip, so they are there before the first run.
+    try:
+        for folder in seed_product_template_folders():
+            print(f"[webapp] made {folder.relative_to(BASE_DIR)}/ from the backup zip")
+        _seeded_product_folders = True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[webapp] could not seed product template folders: {exc}")
     if FROZEN:
         # A packaged build is double-clicked, not launched from a shell:
         # pick a free port, say where the app is, and open it. The

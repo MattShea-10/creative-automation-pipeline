@@ -48,6 +48,18 @@ def _pristine_template(name, tmp_dir):
     return working if working.is_file() else None
 
 
+def _own_card_html(page: str) -> str:
+    """The card for a test's own (no-campaign, "---") run on a fresh
+    form. The form also opens with a card per brief-file entry, so a
+    test that asserts what its run remembered looks at its own card."""
+    visible = page.split('id="blank-campaign-card"')[0]
+    cards = visible.split('class="campaign-card"')[1:]
+    for card in cards:
+        if 'name="product_name" placeholder="e.g. HydroBoost Sports Drink" value="---"' in card:
+            return card
+    return cards[-1] if cards else visible
+
+
 class _CampaignBriefAutoFillClient:
     """Wraps a Flask test client so a POST to /generate gets sensible
     defaults merged in for the four now-required campaign-brief fields
@@ -241,6 +253,40 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertIn(b"Upload AI Image", r.data)
         self.assertNotIn(b"manual-creative-box", r.data)
 
+    def test_the_form_offers_the_brief_files_products_to_fill_the_campaign_from(self):
+        """briefs/sample_campaign.json (the CLI's input) is offered on the
+        form: one option per product, carrying the brief's fields, brand
+        colours and the product's prompt hint for the page script to
+        fill in. The pick itself is not a form field -- the fields are."""
+        if not (webapp.BRIEFS_DIR / "sample_campaign.json").is_file():
+            self.skipTest("sample brief not present")
+        choices = webapp._brief_choices()
+        sample = [c for c in choices if c["file"] == "sample_campaign.json"]
+        self.assertEqual([c["product_name"] for c in sample],
+                         ["HydroBoost Sports Drink", "FreshGlow Body Wash", "PureShine Shampoo"])
+        self.assertEqual(sample[0]["market"], "France")
+        self.assertEqual(sample[0]["campaign_message"], "Glow Through Winter.")
+        self.assertEqual(sample[0]["colors"], ["#0057B8", "#FFD100"])
+        self.assertIn("sports drink bottle", sample[0]["prompt_hint"])
+        r = self.client.get("/")
+        html = r.get_data(as_text=True)
+        self.assertIn('data-role="brief-choice"', html)
+        # Page-level, under the Ideogram key box, not inside a campaign card.
+        self.assertLess(html.index('data-role="brief-file-box"'), html.index('class="campaign-card"'))
+        self.assertGreater(html.index('data-role="brief-file-box"'), html.index('data-role="ideogram-key-box"'))
+        self.assertIn("Winter Glow 2026 -- FreshGlow Body Wash", html)
+        self.assertIn("Glow Through Winter.", html)
+        self.assertNotIn('name="brief_choice"', html)
+        # ...and the one-card-per-product button beside it.
+        self.assertIn('data-role="brief-all-products"', html)
+        # The brief's market decides the copy language when it names none:
+        # France -> French. The same table drives the Market field.
+        self.assertEqual(sample[0]["language"], "fr")
+        table = webapp.market_copy_languages()
+        self.assertEqual((table["france"], table["mexico"], table["us"], table["québec"]), ("fr", "es", "en", "fr"))
+        self.assertNotIn("germany", table, "a language the form can't draw is not offered")
+        self.assertIn('var marketLanguages = {', html)
+
     def test_index_and_edit_page_both_show_a_reset_link_back_to_a_blank_form(self):
         # The top-of-page "Reset form" button posts to /reset, which puts
         # the saved templates back to template-backup.zip and then sends
@@ -249,8 +295,9 @@ class WebAppSmokeTest(unittest.TestCase):
         # attached files, and "editing a prior batch" state all go away.
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b'>Reset form</button>', r.data)
-        self.assertIn(b'action="/reset"', r.data)
+        # Reset sits on the campaign card now, posting that card to /reset.
+        self.assertIn(b'data-role="reset-product"', r.data)
+        self.assertIn(b'formaction="/reset"', r.data)
 
         data = {
             "hero_image": (self._sample_image_bytes(), "hero.png"),
@@ -263,7 +310,7 @@ class WebAppSmokeTest(unittest.TestCase):
 
         edit_page = self.client.get(f"/edit/{job_id}")
         self.assertEqual(edit_page.status_code, 200)
-        self.assertIn(b'>Reset form</button>', edit_page.data)
+        self.assertIn(b'data-role="reset-product"', edit_page.data)
 
     def test_generate_renders_default_sizes_and_zip(self):
         data = {
@@ -2106,14 +2153,14 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertTrue(all(b.startswith(("tester-720x480.", "tester-160x600.")) for b in backups), backups)
         self.assertEqual({p.read_bytes() for p in webapp.TEMPLATE_BACKUPS_DIR.iterdir()}, {b"edited-720", b"edited-160"})
         html = response.get_data(as_text=True)
-        self.assertIn("Templates restored from template-backup.zip", html)
+        self.assertIn("templates restored into default_templates/ from template-backup.zip", html)
         self.assertIn("3840x2160", html)
 
     def test_reset_form_wipes_every_remembered_field_and_every_kept_file(self):
-        """Reset means a blank form: the remembered fields (campaign
-        brief, brand colours, section switches) and every file carried
-        from the last run -- hero, logo, product, the size-specific PSD
-        rows -- are all forgotten, not just the PSD rows."""
+        """Reset clears the work, not the campaign: every section's
+        values and switches and every file carried from the last run --
+        hero, logo, product, the size-specific PSD rows -- are forgotten;
+        the campaign brief, brand colours and copy language stay."""
         job_id = "abcdef0123456789"
         uploads = webapp.JOBS_DIR / job_id / "uploads"
         uploads.mkdir(parents=True)
@@ -2133,18 +2180,35 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
             "product_name": "Forget me", "brand_color_1": "#123456", "brand_color_1_enabled": "1",
             "copy_language": "fr", "layer_header_text": "old prompt",
         }))
-        before = self.client.get("/").get_data(as_text=True)
+        def forget_me_card():
+            page = self.client.get("/").get_data(as_text=True).split('id="blank-campaign-card"')[0]
+            return next(c for c in page.split('class="campaign-card"')[1:] if 'value="Forget me"' in c)
+        before = forget_me_card()
         for kept in ("mine-720x480.psd", "hero.png", "logo.png", "product.png", "Forget me", "#123456", "old prompt"):
             self.assertIn(kept, before, kept)
 
-        response = self.client.post("/reset", follow_redirects=True)
+        response = self.client.post("/reset", data={"product_name": "Forget me"}, follow_redirects=True)
 
         self.assertEqual(response.status_code, 200)
-        after = self.client.get("/").get_data(as_text=True)
-        for gone in ("mine-720x480.psd", "hero.png", "logo.png", "product.png", "Forget me", "#123456", "old prompt", 'value="720x480"'):
+        after = forget_me_card()
+        for gone in ("mine-720x480.psd", "hero.png", "logo.png", "product.png", "old prompt", 'value="720x480"'):
             self.assertNotIn(gone, after, gone)
-        self.assertFalse(webapp._preferences_path().exists())
-        self.assertIn("Every field was cleared", response.get_data(as_text=True))
+        # The campaign's identity survives: brief, brand colours, language.
+        self.assertIn("Forget me", after)
+        self.assertIn("#123456", after)
+        prefs = json.loads(webapp._preferences_path().read_text())
+        self.assertEqual(
+            {k: v for k, v in prefs.items() if k != "products"},
+            {"product_name": "Forget me", "brand_color_1": "#123456", "brand_color_1_enabled": "1", "copy_language": "fr"},
+        )
+        self.assertIn("the campaign brief, brand colours and copy language were kept", response.get_data(as_text=True))
+
+        # The card's own values win over what was remembered: a reset
+        # posted with a different product keeps THAT product.
+        self.client.post("/reset", data={"product_name": "Other Product", "market": "France"}, follow_redirects=True)
+        prefs = json.loads(webapp._preferences_path().read_text())
+        self.assertEqual(prefs.get("product_name"), "Other Product")
+        self.assertEqual(prefs.get("market"), "France")
 
     def test_reset_form_accepts_the_zip_under_the_folder_s_own_name_too(self):
         """A zip of the folder made in Finder is called default_templates.zip;
@@ -2155,12 +2219,128 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
             zf.writestr("tester-720x480.psd", b"pristine")
         response = self.client.post("/reset", follow_redirects=True)
         self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-720x480.psd").read_bytes(), b"pristine")
-        self.assertIn("Templates restored from default_templates.zip", response.get_data(as_text=True))
+        self.assertIn("templates restored into default_templates/ from default_templates.zip", response.get_data(as_text=True))
 
         (webapp.DEFAULT_TEMPLATES_DIR / "default_templates.zip").rename(webapp.DEFAULT_TEMPLATES_DIR / "mine.zip")
         self._write_default_template("tester-720x480.psd", b"edited again")
         self.client.post("/reset", follow_redirects=True)
         self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-720x480.psd").read_bytes(), b"pristine")
+
+    def test_each_product_gets_its_own_templates_folder_seeded_from_the_shared_set(self):
+        """A run for a named product uses default_templates/<product>/:
+        made on first use with copies of the shared templates, and from
+        then on that product's drops are promoted into it and the
+        shared set is left alone. The card's Reset restores that folder."""
+        self._write_default_template("tester-300x250.psd", self._sample_psd_bytes(color=(90, 200, 40)))
+        # The zip is the master every product starts from.
+        with zipfile.ZipFile(webapp.DEFAULT_TEMPLATES_DIR / webapp.TEMPLATE_RESET_ZIP_NAME, "w") as zf:
+            zf.writestr("tester-300x250.psd", self._sample_psd_bytes(color=(40, 40, 200)))
+        data = {
+            "campaign_name": "Winter Glow 2026", "product_name": "HydroBoost Sports Drink",
+            "custom_sizes": "300x250", "header": "", "description": "",
+            "psd_size_1": "300x250", "psd_file_1": (io.BytesIO(self._sample_psd_bytes(color=(200, 40, 40))), "mine.psd"),
+            "psd_make_saved": "1",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:300])
+        folder = webapp.DEFAULT_TEMPLATES_DIR / "Winter Glow 2026" / "HydroBoost Sports Drink"
+        self.assertTrue(folder.is_dir())
+        html = r.get_data(as_text=True)
+        self.assertIn("made its own templates folder, default_templates/Winter Glow 2026/HydroBoost Sports Drink/", html)
+        # Seeded from the zip: the replaced seed is in the backups, blue not green.
+        seeds = [p for p in webapp.TEMPLATE_BACKUPS_DIR.iterdir() if p.name.startswith("tester-300x250.")]
+        self.assertEqual([p.read_bytes() for p in seeds], [self._sample_psd_bytes(color=(40, 40, 200))])
+        # The drop was promoted into the product's folder, named for its size...
+        promoted = folder / "tester-300x250.psd"
+        self.assertTrue(promoted.is_file())
+        self.assertEqual(promoted.read_bytes(), self._sample_psd_bytes(color=(200, 40, 40)))
+        # ...and the shared template is untouched.
+        self.assertEqual(
+            (webapp.DEFAULT_TEMPLATES_DIR / "tester-300x250.psd").read_bytes(),
+            self._sample_psd_bytes(color=(90, 200, 40)),
+        )
+        # Reset for that product puts its folder back to the zip's copy.
+        response = self.client.post("/reset", data={"campaign_name": "Winter Glow 2026", "product_name": "HydroBoost Sports Drink"}, follow_redirects=True)
+        self.assertIn("HydroBoost Sports Drink: templates restored into default_templates/Winter Glow 2026/HydroBoost Sports Drink/", response.get_data(as_text=True))
+        self.assertEqual(promoted.read_bytes(), self._sample_psd_bytes(color=(40, 40, 200)))
+        self.assertEqual(
+            (webapp.DEFAULT_TEMPLATES_DIR / "tester-300x250.psd").read_bytes(),
+            self._sample_psd_bytes(color=(90, 200, 40)),
+            "the shared set is not what a product reset restores",
+        )
+
+    def test_start_up_makes_a_templates_folder_for_every_brief_product_from_the_zip(self):
+        """At start-up every product in briefs/ gets default_templates/
+        <product>/ unpacked from the backup zip -- and a folder that is
+        already there is never touched."""
+        if not (webapp.BRIEFS_DIR / "sample_campaign.json").is_file():
+            self.skipTest("sample brief not present")
+        with zipfile.ZipFile(webapp.DEFAULT_TEMPLATES_DIR / "default_templates.zip", "w") as zf:
+            zf.writestr("tester-720x480.psd", b"master")
+        made = webapp.seed_product_template_folders()
+        rel = {m.relative_to(webapp.DEFAULT_TEMPLATES_DIR).as_posix() for m in made}
+        # One folder per dropdown entry: campaign/product.
+        self.assertTrue({
+            "Winter Glow 2026/HydroBoost Sports Drink", "Winter Glow 2026/FreshGlow Body Wash",
+            "Winter Glow 2026/PureShine Shampoo",
+        } <= rel, rel)
+        for name in ("HydroBoost Sports Drink", "FreshGlow Body Wash", "PureShine Shampoo"):
+            self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "Winter Glow 2026" / name / "tester-720x480.psd").read_bytes(), b"master")
+        edited = webapp.DEFAULT_TEMPLATES_DIR / "Winter Glow 2026" / "HydroBoost Sports Drink" / "tester-720x480.psd"
+        edited.write_bytes(b"edited")
+        self.assertEqual(webapp.seed_product_template_folders(), [])
+        self.assertEqual(edited.read_bytes(), b"edited")
+        # And the form opens with a card per entry, filled from the brief.
+        html = self.client.get("/").get_data(as_text=True).split('id="blank-campaign-card"')[0]
+        self.assertEqual(html.count('name="campaign_name" placeholder="e.g. Winter Glow 2026" value="Winter Glow 2026"'), 3)
+        self.assertIn('value="PureShine Shampoo"', html)
+        self.assertIn("Glow Through Winter.", html)
+
+    def test_each_product_s_form_and_files_are_remembered_apart_from_the_others(self):
+        """Two products, two runs: the next form opens with a card per
+        product, each carrying only its own fields and kept files. The
+        hero dropped on HydroBoost is not on FreshGlow's card; a reset
+        of one product leaves the other's memory alone."""
+        def run(product, hero_name, header_text):
+            r = self.client.post("/generate", data={
+                "product_name": product, "market": "France", "audience": "a", "campaign_message": "m",
+                "custom_sizes": "300x250", "header": "", "description": "",
+                "upload_custom_hero_enabled": "1", "upload_hero_image": (self._sample_image_bytes(), hero_name),
+                "layer_header_text": header_text,
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200, r.data[:300])
+        run("HydroBoost Sports Drink", "hydro-hero.png", "Hydro words")
+        run("FreshGlow Body Wash", "fresh-hero.png", "Fresh words")
+
+        html = self.client.get("/").get_data(as_text=True).split('id="blank-campaign-card"')[0]
+        cards = html.split('class="campaign-card"')[1:]
+        # These two ran with no campaign name, so they are their own
+        # cards, apart from the brief files' entries.
+        hydro = next(c for c in cards if 'value="HydroBoost Sports Drink"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
+        fresh = next(c for c in cards if 'value="FreshGlow Body Wash"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
+        self.assertIn("hydro-hero.png", hydro)
+        self.assertNotIn("fresh-hero.png", hydro)
+        self.assertIn('value="Hydro words"', hydro)
+        self.assertNotIn("Fresh words", hydro)
+        self.assertIn("fresh-hero.png", fresh)
+        self.assertNotIn("hydro-hero.png", fresh)
+        self.assertIn('value="Fresh words"', fresh)
+        # Each card carries its own run's files forward, not the other's.
+        self.assertNotEqual(
+            re.search(r'name="carry_files_job_id" value="([0-9a-f]+)"', hydro).group(1),
+            re.search(r'name="carry_files_job_id" value="([0-9a-f]+)"', fresh).group(1),
+        )
+
+        # Reset HydroBoost: its words and hero go, FreshGlow's stay.
+        self.client.post("/reset", data={"product_name": "HydroBoost Sports Drink", "market": "France"}, follow_redirects=True)
+        html = self.client.get("/").get_data(as_text=True).split('id="blank-campaign-card"')[0]
+        cards = html.split('class="campaign-card"')[1:]
+        hydro = next(c for c in cards if 'value="HydroBoost Sports Drink"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
+        fresh = next(c for c in cards if 'value="FreshGlow Body Wash"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
+        self.assertNotIn("hydro-hero.png", hydro)
+        self.assertNotIn("Hydro words", hydro)
+        self.assertIn("fresh-hero.png", fresh)
+        self.assertIn('value="Fresh words"', fresh)
 
     def test_reset_form_without_a_backup_zip_says_so_and_touches_nothing(self):
         self._write_default_template("tester-720x480.psd", b"edited-720")
@@ -2168,6 +2348,19 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-720x480.psd").read_bytes(), b"edited-720")
         self.assertIn("No backup zip", response.get_data(as_text=True))
+
+    def _own_card(self, page: bytes) -> bytes:
+        """The card for the tests' own (no-campaign, "---") runs: the form
+        opens with a card per brief-file entry too, filled from the
+        brief, and assertions about what a run remembered must look at
+        the run's own card, not the whole page."""
+        visible = page.split(b'id="blank-campaign-card"')[0]
+        cards = visible.split(b'class="campaign-card"')[1:]
+        for card in cards:
+            if b'name="product_name" placeholder="e.g. HydroBoost Sports Drink" value="---"' in card:
+                return card
+        # No product remembered yet: the last card is the plain one.
+        return cards[-1] if cards else visible
 
     def _write_default_template(self, filename, data: bytes) -> Path:
         path = webapp.DEFAULT_TEMPLATES_DIR / filename
@@ -2410,7 +2603,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        page = self.client.get("/").data
+        page = self._own_card(self.client.get("/").data)
         self.assertIn(b'name="brand_color_1_enabled" value="1" checked', page)
         self.assertIn(b'name="brand_color_1" value="#112233"', page)
         self.assertNotIn(b'name="brand_color_2_enabled" value="1" checked', page)
@@ -2428,7 +2621,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        page = self.client.get("/").data
+        page = self._own_card(self.client.get("/").data)
         self.assertNotIn(b"checked", page[page.index(b'id="brand_color_1_enabled"'):page.index(b'id="brand_color_1"')])
         self.assertIn(b'name="brand_color_1" value="#112233"', page)
         self.assertTrue((webapp.JOBS_DIR / "preferences.json").is_file())
@@ -2543,7 +2736,7 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         # The dropped file stays on the row as the reminder of what was
         # dropped -- on the Edit page and on the next fresh form.
         self.assertIn(b"new-square.psd", edit_page)
-        self.assertIn(b"new-square.psd", self.client.get("/").data)
+        self.assertIn(b"new-square.psd", self._own_card(self.client.get("/").data))
         self.assertIn(b'name="psd_make_saved" value="1" checked', edit_page)
 
         # A fresh form, no rows: the saved (new) design renders.
@@ -2588,8 +2781,10 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         }, content_type="multipart/form-data")
         self.assertIn(b"were used for this run only", r.data)
         self.assertNotIn(b"is now the saved template", r.data)
-        page = self.client.get("/").data
-        self.assertNotIn(b'name="psd_make_saved" value="1" checked', page)
+        # This run's own card (the brief-file cards and the blank
+        # <template> card keep the default tick).
+        cards = self._own_card(self.client.get("/").data)
+        self.assertNotIn(b'name="psd_make_saved" value="1" checked', cards)
 
     def test_a_promoted_upload_is_named_for_its_size_and_is_the_only_file_for_that_size(self):
         # A dropped PSD becomes tester-<WxH>.psd whatever it was called,
@@ -3397,7 +3592,9 @@ class PaidProviderTest(unittest.TestCase):
         _webapp.app.config["TESTING"] = True
         page = _webapp.app.test_client().get("/").data.decode()
         # The one AI section left (Manual Creative and its own generator
-        # are gone) offers both providers, and nothing else.
+        # are gone) offers both providers, and nothing else -- counted on
+        # one card (the page has a card per brief entry, plus the blank).
+        page = _own_card_html(page)
         self.assertEqual(page.count('value="pollinations"'), 1)
         self.assertEqual(page.count('value="ideogram"'), 1)
         for gone in ("openai", "huggingface", "mock"):
@@ -4342,11 +4539,13 @@ class ContentPsdQuickModeTest(unittest.TestCase):
 
         page = self.client.get(f"/edit/{job_id}").data.decode()
         # The scenario is real: this page genuinely carries two cards,
-        # each with its own copy of the controls.
-        self.assertEqual(page.count('class="campaign-card"'), 2)
+        # each with its own copy of the controls (the blank <template>
+        # card the page also carries, for cloning, is not one of them).
+        blank_at = page.index('id="blank-campaign-card"')
+        self.assertEqual(page[:blank_at].count('class="campaign-card"'), 2)
         # The input itself -- a bare name= count also matches the
         # script's own selector string.
-        self.assertEqual(page.count('type="checkbox" id="upload_ai_keep"'), 2)
+        self.assertEqual(page[:blank_at].count('type="checkbox" id="upload_ai_keep"'), 2)
 
         self.assertIn("initialCards.forEach(initCreativeForm)", page)
         # The document-wide call may survive only as the no-cards
@@ -4434,9 +4633,12 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # The colour plumbing itself: ticked "custom text colour" beats
         # whatever the PSD's type layer was set to, and the debug note
         # names the colour actually drawn with.
+        # On the saved template, not a fresh drop: a PSD dropped this run
+        # is the design and switches the form's styling off for the run.
         self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
         data = {
-            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "custom_sizes": "970x90", "upload_custom_hero_enabled": "1",
+            "upload_hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
             "layer_description_text": "Recoloured words",
             "layer_description_use_custom_color": "1",
             "layer_description_text_color": "#ff0000",
@@ -4446,7 +4648,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
         self.assertIn(b"color (255, 0, 0)", r.data)
-        self.assertIn(b"-- description", r.data)
+        self.assertRegex(r.data, rb"updated layer\(s\) --[^<]*description")
 
     def test_styling_alone_no_longer_needs_text_to_be_retyped(self):
         # The complaint: a colour picked with the text box left alone did
@@ -4456,7 +4658,8 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # the redraw (see the description-layer render check above).
         self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
         data = {
-            "content_psd": (io.BytesIO(self._sample_psd_bytes(color=(10, 10, 200))), "content.psd"),
+            "custom_sizes": "970x90", "upload_custom_hero_enabled": "1",
+            "upload_hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
             "layer_description_use_custom_color": "1",
             "layer_description_text_color": "#ff0000",
             "header": "",
@@ -6259,7 +6462,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             "no section should start open on a blank form",
         )
 
-    def test_a_prefilled_layer_section_comes_back_open(self):
+    def test_a_prefilled_layer_section_comes_back_with_its_words(self):
         (w, h), staged_path = self._stage_real_template()
         data = {
             "content_psd": (io.BytesIO(staged_path.read_bytes()), "content.psd"),
@@ -6271,10 +6474,10 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         page = self.client.get(f"/edit/{job_id}").data.decode()
         self.assertIn("Carried forward words", page)
-        self.assertRegex(
-            page,
-            r'<details class="layer-section" data-layer-section="description"[^>]*\sopen>',
-        )
+        # The words come back, in a section that starts folded like every
+        # other -- "truncate all sections" was the ask when the layer
+        # editing got its caret; nothing opens itself any more.
+        self.assertIn('<details class="layer-section" data-layer-section="description">', page)
 
     def test_legal_controls_are_offered_whenever_the_layer_exists(self):
         # Switched off is not the same as absent: the layer can be turned
@@ -6297,11 +6500,10 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             m.split("layer_legal_")[1]
             for m in re.findall(r'name="layer_legal_[a-z_]+"', page)
         }
-        self.assertEqual(
-            header_fields,
-            legal_fields,
-            "legal must offer exactly the edit properties the header does",
-        )
+        # Legal offers what the header does, less the drop shadow -- that
+        # was asked for on the header and description only.
+        self.assertTrue(legal_fields <= header_fields, legal_fields - header_fields)
+        self.assertTrue(all(extra.startswith("shadow") for extra in header_fields - legal_fields), header_fields - legal_fields)
 
     def test_a_capped_provider_warns_only_about_the_sizes_it_softens(self):
         # One run-wide warning read as "this whole batch is soft" on a
@@ -10319,7 +10521,7 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         )
         self.assertEqual(r.status_code, 200, r.data[:400])
         self.assertIn(b"header (hidden)", r.data)
-        page = self.client.get("/").data.decode()
+        page = _own_card_html(self.client.get("/").data.decode())
         for name in ("header", "logo"):
             box = re.search(rf'name="layer_{name}_hidden" value="1"[^>]*>', page)
             self.assertIsNotNone(box, name)

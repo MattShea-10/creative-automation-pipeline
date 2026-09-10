@@ -124,7 +124,15 @@ To stop: **Ctrl-C** in the terminal. To start again later: just `./run.sh`
 
 ### Using it
 
-Fill in the campaign brief at the top (product, market, audience,
+The brief files in `briefs/` (the same JSON/YAML the command line runs
+from) are offered under the Ideogram key box as "From a brief file": pick
+a product and the first campaign's fields, brand colours, AI prompt hint and
+headline fill in from it -- every field stays editable. Typing a market
+the app knows (France, Mexico, US...) sets the copy language to match; it
+can be changed by hand afterwards. "Every product in
+this file" beside it makes one campaign card per product, each filled from
+the brief (each card is its own run). Otherwise fill in
+the campaign brief at the top (product, market, audience,
 message). Then either:
 
 - **Custom hero image** -- tick it, choose an image, and optionally type
@@ -420,18 +428,40 @@ per-request upload for the same size (via the form's upload rows) always
 overrides the saved default; a bad/corrupt file in that folder is simply
 skipped rather than breaking generation. See `default_templates/README.txt`.
 
+Every product is its own campaign card, and the cards are isolated: what
+is typed, ticked or uploaded on one product's card -- its layer text and
+styling, its hero, logo and product images, its size-specific PSD rows --
+is remembered for that product alone, and the form opens with one card
+per product worked on so far, each carrying only its own. A new card
+(Create Campaign, or a product from a brief file) starts blank.
+
+Every campaign's product gets its own templates. When the app starts it
+makes `default_templates/<campaign>/<product>/` for every entry of every
+brief in `briefs/` -- `default_templates/Winter Glow 2026/HydroBoost
+Sports Drink/`, say -- unpacked from the backup zip (a folder already
+there is left alone); a product typed on the form that has no folder yet
+gets one the same way on its first run (`default_templates/<product>/`
+when the Campaign field is blank; with no zip, copied from the shared
+PSDs). The form opens with one campaign card per brief entry, filled from
+the brief, plus a card for anything else run since. From then on that product's runs read from, promote drops
+into and save styles back to its own folder; the shared set at the top of
+`default_templates/` is the seed and is left alone. A run with no product
+name uses the shared set directly.
+
 To start the templates over, keep a zip of the known-good set in
 `default_templates/` -- `template-backup.zip` or `default_templates.zip`,
 or failing those the only zip in the folder (the `tester-WxH.psd` files at
-its top level; Finder's `__MACOSX` entries are ignored). The **Reset form**
-button at the top of the page unpacks it over `default_templates/` --
+its top level; Finder's `__MACOSX` entries are ignored). Each campaign card's **Reset**
+button (next to the product's name) unpacks it over that product's folder
+-- or over `default_templates/` itself when the card has no product --
 each size in the zip replaces the current file, which is moved to
 `_template_backups/` with a timestamp first, and a size the zip doesn't
-carry is left as it is. The form itself comes back blank at the same time:
-every remembered field (campaign brief, brand colours, languages, layer
-text and styling) and every file kept from the last run (hero, logo,
-product, CTA, references, the size-specific PSD rows) is forgotten, so
-the next Generate can't re-attach the drops the reset just undid. The
+carry is left as it is. The form's work is cleared at the same time:
+every layer value and switch, the AI settings, and every file kept from
+the last run (hero, logo, product, CTA, references, the size-specific PSD
+rows) is forgotten, so the next Generate can't re-attach the drops the
+reset just undid. The campaign brief, brand colours and copy language are
+kept (the card's own values, as they were when Reset was pressed). The
 Ideogram key in `.env` is untouched. The page then says which files were
 restored.
 

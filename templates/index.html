@@ -5,6 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Creative Automation -- Quick Generate</title>
   <script src="https://cdn.tailwindcss.com"></script>
+  {# Plain CSS, outside Tailwind's block: the fold must hold even
+     before (or without) the CDN script processing the styles. #}
+  <style>
+    .campaign-card.collapsed > form { display: none; }
+    .campaign-card-bar .caret { display: inline-block; transition: transform 0.15s ease; transform: rotate(90deg); }
+    .campaign-card.collapsed .campaign-card-bar .caret { transform: rotate(0deg); }
+  </style>
   <style type="text/tailwindcss">
     :root {
       --brand-blue: #3b82f6;
@@ -217,6 +224,12 @@
     .busy-detail { @apply text-slate-400 text-[0.9rem] max-w-[30rem] leading-relaxed; }
 
     .campaign-card { @apply mb-8; }
+    .campaign-card-bar { @apply flex items-center gap-2 mb-2 px-1; }
+    .campaign-card-bar .card-toggle {
+      @apply bg-transparent border border-slate-700 rounded-md text-slate-300 p-0 w-7 h-7 flex items-center justify-center hover:bg-slate-800;
+    }
+    .campaign-card-name { @apply text-slate-200 font-semibold text-[0.95rem]; }
+    .campaign-card.collapsed { @apply mb-3; }
     .campaign-brief-box > summary { @apply flex items-center justify-between gap-3; list-style: none; }
     /* The per-layer sections inside "Update layers across all template
        sizes". Lighter than the top-level boxes -- they are nested two
@@ -248,12 +261,8 @@
   <div class="wrap">
     <div class="top-row">
       <h1>Creative Automation -- Quick Generate</h1>
-      {# A POST, not a link: besides opening a fresh form it puts the saved
-         templates back to the copies in default_templates/template-backup.zip. #}
-      <form method="post" action="{{ url_for('reset_form') }}" style="margin: 0;"
-            onsubmit="return confirm('Reset the form? Everything you have typed or attached -- including any batch you were editing -- will be cleared -- every field, the brand colours, the languages, and every image or PSD kept from your last run (hero, logo, product, CTA, references, size-specific templates) -- and the saved templates go back to the ones in template-backup.zip (the current ones are kept in _template_backups/).');">
-        <button type="submit" class="reset-link" style="background: none; cursor: pointer; font-family: inherit;">Reset form</button>
-      </form>
+      {# Reset lives on each campaign card (next to the product's name):
+         it restores THAT product's templates. #}
     </div>
     <p class="subtitle">
       Upload one hero image (or a short product video), add a header and a
@@ -263,7 +272,11 @@
     </p>
 
     <div style="text-align: right; margin-bottom: 1.5rem;">
-      <button type="button" id="add-campaign-btn" class="create-campaign-btn">Create Campaign</button>
+      <span style="display: inline-flex; gap: 0.5rem; flex: none;">
+        <button type="button" class="create-campaign-btn" data-role="collapse-all" title="Fold every campaign down to its name">Collapse all</button>
+        <button type="button" class="create-campaign-btn" data-role="expand-all" title="Open every campaign">Expand all</button>
+        <button type="button" id="add-campaign-btn" class="create-campaign-btn">Create Campaign</button>
+      </span>
     </div>
 
     {% with messages = get_flashed_messages(with_categories=true) %}
@@ -294,26 +307,58 @@
       </div>
     </details>
 
+    {% if brief_choices %}
+      {# The brief files in briefs/ -- the same ones the command-line
+         pipeline runs from. Page-level: picking a product fills the
+         first campaign card; "Every product in this file" makes one card
+         per product. Every field stays editable afterwards. #}
+      <div class="key-box" data-role="brief-file-box">
+        <div style="display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.6rem;">
+          <label for="brief_choice" class="provider-control" style="font-weight: 600; margin: 0; flex: 1 1 18rem;">
+            <span style="white-space: nowrap;">From a brief file</span>
+            <select class="font-family-select" id="brief_choice" data-role="brief-choice" style="width: 100%; margin-top: 0.3rem;">
+              <option value="">-- type the brief yourself --</option>
+              {% for choice in brief_choices %}
+                <option value="{{ choice.id }}" data-brief='{{ choice | tojson | forceescape }}'>{{ choice.label }}</option>
+              {% endfor %}
+            </select>
+          </label>
+          <button type="button" class="create-campaign-btn" data-role="brief-all-products" style="text-transform: none; letter-spacing: normal; white-space: nowrap;" title="One campaign card per product in the chosen brief file, each filled from it">Every product in this file</button>
+        </div>
+        <div class="hint" style="margin: 0.4rem 0 0;">
+          Read from <code>briefs/</code> ({{ brief_choices | map(attribute='file') | unique | join(', ') }}). Choosing a product fills the
+          first campaign's brief, brand colours, copy language and AI image prompt; "Every product in this file" makes one
+          campaign per product (the first card, then new cards for the rest) -- each card is its own run, so press Generate on each.
+        </div>
+      </div>
+    {% endif %}
+
     <div class="busy-overlay" data-role="busy" hidden>
       <div class="busy-spinner" role="status" aria-live="polite" aria-label="Generating"></div>
       <div class="busy-title" data-role="busy-title">Generating your creatives&hellip;</div>
       <div class="busy-detail" data-role="busy-detail"></div>
     </div>
 
-    <div id="campaigns-container">
-      {% for campaign in campaigns %}
-      {% set prefill = campaign.prefill %}
-      {% set prefill_files = campaign.prefill_files %}
-      {% set edit_job_id = campaign.edit_job_id %}
+    {# One campaign card. A macro so the same markup renders once per
+       remembered product AND once blank inside <template> below -- the
+       blank is what "Create Campaign" and the brief picker clone, so a
+       new card never inherits another product's values or files. #}
+    {% macro campaign_card(index, prefill, prefill_files, edit_job_id, carry_job_id) %}
       {# The run a fresh form carries its section files from (hero, layer
          images, PSD rows) -- thumbnails and carry-forward come from it,
          nothing else about that run does. #}
-      {% set carry_job_id = campaign.get('carry_job_id') %}
       {% set files_job_id = edit_job_id or carry_job_id %}
-      <div class="campaign-card" data-campaign-index="{{ loop.index }}">
+      <div class="campaign-card" data-campaign-index="{{ index }}">
+        {# The card's own bar: the product's name and a fold. Folded, the
+           whole form below is out of sight (not gone -- it still posts). #}
+        <div class="campaign-card-bar" data-role="card-bar">
+          <button type="button" class="card-toggle" data-role="card-toggle" title="Fold or open this campaign"><span class="caret">&#9656;</span></button>
+          <span class="campaign-card-name" data-role="card-name">{{ prefill.get('product_name') or ('Campaign ' ~ index) }}</span>
+          <span class="hint" data-role="card-campaign" style="margin: 0;">{{ prefill.get('campaign_name', '') }}</span>
+        </div>
         <form class="creative-form" action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
         <input type="hidden" name="session_id" value="{{ session_id }}">
-        <input type="hidden" name="campaign_slot" value="{{ loop.index }}">
+        <input type="hidden" name="campaign_slot" value="{{ index }}">
       {% if not edit_job_id and carry_job_id %}
         <input type="hidden" name="carry_files_job_id" value="{{ carry_job_id }}">
       {% endif %}
@@ -325,13 +370,28 @@
       <details class="campaign-brief-box" open>
         <summary style="margin-bottom: 0.6rem;">
           <span><span class="caret">&#9656;</span>Campaign brief <span style="font-weight: 400; color: var(--muted);">(required)</span></span>
-          <span class="campaign-card-title">Campaign {{ loop.index }}</span>
+          <span style="display: inline-flex; align-items: center; gap: 0.6rem; flex: none;">
+            <span class="campaign-card-title" data-fallback="Campaign {{ index }}">{{ prefill.get('product_name') or ('Campaign ' ~ index) }}</span>
+            {# Posts this card's own form to /reset (formaction), so the
+               product name travels with it: that product's templates
+               folder is put back to the backup zip, and the form
+               reopens blank. formnovalidate: the required fields need
+               not be filled to reset. #}
+            <button type="submit" class="reset-link" formaction="{{ url_for('reset_form') }}" formmethod="post" formnovalidate
+                    data-role="reset-product" style="background: none; cursor: pointer; font-family: inherit; margin: 0; padding: 0.2rem 0.6rem; font-size: 0.78rem;"
+                    title="Put this product's templates back to the backup zip and clear the form"
+                    onclick="event.stopPropagation(); return confirm('Reset ' + (this.closest('.campaign-card').querySelector('[name=product_name]').value.trim() || 'this campaign') + '? Its templates go back to the ones in the backup zip (the current ones are kept in _template_backups/). The campaign brief, brand colours and copy language are kept; every other field and every kept file is cleared.');">Reset</button>
+          </span>
         </summary>
         <div class="hint" style="margin-top: -0.3rem;">
           Context for this batch -- not composited into the creatives, just carried along with them on the
           results page and saved for when you come back to edit this batch later.
         </div>
         <div class="inline-controls" style="margin-top: 0.6rem; align-items: flex-start;">
+          <label for="campaign_name" style="font-weight: 400; flex: 1 1 200px;" title="The campaign this product belongs to (a brief file's name). Its templates live in default_templates/<campaign>/<product>/.">
+            <span style="white-space: nowrap;">Campaign</span>
+            <input type="text" id="campaign_name" name="campaign_name" placeholder="e.g. Winter Glow 2026" value="{{ prefill.get('campaign_name', '') }}">
+          </label>
           <label for="product_name" style="font-weight: 400; flex: 1 1 200px;">
             <span style="white-space: nowrap;">Product name</span>
             <input type="text" id="product_name" name="product_name" placeholder="e.g. HydroBoost Sports Drink" value="{{ prefill.get('product_name', '') }}" required>
@@ -1470,8 +1530,17 @@
       <button type="submit">Generate creatives</button>
         </form>
       </div>
+    {% endmacro %}
+
+    <div id="campaigns-container">
+      {% for campaign in campaigns %}
+        {{ campaign_card(loop.index, campaign.prefill, campaign.prefill_files, campaign.edit_job_id, campaign.get('carry_job_id')) }}
       {% endfor %}
     </div>
+    {# The blank card new cards are cloned from (never shown itself). #}
+    <template id="blank-campaign-card">
+      {{ campaign_card(0, {}, {}, none, none) }}
+    </template>
 
     <footer>Creative Automation Pipeline -- quick-generate UI{% if build_stamp %} &middot; code build: {{ build_stamp }}{% endif %}</footer>
   </div>
@@ -1884,6 +1953,69 @@
       // entire ad" and "put type in the backdrop the template draws
       // over" are different jobs, and ticking both reads as a request
       // for both.
+      // A product picked from a brief file fills the campaign fields,
+      // the brand colours, the AI prompt hint and headline. Fills, not
+      // locks: everything stays editable, and the pick itself is not
+      // posted -- the fields are.
+      // Market -> Copy language: "France" picks French, "Mexico" Spanish,
+      // "US" English. Only for markets the table knows; anything else
+      // leaves the language where it is, and it can always be changed
+      // by hand afterwards.
+      var marketField = root.querySelector('[name="market"]');
+      var languageField = root.querySelector('[name="copy_language"]');
+      if (marketField && languageField) {
+        var marketLanguages = {{ market_copy_languages | tojson }};
+        var syncLanguageToMarket = function () {
+          var key = marketField.value.trim().toLowerCase();
+          var code = marketLanguages[key];
+          if (!code) {
+            // "France, Belgium" or "Paris, France": the first market that is known.
+            key.split(/[,;\/]+/).some(function (part) {
+              code = marketLanguages[part.trim()];
+              return !!code;
+            });
+          }
+          if (code && Array.prototype.some.call(languageField.options, function (o) { return o.value === code; })) {
+            languageField.value = code;
+          }
+        };
+        marketField.addEventListener("change", syncLanguageToMarket);
+        marketField.addEventListener("blur", syncLanguageToMarket);
+      }
+
+      // Filling a card from a brief (the page-level picker calls this
+      // through root.__fillFromBrief): the campaign fields, brand
+      // colours, copy language, AI prompt hint and headline.
+      root.__fillFromBrief = function (brief) {
+        var setField = function (name, value) {
+          var el = root.querySelector('[name="' + name + '"]');
+          if (el && value !== undefined && value !== null) {
+            el.value = value;
+            el.dispatchEvent(new Event("input", { bubbles: true }));
+            el.dispatchEvent(new Event("change", { bubbles: true }));
+          }
+        };
+        setField("campaign_name", brief.campaign || "");
+        setField("product_name", brief.product_name);
+        setField("market", brief.market);
+        setField("audience", brief.audience);
+        setField("campaign_message", brief.campaign_message);
+        if (brief.prompt_hint) setField("upload_ai_prompt", brief.prompt_hint);
+        if (brief.headline) setField("upload_ai_headline", brief.headline);
+        if (brief.language) {
+          var lang = root.querySelector('[name="copy_language"]');
+          if (lang && Array.prototype.some.call(lang.options, function (o) { return o.value === brief.language; })) {
+            lang.value = brief.language;
+          }
+        }
+        (brief.colors || []).forEach(function (hex, i) {
+          var swatch = root.querySelector('[name="brand_color_' + (i + 1) + '"]');
+          var tick = root.querySelector('[name="brand_color_' + (i + 1) + '_enabled"]');
+          if (swatch) swatch.value = hex.toLowerCase();
+          if (tick) tick.checked = true;
+        });
+      };
+
       var providerSelect = root.querySelector('[name="upload_ai_provider"]');
       var ideogramOnly = root.querySelectorAll('[data-role="ideogram-only"]');
       var fullAdBox = root.querySelector('[name="upload_ai_full_ad"]');
@@ -2268,12 +2400,52 @@
       var addBtn = document.getElementById("add-campaign-btn");
       var campaignCount = container.querySelectorAll(".campaign-card").length;
 
+      // The card's label is the product it is for, as soon as one is
+      // typed (or filled from a brief); "Campaign N" only until then.
+      function labelCard(card, index) {
+        var product = card.querySelector('[name="product_name"]');
+        var name = product ? product.value.trim() : "";
+        var title = card.querySelector(".campaign-card-title");
+        if (title) {
+          title.dataset.fallback = "Campaign " + index;
+          title.textContent = name || title.dataset.fallback;
+        }
+        var bar = card.querySelector('[data-role="card-name"]');
+        if (bar) bar.textContent = name || ("Campaign " + index);
+        var campaign = card.querySelector('[name="campaign_name"]');
+        var barCampaign = card.querySelector('[data-role="card-campaign"]');
+        if (barCampaign) barCampaign.textContent = campaign ? campaign.value.trim() : "";
+      }
+
+      // Fold a card to its bar, or open it. One listener on the
+      // container covers cards made later too.
+      container.addEventListener("click", function (event) {
+        var toggle = event.target.closest('[data-role="card-toggle"], [data-role="card-name"]');
+        if (!toggle || !container.contains(toggle)) return;
+        var card = toggle.closest(".campaign-card");
+        if (card) card.classList.toggle("collapsed");
+      });
+      var collapseAll = document.querySelector('[data-role="collapse-all"]');
+      var expandAll = document.querySelector('[data-role="expand-all"]');
+      if (collapseAll) collapseAll.addEventListener("click", function () {
+        container.querySelectorAll(".campaign-card").forEach(function (c) { c.classList.add("collapsed"); });
+      });
+      if (expandAll) expandAll.addEventListener("click", function () {
+        container.querySelectorAll(".campaign-card").forEach(function (c) { c.classList.remove("collapsed"); });
+      });
+
       function renumberCampaigns() {
         var cards = container.querySelectorAll(".campaign-card");
         cards.forEach(function (card, index) {
           card.dataset.campaignIndex = index + 1;
-          var title = card.querySelector(".campaign-card-title");
-          if (title) title.textContent = "Campaign " + (index + 1);
+          labelCard(card, index + 1);
+          [card.querySelector('[name="product_name"]'), card.querySelector('[name="campaign_name"]')].forEach(function (field) {
+            if (field && !field.dataset.labelBound) {
+              field.dataset.labelBound = "1";
+              field.addEventListener("input", function () { labelCard(card, index + 1); });
+              field.addEventListener("change", function () { labelCard(card, index + 1); });
+            }
+          });
           var slotInput = card.querySelector('[name="campaign_slot"]');
           if (slotInput) slotInput.value = String(index + 1);
           var removeBtn = card.querySelector(".remove-campaign-btn");
@@ -2319,17 +2491,21 @@
       renumberCampaigns();
 
       function addCampaignCard() {
+        // Cloned from the blank card in <template>, never from a card on
+        // the page: a card on the page carries a product's own values,
+        // its kept files and the run they come from, and a copy of it
+        // handed all of that to the next product -- a hero dropped on
+        // HydroBoost turned up on FreshGlow. The blank has none of it.
+        var blank = document.getElementById("blank-campaign-card");
         var firstCard = container.querySelector(".campaign-card");
-        var clone = firstCard.cloneNode(true);
+        var clone = blank && blank.content && blank.content.firstElementChild
+          ? blank.content.firstElementChild.cloneNode(true)
+          : firstCard.cloneNode(true);
         campaignCount++;
 
-        // A brand new campaign card always starts completely blank --
-        // strip anything tied specifically to an edit-in-progress or a
-        // prior upload, whether that came from the very first card being
-        // an "Edit a previous batch" page, or (once campaigns can be
-        // added) any file that had already been picked on the card being
-        // cloned from.
-        clone.querySelectorAll("[data-edit-only], [data-prefill-hint]").forEach(function (el) {
+        // Belt and braces for the fallback path: nothing tied to an
+        // edit-in-progress or a prior upload survives on a new card.
+        clone.querySelectorAll("[data-edit-only], [data-prefill-hint], [name=\"carry_files_job_id\"]").forEach(function (el) {
           el.remove();
         });
 
@@ -2347,6 +2523,11 @@
 
         var heroInput = clone.querySelector('[name="upload_hero_image"]');
         if (heroInput) heroInput.dataset.hasPrior = "false";
+        // cloneNode copies the "listener bound" marker but not the
+        // listener; clear it so the new card's title follows its own
+        // product name.
+        clone.querySelectorAll('[name="product_name"], [name="campaign_name"]').forEach(function (el) { delete el.dataset.labelBound; });
+        clone.classList.remove("collapsed");
 
         // Collapsed sections always start collapsed on a fresh card, and
         // Campaign brief (it holds the required fields) always starts
@@ -2374,6 +2555,83 @@
         if (typeof clone.scrollIntoView === "function") {
           clone.scrollIntoView({ behavior: "smooth", block: "start" });
         }
+        return clone;
+      }
+      // "Every product in this brief" creates the other cards.
+      window.addCampaignCard = addCampaignCard;
+
+      // The brief picker under the Ideogram key: a product fills the
+      // first campaign card; "Every product in this file" fills the
+      // first card with the first product and makes a card for each of
+      // the rest. Each card is still its own run.
+      var briefChoice = document.querySelector('[data-role="brief-choice"]');
+      var briefAll = document.querySelector('[data-role="brief-all-products"]');
+      var firstCard = function () { return container.querySelector(".campaign-card"); };
+      // The card already on the page for a product, by its name -- so a
+      // brief pick or "every product" refills that product's own card
+      // (its kept files and templates stay its own) instead of making
+      // a second card for it.
+      var cardForProduct = function (name, campaign) {
+        var wanted = (name || "").trim().toLowerCase();
+        var wantedCampaign = (campaign || "").trim().toLowerCase();
+        if (!wanted) return null;
+        var found = null;
+        container.querySelectorAll(".campaign-card").forEach(function (c) {
+          var field = c.querySelector('[name="product_name"]');
+          var cfield = c.querySelector('[name="campaign_name"]');
+          var have = cfield ? cfield.value.trim().toLowerCase() : "";
+          if (!found && field && field.value.trim().toLowerCase() === wanted && have === wantedCampaign) found = c;
+        });
+        return found;
+      };
+      var briefOf = function (option) {
+        if (!option || !option.dataset.brief) return null;
+        try { return JSON.parse(option.dataset.brief); } catch (e) { return null; }
+      };
+      if (briefChoice) {
+        briefChoice.addEventListener("change", function () {
+          var brief = briefOf(briefChoice.options[briefChoice.selectedIndex]);
+          var card = brief ? (cardForProduct(brief.product_name, brief.campaign) || firstCard()) : null;
+          if (brief && card && typeof card.__fillFromBrief === "function") {
+            card.classList.remove("collapsed");
+            card.__fillFromBrief(brief);
+            if (typeof card.scrollIntoView === "function") card.scrollIntoView({ behavior: "smooth", block: "start" });
+          }
+        });
+      }
+      if (briefAll && briefChoice) {
+        briefAll.addEventListener("click", function (event) {
+          event.preventDefault();
+          var chosen = briefOf(briefChoice.options[briefChoice.selectedIndex]);
+          var file = chosen ? chosen.file : null;
+          var briefs = [];
+          Array.prototype.forEach.call(briefChoice.options, function (o) {
+            var b = briefOf(o);
+            if (!b) return;
+            if (file === null) file = b.file;
+            if (b.file === file) briefs.push(b);
+          });
+          if (!briefs.length) return;
+          // Each product gets its own card: the one already on the page
+          // for it, else the first card if that one has no product yet,
+          // else a new blank card.
+          var first = null;
+          briefs.forEach(function (b) {
+            var card = cardForProduct(b.product_name, b.campaign);
+            if (!card) {
+              var candidate = firstCard();
+              var field = candidate && candidate.querySelector('[name="product_name"]');
+              if (candidate && field && !field.value.trim()) card = candidate;
+            }
+            if (!card) card = addCampaignCard();
+            if (card && typeof card.__fillFromBrief === "function") {
+              card.classList.remove("collapsed");
+              card.__fillFromBrief(b);
+            }
+            if (!first) first = card;
+          });
+          if (first && typeof first.scrollIntoView === "function") first.scrollIntoView({ behavior: "smooth", block: "start" });
+        });
       }
 
       // The busy overlay. Wired once for the page, on every card's form.
