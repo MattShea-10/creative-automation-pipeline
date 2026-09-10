@@ -9,6 +9,11 @@
      before (or without) the CDN script processing the styles. #}
   <style>
     .campaign-card.collapsed > form { display: none; }
+    /* The bar stays pinned at the top of the window while its own
+       card scrolls under it: a card is several screens long and every
+       card's sections look the same, so without this the product
+       whose box is being ticked is out of sight. */
+    .campaign-card-bar { position: sticky; top: 0; z-index: 20; background: #020617; padding-top: 0.45rem; padding-bottom: 0.45rem; border-bottom: 1px solid #1e293b; }
     .campaign-card-bar .caret { display: inline-block; transition: transform 0.15s ease; transform: rotate(90deg); }
     .campaign-card.collapsed .campaign-card-bar .caret { transform: rotate(0deg); }
   </style>
