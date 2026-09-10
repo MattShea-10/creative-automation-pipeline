@@ -53,6 +53,7 @@ else:
 import re
 import secrets
 import shutil
+import tempfile
 import uuid
 import zipfile
 
@@ -2338,7 +2339,11 @@ def _load_session_campaigns(session_id, fallback_job_id):
             "prefill_files": slot_state.get("files") or {},
             "edit_job_id": slot_job_id,
         })
-    return campaigns or fallback
+    campaigns = campaigns or fallback
+    for card in campaigns:
+        fields = card.get("prefill") or {}
+        card["layers"] = card_layer_sets(fields.get("product_name"), fields.get("campaign_name"))
+    return campaigns
 
 
 def _session_campaign_jobs(session_id):
@@ -2362,7 +2367,21 @@ def _session_campaign_jobs(session_id):
     return [(slot, slots[slot]) for slot in sorted(slots, key=lambda k: (len(k), k))]
 
 
-def _editable_text_layers() -> set:
+def _template_paths_in(folder=None) -> dict:
+    """_default_template_paths() for one folder -- a campaign's own
+    (see card_layer_sets()) rather than the request's."""
+    if folder is None:
+        return _default_template_paths()
+    from flask import g
+    before = getattr(g, "templates_dir", None)
+    g.templates_dir = folder
+    try:
+        return _default_template_paths()
+    finally:
+        g.templates_dir = before
+
+
+def _editable_text_layers(folder=None) -> set:
     """Which of the named text layers are actually editable right now --
     i.e. present AND switched on in at least one saved template.
 
@@ -2373,14 +2392,14 @@ def _editable_text_layers() -> set:
     one enabled somewhere is enough for the field to be worth offering.
     """
     editable = set()
-    template_paths = _default_template_paths()
+    template_paths = _template_paths_in(folder)
     for path in template_paths.values():
         for name in get_psd_text_layers(path, visible_only=True):
             editable.add(name)
     return editable
 
 
-def _switched_off_layers() -> set:
+def _switched_off_layers(folder=None) -> set:
     """Named layers the saved templates HAVE but that are switched off in
     every template carrying them.
 
@@ -2395,7 +2414,7 @@ def _switched_off_layers() -> set:
     checkbox too, and a designer can switch any of them off.
     """
     seen, visible = set(), set()
-    template_paths = _default_template_paths()
+    template_paths = _template_paths_in(folder)
     for path in template_paths.values():
         try:
             psd = PSDImage.open(path)
@@ -2409,7 +2428,7 @@ def _switched_off_layers() -> set:
     return seen - visible
 
 
-def _present_text_layers() -> set:
+def _present_text_layers(folder=None) -> set:
     """Every named text layer the saved templates have at all -- switched
     on or off.
 
@@ -2421,11 +2440,100 @@ def _present_text_layers() -> set:
     shown at all rather than sitting there permanently dead.
     """
     present = set()
-    template_paths = _default_template_paths()
+    template_paths = _template_paths_in(folder)
     for path in template_paths.values():
         for name in get_psd_text_layers(path):
             present.add(name)
     return present
+
+
+def card_layer_sets(product_name=None, campaign_name=None) -> dict:
+    """The three layer sets above, judged on one campaign card's own
+    templates -- default_templates/<campaign>/<product>/ -- not the
+    shared folder. Each card's notes ("the description layer is switched
+    off in your saved templates") must describe the templates that card
+    will render with, otherwise a layer hidden in some other folder greys
+    out fields on a card whose own templates have it on. A campaign whose
+    folder does not exist yet (nothing generated for it) is judged on the
+    shared folder, the set its folder will be seeded from."""
+    folder = _layer_judging_dir(product_name, campaign_name)
+    return {
+        "editable": _editable_text_layers(folder),
+        "present": _present_text_layers(folder),
+        "switched_off": _switched_off_layers(folder),
+    }
+
+
+def _page_layer_sets() -> dict:
+    """The layer sets for a card with no product yet (the blank card a
+    Create Campaign click clones): judged like any other card, on the
+    shared folder or the seed set."""
+    sets = card_layer_sets()
+    return {
+        "editable_text_layers": sets["editable"],
+        "present_text_layers": sets["present"],
+        "switched_off_layers": sets["switched_off"],
+    }
+
+
+def _has_saved_templates(folder: Path) -> bool:
+    return folder.is_dir() and any(
+        p.is_file() and p.suffix.lower() in ALLOWED_PSD_TEMPLATE_EXTENSIONS and _SIZE_IN_FILENAME_RE.search(p.name)
+        for p in folder.iterdir()
+    )
+
+
+_seed_set_cache: dict = {}
+
+
+def _seed_templates_dir() -> Path | None:
+    """The backup zip's templates, unpacked once into a scratch folder --
+    the set every new campaign folder is seeded from. Judged on when a
+    card's folder does not exist yet and the shared folder holds nothing
+    loose (the usual layout: only the zip and the campaign folders at
+    the top of default_templates/). Re-unpacked when the zip changes."""
+    zip_path = template_reset_zip()
+    if zip_path is None:
+        return None
+    try:
+        stat = zip_path.stat()
+    except OSError:
+        return None
+    key = (str(zip_path), stat.st_size, stat.st_mtime_ns)
+    cached = _seed_set_cache.get(key)
+    if cached is not None and cached.is_dir():
+        return cached
+    dest = Path(tempfile.mkdtemp(prefix="seed-templates-"))
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                name = Path(info.filename).name
+                if info.is_dir() or info.filename.startswith("__MACOSX/") or name.startswith("._"):
+                    continue
+                if name.lower().rsplit(".", 1)[-1] != "psd" or not SIZE_IN_NAME_RE_LOOSE.search(name):
+                    continue
+                (dest / name).write_bytes(zf.read(info))
+    except (OSError, zipfile.BadZipFile):
+        return None
+    for old in [k for k in _seed_set_cache if k[0] == key[0]]:
+        shutil.rmtree(_seed_set_cache.pop(old), ignore_errors=True)
+    _seed_set_cache[key] = dest
+    return dest
+
+
+def _layer_judging_dir(product_name=None, campaign_name=None) -> Path:
+    """The folder a card's layer notes are judged on: the campaign's own
+    when it has templates; else the shared folder when anything loose is
+    saved there; else the backup zip's set (what the folder will be
+    seeded with on its first run). A wrong guess here is not cosmetic --
+    a section greyed out is not posted, so its words never reach the
+    layer."""
+    folder = product_templates_dir(product_name, campaign_name=campaign_name)
+    if _has_saved_templates(folder):
+        return folder
+    if _has_saved_templates(DEFAULT_TEMPLATES_DIR):
+        return DEFAULT_TEMPLATES_DIR
+    return _seed_templates_dir() or DEFAULT_TEMPLATES_DIR
 
 
 ENV_FILE = BASE_DIR / ".env"
@@ -2895,6 +3003,45 @@ def _same_words(a, b) -> bool:
     return norm(a) == norm(b)
 
 
+PLACEHOLDER_COPY_MARKERS = ("lorem ipsum",)
+
+
+def _is_placeholder_copy(words) -> bool:
+    """Whether a type layer's words are filler -- "Lorem ipsum..." -- or
+    nothing at all: copy no one wrote for the campaign."""
+    text = " ".join((words or "").split()).lower()
+    return not text or any(marker in text for marker in PLACEHOLDER_COPY_MARKERS)
+
+
+def _campaign_copy_from_templates(size_template_paths: dict, english_behind: dict) -> dict:
+    """{layer: English copy} -- what the campaign's templates say, taken
+    from the sizes that carry real copy. A template whose description
+    is Lorem ipsum (a size added to the set without its copy) gets the
+    campaign's description from here, the way its header already got
+    the campaign's headline. English via the translation cache when the
+    template holds a French or Spanish export; the copy most sizes agree
+    on wins, ties going to the larger size."""
+    votes: dict = {}
+    for (width, height), path in sorted(size_template_paths.items(), key=lambda item: -(item[0][0] * item[0][1])):
+        try:
+            own = get_psd_text_layers(path, visible_only=True) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        for layer_key in ("header", "description", "legal"):
+            words = (own.get(layer_key) or "").strip()
+            if _is_placeholder_copy(words):
+                continue
+            english = _english_source_of(words, english_behind) or words
+            votes.setdefault(layer_key, []).append(english)
+    out = {}
+    for layer_key, texts in votes.items():
+        counts: dict = {}
+        for text in texts:
+            counts[text] = counts.get(text, 0) + 1
+        out[layer_key] = max(texts, key=lambda t: (counts[t], -texts.index(t)))
+    return out
+
+
 def _english_source_of(words: str, reverse: dict):
     """The English behind `words` (line by line, so a header translated
     line by line reverses the same way), or None if `words` isn't a
@@ -3081,10 +3228,8 @@ def index():
         build_stamp=BUILD_STAMP,
         campaigns=_remembered_campaign_cards(),
         session_id=uuid.uuid4().hex,
-        editable_text_layers=_editable_text_layers(),
-        present_text_layers=_present_text_layers(),
-        switched_off_layers=_switched_off_layers(),
         hideable_layers=HIDEABLE_LAYER_NAMES,
+        **_page_layer_sets(),
     )
 
 
@@ -3130,17 +3275,25 @@ def _remembered_campaign_cards() -> list:
         if key in products:
             prefill.update(_remembered_prefill(key))
         job_id, files = _remembered_files(key) if key in products else (None, {})
-        cards.append({"prefill": prefill, "prefill_files": files, "edit_job_id": None, "carry_job_id": job_id})
+        cards.append({
+            "prefill": prefill,
+            "prefill_files": files,
+            "edit_job_id": None,
+            "carry_job_id": job_id,
+            "layers": card_layer_sets(prefill.get("product_name"), prefill.get("campaign_name")),
+        })
     for key in products:
         if key in seen:
             continue
         seen.add(key)
         job_id, files = _remembered_files(key)
+        prefill = _remembered_prefill(key)
         cards.append({
-            "prefill": _remembered_prefill(key),
+            "prefill": prefill,
             "prefill_files": files,
             "edit_job_id": None,
             "carry_job_id": job_id,
+            "layers": card_layer_sets(prefill.get("product_name"), prefill.get("campaign_name")),
         })
     # The form as it always was -- the top-level memory -- when it is
     # not already one of the cards above (the last run was for no
@@ -3156,6 +3309,7 @@ def _remembered_campaign_cards() -> list:
             "prefill_files": files,
             "edit_job_id": None,
             "carry_job_id": job_id,
+            "layers": card_layer_sets(top_prefill.get("product_name"), top_prefill.get("campaign_name")),
         })
     return cards
 
@@ -3198,10 +3352,8 @@ def edit(job_id):
         build_stamp=BUILD_STAMP,
         campaigns=campaigns,
         session_id=session_id,
-        editable_text_layers=_editable_text_layers(),
-        present_text_layers=_present_text_layers(),
-        switched_off_layers=_switched_off_layers(),
         hideable_layers=HIDEABLE_LAYER_NAMES,
+        **_page_layer_sets(),
     )
 
 
@@ -4849,6 +5001,7 @@ def generate():
     # listed once.
     translations_noted: set = set()
     english_behind = _english_behind_translations()
+    campaign_copy = None  # worked out on first need, from this run's templates
     # What was typed, before translation: the "save this copy into the
     # templates" path writes THIS into the saved templates, so a French
     # run doesn't quietly turn the English masters French.
@@ -5524,7 +5677,15 @@ def generate():
                 # visible_only: a layer switched off in Photoshop has no
                 # words on the creative to translate.
                 own_text_layers = get_psd_text_layers(size_template_paths.get((width, height)), visible_only=True) or {}
-                for layer_key in ("header", "description", "legal"):
+                # The CTA's words sit on a layer INSIDE its group, where
+                # get_psd_text_layers() does not look. They get the
+                # language like the other three: "Click" on a French
+                # run is not finished.
+                if "cta" not in own_text_layers:
+                    cta_group_words = get_psd_group_text(size_template_paths.get((width, height)), "cta", visible_only=True)
+                    if cta_group_words:
+                        own_text_layers["cta"] = cta_group_words
+                for layer_key in ("header", "description", "legal", "cta"):
                     # A hide box doesn't apply to an as-uploaded size, so
                     # its words are on the creative and get the language
                     # like any other -- skipping them here left half the
@@ -5532,6 +5693,28 @@ def generate():
                     if size_text[layer_key] or (layer_key in hidden_layer_names and not text_only_size):
                         continue
                     own_words = (own_text_layers.get(layer_key) or "").strip()
+                    # Filler in the template -- "Lorem ipsum" left in a
+                    # size's description -- is not the campaign's copy.
+                    # The copy the other sizes carry is drawn instead,
+                    # so every size says what the campaign says.
+                    if layer_key in own_text_layers and _is_placeholder_copy(own_words):
+                        if campaign_copy is None:
+                            campaign_copy = _campaign_copy_from_templates(size_template_paths, english_behind)
+                        stand_in = campaign_copy.get(layer_key)
+                        if stand_in and copy_language == "en":
+                            size_text[layer_key] = stand_in
+                            background_notes.append(
+                                f"{size_label(width, height)}: the template's {layer_key} is placeholder copy "
+                                f"(\"{own_words[:40].replace(chr(13), ' / ')}...\"), so the campaign's {layer_key} from the "
+                                "other sizes is drawn instead."
+                            )
+                            continue
+                        if stand_in:
+                            own_words = stand_in
+                            background_notes.append(
+                                f"{size_label(width, height)}: the template's {layer_key} is placeholder copy, so the "
+                                f"campaign's {layer_key} from the other sizes is translated and drawn instead."
+                            )
                     if not own_words:
                         continue
                     file_words = own_words
@@ -5587,8 +5770,13 @@ def generate():
             localized_template_text = bool(
                 any(size_text[k] and size_text[k] != {
                     "header": layer_header_text, "description": layer_description_text, "legal": layer_legal_text,
-                }[k] for k in ("header", "description", "legal"))
+                    "cta": layer_cta_text,
+                }[k] for k in ("header", "description", "legal", "cta"))
             )
+            # The CTA's words for this size: typed, or the template's own
+            # translated. The button block below reads this, not the
+            # typed field, so a translated label redraws the label too.
+            size_cta_text = size_text["cta"]
 
             if (
                 (
@@ -6685,7 +6873,7 @@ def generate():
                 if (
                     not text_only_size
                     and (
-                        layer_cta_text
+                        size_cta_text
                         or layer_cta_button_color != CTA_BUTTON_COLOR_DEFAULT
                         or layer_cta_glow
                         or layer_cta_stroke_size
@@ -6797,7 +6985,7 @@ def generate():
                         # redrawing the rectangle covers it, so it has to
                         # go back. get_psd_text_layers() can't see it:
                         # the words are on a layer inside the group.
-                        cta_label_text = layer_cta_text or get_psd_group_text(
+                        cta_label_text = size_cta_text or get_psd_group_text(
                             psd_path_for_size, "cta"
                         )
                         _apply_text_layer_override(
@@ -6837,7 +7025,7 @@ def generate():
                         cta_patch = Image.new("RGBA", final_image.size, (0, 0, 0, 0))
                         cta_patch.paste(final_image.crop(cta_box).convert("RGBA"), cta_box[:2])
                         export_layer_patches["cta"] = cta_patch
-                    elif cta_box is not None and (layer_cta_text or restyling_button_flat):
+                    elif cta_box is not None and (size_cta_text or restyling_button_flat):
                         # A flat (pixel) CTA has no label to read back: redrawn only
                         # with words to put on it or a restyled button, never over a
                         # font choice alone.
@@ -6858,12 +7046,12 @@ def generate():
                             corner_radius=layer_cta_radius,
                         )
                         final_image = apply_layer_cta_override(
-                            final_image, cta_box, layer_cta_text or "", **cta_kwargs
+                            final_image, cta_box, size_cta_text or "", **cta_kwargs
                         )
                         export_layer_patches["cta"] = apply_layer_cta_override(
                             Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
                             cta_box,
-                            layer_cta_text or "",
+                            size_cta_text or "",
                             keep_alpha=True,
                             **cta_kwargs,
                         )

@@ -343,7 +343,13 @@
        remembered product AND once blank inside <template> below -- the
        blank is what "Create Campaign" and the brief picker clone, so a
        new card never inherits another product's values or files. #}
-    {% macro campaign_card(index, prefill, prefill_files, edit_job_id, carry_job_id) %}
+    {% macro campaign_card(index, prefill, prefill_files, edit_job_id, carry_job_id, layers=none) %}
+    {# Which text layers this card may restyle is judged on ITS templates
+       (default_templates/<campaign>/<product>/), passed in as `layers`;
+       the blank card falls back to the shared folder. #}
+    {% set editable_text_layers = layers.editable if layers else editable_text_layers %}
+    {% set present_text_layers = layers.present if layers else present_text_layers %}
+    {% set switched_off_layers = layers.switched_off if layers else switched_off_layers %}
       {# The run a fresh form carries its section files from (hero, layer
          images, PSD rows) -- thumbnails and carry-forward come from it,
          nothing else about that run does. #}
@@ -1534,7 +1540,7 @@
 
     <div id="campaigns-container">
       {% for campaign in campaigns %}
-        {{ campaign_card(loop.index, campaign.prefill, campaign.prefill_files, campaign.edit_job_id, campaign.get('carry_job_id')) }}
+        {{ campaign_card(loop.index, campaign.prefill, campaign.prefill_files, campaign.edit_job_id, campaign.get('carry_job_id'), campaign.get('layers')) }}
       {% endfor %}
     </div>
     {# The blank card new cards are cloned from (never shown itself). #}
@@ -2346,8 +2352,8 @@
         if (fileInput.name) {
           var rowMatch = fileInput.name.match(/^psd_file_(\d+)$/);
           keptChip = rowMatch
-            ? document.querySelector('[data-role="psd-currently-' + rowMatch[1] + '"]')
-            : document.querySelector('[data-role="layer-cached-' + fileInput.name + '"]');
+            ? root.querySelector('[data-role="psd-currently-' + rowMatch[1] + '"]')
+            : root.querySelector('[data-role="layer-cached-' + fileInput.name + '"]');
         }
         fileInput.addEventListener("change", function () {
           var file = fileInput.files && fileInput.files[0];
@@ -2706,6 +2712,15 @@
       // server-rendered set you get back from editing a multi-campaign
       // batch, which is exactly where those controls get used.
       var initialCards = document.querySelectorAll(".campaign-card");
+      // Every server-rendered card comes out of the same macro with the
+      // same ids (psd_file_1, upload_hero_image...). A label's "for"
+      // then reaches the FIRST element with that id on the page, so
+      // "Choose File" on the third card's PSD row opened the first
+      // card's input: a template dropped on one campaign landed on
+      // another. Cloned cards were already re-id'd; these get the same.
+      initialCards.forEach(function (card, i) {
+        if (i > 0) remapIds(card, "_s" + (i + 1));
+      });
       if (initialCards.length) initialCards.forEach(initCreativeForm);
       else initCreativeForm(document);
     })();

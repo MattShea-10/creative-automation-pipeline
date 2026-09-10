@@ -446,7 +446,18 @@ PSDs). The form opens with one campaign card per brief entry, filled from
 the brief, plus a card for anything else run since. From then on that product's runs read from, promote drops
 into and save styles back to its own folder; the shared set at the top of
 `default_templates/` is the seed and is left alone. A run with no product
-name uses the shared set directly.
+name uses the shared set directly. Each card's layer notes -- "the
+description layer is switched off in your saved templates" and the greyed
+fields that go with it -- are judged on that card's own folder, not the
+shared set (a card whose folder does not exist yet is judged on the shared
+set it will be seeded from).
+
+A template whose text layer still holds placeholder copy ("Lorem ipsum
+...") is not left saying so: on a run that touches its words, the
+campaign's own copy from the other sizes -- the header that the larger
+templates carry, say -- stands in for the placeholder (translated when a
+copy language is chosen), and the results say which size was filled from
+which.
 
 To start the templates over, keep a zip of the known-good set in
 `default_templates/` -- `template-backup.zip` or `default_templates.zip`,
@@ -944,7 +955,12 @@ brief's "actionable insights" goal.
   Español) that uses the same translator on the header, description,
   legal and CTA typed on the form: the English stays on the form and in
   the saved run, the translation is what's drawn, and the results page
-  lists each pair. Translations are cached (`outputs/web/translations.json`)
+  lists each pair. With nothing typed, the templates' own words get the
+  language instead -- the header, description and legal type layers and
+  the label inside the CTA group ("click" comes out "cliquez") -- each
+  redrawn in its own style and left alone when it already says it in
+  that language; a layer switched off in Photoshop has no words on the
+  creative and is skipped. Translations are cached (`outputs/web/translations.json`)
   so unchanged copy isn't re-sent, and a translator failure draws the
   English and says so in red rather than failing the run.
 - The default `pollinations` provider and the translation fallback both

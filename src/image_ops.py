@@ -1561,7 +1561,7 @@ def get_psd_layer_boxes(psd_path: Union[str, Path]) -> dict:
     return boxes
 
 
-def get_psd_group_text(psd_path: Union[str, Path], group_name: str):
+def get_psd_group_text(psd_path: Union[str, Path], group_name: str, visible_only: bool = False):
     """The words on the type layer inside the named group, or None.
 
     get_psd_text_layers() reads top-level layers, so a CTA built as a
@@ -1569,6 +1569,10 @@ def get_psd_group_text(psd_path: Union[str, Path], group_name: str):
     button has to redraw the label over the new shape, and this is where
     the words come from when the user changed a colour without retyping
     them.
+
+    `visible_only=True` returns None when the group or its label is
+    switched off in Photoshop -- words that are not on the creative are
+    not words to translate.
     """
     try:
         from psd_tools import PSDImage
@@ -1582,8 +1586,12 @@ def get_psd_group_text(psd_path: Union[str, Path], group_name: str):
     for layer in psd:
         if (layer.name or "").strip().lower() != wanted or not layer.is_group():
             continue
+        if visible_only and not layer.visible:
+            return None
         for child in layer:
             if getattr(child, "kind", None) == "type":
+                if visible_only and not child.visible:
+                    return None
                 try:
                     text = (child.text or "").replace("\r", " ").strip()
                 except Exception:

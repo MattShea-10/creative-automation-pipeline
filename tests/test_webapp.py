@@ -4548,6 +4548,9 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(page[:blank_at].count('type="checkbox" id="upload_ai_keep"'), 2)
 
         self.assertIn("initialCards.forEach(initCreativeForm)", page)
+        # ...and each server-rendered card gets its own ids first, so a
+        # label's "for" can't reach into another card's file input.
+        self.assertIn('remapIds(card, "_s" + (i + 1))', page)
         # The document-wide call may survive only as the no-cards
         # fallback -- never as the unconditional entry point it was.
         self.assertNotIn("\n      initCreativeForm(document);", page)
@@ -4775,6 +4778,43 @@ class ContentPsdQuickModeTest(unittest.TestCase):
             _webapp.get_psd_text_layers = original
         self.assertEqual(page.status_code, 200)
         self.assertNotIn(b"switched off in your saved", page.data)
+
+    def test_each_card_judges_switched_off_layers_on_its_own_templates(self):
+        # A card renders with its campaign's folder,
+        # default_templates/<campaign>/<product>/, so that is what its
+        # "switched off in your saved templates" notes are judged on. The
+        # shared folder's copy having the description off had been greying
+        # out the field on a card whose own templates have it on -- and a
+        # disabled field is not even posted, so the message never reached
+        # the description layer.
+        if not (webapp.BRIEFS_DIR / "sample_campaign.json").is_file():
+            self.skipTest("sample brief not present")
+        import webapp as _webapp
+
+        self._write_template_with_a_background_layer("off-300x250.psd", (300, 250))
+        own = webapp.DEFAULT_TEMPLATES_DIR / "Winter Glow 2026" / "HydroBoost Sports Drink"
+        own.mkdir(parents=True)
+        shutil.copy(webapp.DEFAULT_TEMPLATES_DIR / "off-300x250.psd", own / "on-300x250.psd")
+        original = _webapp.get_psd_text_layers
+        # Only the product's own copy has header and description on.
+        _webapp.get_psd_text_layers = lambda path, visible_only=False: (
+            {"header": "on", "description": "on"} if Path(path).parent == own else {}
+        )
+        try:
+            page = self.client.get("/")
+        finally:
+            _webapp.get_psd_text_layers = original
+        self.assertEqual(page.status_code, 200)
+        markup = page.data.decode().replace("'", '"').split('id="blank-campaign-card"')[0]
+        cards = markup.split('class="campaign-card"')[1:]
+        hydro = next(c for c in cards if 'value="HydroBoost Sports Drink"' in c)
+        self.assertNotIn("switched off in your saved", hydro)
+        self.assertNotIn('data-layer-controls="description" disabled', hydro)
+        self.assertNotIn('data-layer-controls="header" disabled', hydro)
+        # A card whose folder does not exist yet is judged on the shared set.
+        other = next(c for c in cards if 'value="PureShine Shampoo"' in c)
+        self.assertIn('data-layer-controls="description" disabled', other)
+        self.assertIn("switched off in your saved", other)
 
     def test_ideogram_flows_through_the_same_prompt_field(self):
         # Typing a prompt and getting it composited into the creatives is
@@ -5897,6 +5937,27 @@ class LayerOverrideHelpersTest(unittest.TestCase):
     """Direct tests of the low-level compositing helpers behind the
     layer-override feature (src/image_ops.py) -- no PSD parsing or Flask
     involved, just Image-in/Image-out correctness."""
+
+    def test_placeholder_copy_in_a_template_is_replaced_by_the_campaigns_copy(self):
+        """A size whose description still says "Lorem ipsum" draws the
+        description the other sizes carry (English via the translation
+        cache when a template holds a French export), so every size says
+        what the campaign says. Real copy is never treated as filler."""
+        self.assertTrue(webapp._is_placeholder_copy("Lorem ipsum dolor sit amet, consectetur"))
+        self.assertTrue(webapp._is_placeholder_copy("  lorem IPSUM  "))
+        self.assertTrue(webapp._is_placeholder_copy(""))
+        self.assertFalse(webapp._is_placeholder_copy("HydroBoost is a flavored beverage"))
+        with mock.patch.object(webapp, "get_psd_text_layers", side_effect=lambda path, visible_only=False: {
+            "big.psd": {"header": "HEAD", "description": "Lorem ipsum dolor"},
+            "tall.psd": {"header": "HEAD", "description": "Présente un entraînement"},
+            "small.psd": {"header": "HEAD", "description": "Présente un entraînement"},
+        }[str(path)]):
+            copy = webapp._campaign_copy_from_templates(
+                {(1080, 1080): "big.psd", (1080, 1920): "tall.psd", (160, 600): "small.psd"},
+                {"Présente un entraînement": "Features high-intensity training"},
+            )
+        self.assertEqual(copy["description"], "Features high-intensity training")
+        self.assertEqual(copy["header"], "HEAD")
 
     def test_a_template_glow_comes_back_at_the_size_it_went_in(self):
         """The live-text export writes the renderer's halo radius r as
@@ -10233,7 +10294,9 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200, r.data[:400])
         self.assertTrue(any(t.startswith("REHYDRATE WITH A NEW SUMMER") and lang == "fr" for t, lang in calls), calls)
         self.assertIn(b"French copy -- the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER", r.data)
-        self.assertIn(b"1080x1080: updated layer(s) -- header.", r.data)
+        # The CTA's label lives inside its group; it gets the language too.
+        self.assertIn(b"French copy -- the template&#39;s cta: &#34;click&#34; -&gt; &#34;FR click&#34;.", r.data)
+        self.assertIn(b"1080x1080: updated layer(s) -- header, cta.", r.data)
         # The same words are listed once, even though the header would be
         # translated again for every size that shares the template.
         self.assertEqual(r.data.count(b"French copy -- the template&#39;s header:"), 1)
@@ -10261,6 +10324,11 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         )
         self.assertIn(b"1080x1080: header drawn line by line at the template&#39;s own sizes -- ", r.data)
         self.assertIn(b"the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER / REFRESHING DRINK&#34; -&gt; &#34;FR REHYDRATE WITH A NEW SUMMER / FR REFRESHING DRINK&#34;", r.data)
+        # The CTA group keeps its rectangle; only its label says it in French.
+        cta = next(l for l in PSDImage.open(live) if l.name.lower() == "cta")
+        self.assertTrue(cta.is_group())
+        labels = [c.text for c in cta if c.kind == "type"]
+        self.assertEqual(labels, ["FR click"])
 
     def test_switching_back_to_english_restores_the_english_behind_an_exported_translation(self):
         # An export from a French run, re-uploaded as the template: its
