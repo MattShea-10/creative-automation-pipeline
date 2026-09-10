@@ -22,3 +22,6 @@ _template_backups/
 *.dmg
 dist/
 build/
+
+# Per-campaign template folders -- unpacked from default_templates/*.zip at start-up
+default_templates/*/
