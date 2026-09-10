@@ -34,6 +34,7 @@
     textarea { @apply resize-y min-h-[4.5rem]; }
     details { @apply border border-slate-700 rounded-md px-4 py-3 mb-5 bg-slate-800/40; }
     summary { @apply font-semibold cursor-pointer text-[0.92rem] text-slate-200; }
+
     /* The hand-built route, tinted green -- you supply the artwork and
        set the layers yourself -- against the AI generator's yellow. Its own rule
        rather than the class, since this one is a nested .layer-section
@@ -51,6 +52,22 @@
       background: #0f172a;
     }
     .custom-hero-box .layer-section { @apply border-slate-800 bg-slate-900/30; }
+    /* The layer editing, in its own colour beside the green (custom
+       hero) and yellow (AI) routes it serves: a sky-blue outline, the
+       same outlined-not-filled treatment. details.layer-section's own
+       border would otherwise win over the class. */
+    details.layer-section.layer-overrides-box {
+      @apply border border-sky-500 rounded-md px-4 py-3;
+      background: #0f172a;
+    }
+    details.layer-section.layer-overrides-box > summary { @apply text-sky-200; }
+    details.layer-section.layer-overrides-box .layer-section { @apply border-slate-800 bg-slate-900/30; }
+    /* Hero placement: its own colour (violet), between the two routes it serves and the layer editing. */
+    details.layer-section.hero-placement-box {
+      @apply border border-violet-500 rounded-md px-4 py-3;
+      background: #0f172a;
+    }
+    details.layer-section.hero-placement-box > summary { @apply text-violet-200; }
     .layer-image-cache { @apply mt-2; }
     .layer-image-cache-row { @apply flex flex-wrap gap-2 mt-2; }
     .layer-image-cached { @apply flex items-center gap-2 border border-slate-700 rounded-md bg-slate-900/60 px-2 py-1; }
@@ -231,11 +248,12 @@
   <div class="wrap">
     <div class="top-row">
       <h1>Creative Automation -- Quick Generate</h1>
-      <a
-        href="{{ url_for('index') }}"
-        class="reset-link"
-        onclick="return confirm('Reset the form? Everything you have typed or attached -- including any batch you were editing -- will be cleared.');"
-      >Reset form</a>
+      {# A POST, not a link: besides opening a fresh form it puts the saved
+         templates back to the copies in default_templates/template-backup.zip. #}
+      <form method="post" action="{{ url_for('reset_form') }}" style="margin: 0;"
+            onsubmit="return confirm('Reset the form? Everything you have typed or attached -- including any batch you were editing -- will be cleared -- every field, the brand colours, the languages, and every image or PSD kept from your last run (hero, logo, product, CTA, references, size-specific templates) -- and the saved templates go back to the ones in template-backup.zip (the current ones are kept in _template_backups/).');">
+        <button type="submit" class="reset-link" style="background: none; cursor: pointer; font-family: inherit;">Reset form</button>
+      </form>
     </div>
     <p class="subtitle">
       Upload one hero image (or a short product video), add a header and a
@@ -372,6 +390,22 @@
          boxes that already have their own, and its heading named a
          section whose contents announce themselves. #}
       <div class="upload-creative-box">
+        {# Where the hero goes, for EITHER route -- an uploaded hero or an
+           AI one: the fit is the same decision whichever supplied the
+           picture, so it sits above both routes. #}
+        <details class="layer-section hero-placement-box" data-role="hero-placement-section" style="margin: 0 0 0.9rem;" open>
+          <summary><span class="caret">&#9656;</span>Hero placement <span style="font-weight: 400; color: var(--muted);">(how the hero fits each size)</span></summary>
+          <div style="margin-top: 0.8rem;">
+            <span style="font-weight: 600; font-size: 0.92rem;">Hero image fit</span>
+            <label class="checkbox-row" style="margin: 0.3rem 0 0; font-weight: 400;"><input type="radio" name="upload_hero_fit" value="crop" {% if prefill.get('upload_hero_fit', 'crop') == 'crop' %}checked{% endif %}> <span>Fill each size <span style="font-weight: 400; color: var(--muted);">(cropped to the layer's shape -- for a photo)</span></span></label>
+            <label class="checkbox-row" style="margin: 0.3rem 0 0; font-weight: 400;"><input type="radio" name="upload_hero_fit" value="contain" {% if prefill.get('upload_hero_fit', 'crop') == 'contain' %}checked{% endif %}> <span>Fit the whole image inside <span style="font-weight: 400; color: var(--muted);">(nothing cropped; the edges are padded with the picture's own edge colour -- for a finished composition)</span></span></label>
+          </div>
+          <div class="checkbox-row" style="margin-top: 0.5rem;">
+            <input type="checkbox" id="upload_hero_from_template" name="upload_hero_from_template" value="1" {% if prefill.get('upload_hero_from_template') %}checked{% endif %}>
+            <span>Use the {{ content_psd_label }} template's own background layer as the hero image <span style="font-weight: 400; color: var(--muted);">(no upload -- the template's backdrop, a plain white or a brand gradient, becomes the backdrop of every size. A custom hero chosen below wins over this.)</span></span>
+          </div>
+        </details>
+
         <label for="upload_hero_image">Custom hero image <span style="font-weight: 400; color: var(--muted);">(.png, .jpg, .webp)</span></label>
 
         {# The hand-built route: supply the picture yourself, then edit the
@@ -436,16 +470,185 @@
           sizes"/"Custom sizes" choices and the general hero image tool below are ignored in this mode: the
           batch is whatever's in <code>default_templates/</code>.
         </div>
-        <div style="margin-top: 0.8rem;">
-          <span style="font-weight: 600; font-size: 0.92rem;">Hero image fit</span>
-          <label class="checkbox-row" style="margin: 0.3rem 0 0; font-weight: 400;"><input type="radio" name="upload_hero_fit" value="crop" {% if prefill.get('upload_hero_fit', 'crop') == 'crop' %}checked{% endif %}> <span>Fill each size <span style="font-weight: 400; color: var(--muted);">(cropped to the layer's shape -- for a photo)</span></span></label>
-          <label class="checkbox-row" style="margin: 0.3rem 0 0; font-weight: 400;"><input type="radio" name="upload_hero_fit" value="contain" {% if prefill.get('upload_hero_fit', 'crop') == 'contain' %}checked{% endif %}> <span>Fit the whole image inside <span style="font-weight: 400; color: var(--muted);">(nothing cropped; the edges are padded with the picture's own edge colour -- for a finished composition)</span></span></label>
         </div>
-        <div class="checkbox-row" style="margin-top: 0.5rem;">
-          <input type="checkbox" id="upload_hero_from_template" name="upload_hero_from_template" value="1" {% if prefill.get('upload_hero_from_template') %}checked{% endif %}>
-          <span>Use the {{ content_psd_label }} template's own background layer as the hero image <span style="font-weight: 400; color: var(--muted);">(no upload -- the template's backdrop, a plain white or a brand gradient, becomes the backdrop of every size. A file chosen above wins over this.)</span></span>
         </div>
-        <div id="layer_overrides_section" data-role="layer-overrides-section" style="margin-top: 1rem; padding-top: 0.9rem; border-top: 1px solid #1e3a8a;">
+
+        <label style="margin-top: 0.9rem; display: block;">Upload AI Image</label>
+        <div class="ai-hero-callout" style="margin-top: 0.3rem;">
+          <div class="checkbox-row" style="margin: 0;">
+            <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
+            <span><span class="ai-badge">AI</span> Generate the hero image with AI instead of uploading one --
+            it becomes the backdrop on every size saved in <code>default_templates/</code>, the {{ content_psd_label }}
+            included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
+          </div>
+          {# Everything the generator needs lives under its own checkbox and
+             stays out of sight until it is ticked. Unticked, none of it does
+             anything, and a dozen controls dimmed-but-present is most of what
+             makes this form long. #}
+          <div data-role="upload-ai-body">
+          <div class="inline-controls" style="margin-top: 0.5rem;">
+              <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Provider</span>
+                <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
+                  <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
+                  <option value="ideogram" {% if prefill.get('upload_ai_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
+                </select>
+              </label>
+            </div>
+          {# Ideogram's speed/quality tier lives with the provider it
+             belongs to, and folds away when Pollinations is chosen. #}
+          <div data-role="ideogram-only">
+            <div class="inline-controls" style="margin-top: 0.4rem;">
+              <label class="provider-control" for="upload_ai_speed" style="font-weight: 400;">
+                <span style="white-space: nowrap;">Rendering</span>
+                <select class="font-family-select" id="upload_ai_speed" name="upload_ai_speed">
+                  {% for value, label in ideogram_speeds %}
+                    <option value="{{ value }}" {% if prefill.get('upload_ai_speed', default_ideogram_speed) == value %}selected{% endif %}>{{ label }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Ideogram bills per image, and a run is normally one image (the backdrop is reused across every
+              size). Draft on Turbo, tick "Keep this image" while you adjust text and styling (free), and switch
+              to Quality only for the one you'll keep. "Generate the whole ad" below is one image per size.
+              The results page says exactly what each run cost.
+            </div>
+          </div>
+          <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
+            <div class="checkbox-row" style="margin-top: 0;">
+              <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
+              <span>Keep this image <span style="font-weight: 400; color: var(--muted);">(don't generate a new one)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Tick this and the next Generate reuses the image from your last run instead of calling the
+              provider. Two generations from an identical prompt are never the same picture, so without it,
+              nudging a font size or a glow colour means losing the backdrop you were nudging it against --
+              and paying for the replacement. Untick it whenever you want a fresh one. It has no effect on a
+              first run: there's nothing to keep yet.
+            </div>
+            <div class="hint layer-off-note" data-role="upload-ai-kept-note" hidden style="margin-top: 0.4rem;">
+              Generating is switched off and the prompt, provider and backdrop tuning below are disabled --
+              the last run's image is reused as-is, and no API call is made. Tick "Generate the hero image
+              with AI" again (or untick this) whenever you want a fresh one.
+            </div>
+
+            <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
+            <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+            <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Describe the scene only, e.g. chilled bottle on wet slate, morning light" value="{{ prefill.get('upload_ai_prompt', '') }}">
+            <p class="hint" style="margin-top: 0.3rem;">Describe what you want to see. Leave the exclusions out -- "no text" is already sent as a negative prompt on every backdrop run, and typed here it makes the model paint those words. If you do type one, it is moved out of the prompt for you.</p>
+
+            <div class="field" style="margin-top: 0.7rem; margin-bottom: 0;">
+              <label for="upload_ai_reference" style="font-weight: 400;">Reference images <span style="font-weight: 400; color: var(--muted);">(optional -- a mood board of up to {{ reference_limit }}: make the backdrop look like these)</span></label>
+              <div class="drop-zone" data-role="reference-drop-zone">
+                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept="image/*,video/*,.png,.webp,.jpg,.jpeg,.heic,.heif,.tif,.tiff,.gif,.bmp,.psd,.mp4,.mov,.m4v,.webm" multiple data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
+                <input type="text" data-role="reference-url" placeholder="...or drag pictures in from web pages, or paste an image address and press Enter" style="margin-top: 0.4rem;">
+                <div data-role="reference-url-list"></div>
+                <div class="hint" data-role="reference-status" hidden style="margin: 0.3rem 0 0; color: #fcd34d;"></div>
+                <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures or short videos here, choose files, or drag pictures straight off web pages -- up to {{ reference_limit }} together. PNG, JPEG, WebP, PSD (flattened), iPhone HEIC, TIFF, GIF; a video's middle frame is used. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
+                <div class="checkbox-row" style="margin-top: 0.4rem;">
+                  <input type="checkbox" id="upload_ai_send_references" name="upload_ai_send_references" value="1" {% if prefill.get('upload_ai_send_references') %}checked{% endif %}>
+                  <span>Send the mood board to Ideogram as style references <span style="font-weight: 400; color: var(--muted);">(copies the pictures' whole look -- layout and lettering included, so a board of finished ads comes back as an ad. Off, only their palette, lighting and mood are described to the model, which is what a clean hero wants.)</span></span>
+                </div>
+              </div>
+              {% for slot in reference_slots %}
+                {% if prefill_files.get(slot) %}
+                  <div class="layer-image-cached" data-role="layer-cached-{{ slot }}" data-prefill-hint style="margin-top: 0.4rem;">
+                    {% if edit_job_id %}
+                      <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get(slot)) }}" alt="Reference image">
+                    {% endif %}
+                    <div class="layer-image-cached-meta">
+                      <strong>Kept from your last run</strong>
+                      <span class="layer-image-cached-name" title="{{ prefill_files.get(slot) }}">{{ prefill_files.get(slot) }}</span>
+                    </div>
+                    <button type="button" class="clear-btn" data-role="layer-clear-btn-{{ slot }}" title="Drop this reference image">&times;</button>
+                    <input type="hidden" name="{{ slot }}_clear" value="">
+                  </div>
+                {% endif %}
+              {% endfor %}
+              <div class="hint" data-role="reference-provider-note" style="margin-top: 0.3rem;">
+                With Ideogram the pictures themselves are sent as style references. With Pollinations they can't be
+                (that service only takes web addresses), so the app describes their colours and lighting in
+                the prompt instead -- a similar feel rather than a close match.
+              </div>
+            </div>
+            {# Only Ideogram is worth handing a laid-out ad or live type to;
+               Pollinations has no typography to speak of, so these switches are
+               hidden rather than offered and disappointed. #}
+            <div data-role="ideogram-only">
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
+              <span>Generate the whole ad, text included <span style="font-weight: 400; color: var(--muted);">(the model paints the headline, product name and CTA into the picture -- expect words. Leave unticked for a text-free backdrop under your templates)</span></span>
+            </div>
+            <div class="field" style="margin-top: 0.5rem; margin-bottom: 0;">
+              <label for="upload_ai_headline" style="font-weight: 400;">Ad headline <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
+              <input type="text" id="upload_ai_headline" name="upload_ai_headline" placeholder="Leave blank to use the header text, then the campaign message" value="{{ prefill.get('upload_ai_headline', '') }}">
+              <div class="hint" style="margin-top: 0.2rem;">
+                The words the model is told to set, quoted exactly. Separate from the header override above,
+                which greys out when the template's header layer is switched off -- right for a layer nobody
+                will draw, wrong here, where the copy goes into the prompt rather than into a layer.
+              </div>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              The model lays out the entire creative and the result is used as-is -- your saved templates are
+              not drawn over it, or its headline and theirs would both appear. Type is where Turbo is weakest
+              (misspellings, smeared letters): draft on Turbo, then re-run the keeper on Quality. The prompt is composed from the
+              campaign brief: product name, header text and CTA text go in as exact quoted copy, audience and
+              market steer the art direction. One generation per output size, at that size's own shape, since
+              a laid-out ad can't be cropped from a square without losing the edge of the headline -- so this
+              costs one API call per size, not one per run. The campaign backdrop generator is skipped
+              while this is on -- its image would be replaced unseen.
+            </div>
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="checkbox" id="upload_ai_allow_text" name="upload_ai_allow_text" value="1" {% if prefill.get('upload_ai_allow_text') %}checked{% endif %}>
+              <span>Let the model set type <span style="font-weight: 400; color: var(--muted);">(logo, headline, a laid-out creative -- applies to both generators)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Off, the image is a backdrop: no-text is asked for, the result is checked for lettering, a
+              run that comes back with words is regenerated, and anything left is painted out -- because
+              the template's own header, description and CTA sit on top of it. Tick this and all three
+              stand down, so Ideogram can render the typography it is actually good at.
+              <strong>It lifts the ban; it doesn't place an order.</strong> A prompt like "marathon
+              runners" still describes a photograph and still comes back as one -- ask for the words you
+              want, in quotes: <em>poster reading "First 500 get free cans"</em>. Leave the prompt blank
+              and one is built for you. Expect words in the picture, and check they say what you want.
+            </div>
+            </div>
+            <div class="checkbox-row" style="margin-top: 0.5rem;">
+              <input type="hidden" name="upload_ai_background_style_seen" value="1">
+              <input type="checkbox" id="upload_ai_background_style" name="upload_ai_background_style" value="1" {% if prefill.get('upload_ai_background_style', True) %}checked{% endif %}>
+              <span>Optimize the prompt for backdrops <span style="font-weight: 400; color: var(--muted);">(recommended)</span></span>
+            </div>
+            <div class="hint" style="margin-top: 0.2rem;">
+              Adds "sharp focus, crisp detail, no faces, no logos, space for overlaid text" to your prompt.
+              Models are worst at faces, hands and lettering -- exactly what a backdrop doesn't need -- so
+              steering away from them removes most of what reads as distortion. It asks for sharpness, not
+              softness: use the band and glow controls to keep text legible over a crisp backdrop.
+              <strong>With "Let the model set type" ticked this switches to design guidance instead</strong>
+              -- "professional graphic design, clean legible typography, balanced composition" -- since the
+              backdrop wording asks for the opposite of what that mode is for. The full prompt used is shown
+              on the results page.
+            </div>
+            </div>
+            <div class="hint" style="margin-top: 0.4rem;">
+              The generated image fills each template's <code>background</code> layer only, so the logo,
+              product, CTA and text those templates carry stay where they were designed. While this is ticked
+              it wins over the hero image above and the "Background image" field further down: ticking it
+              means "make me a new background", and it makes one on every Generate. "Keep this image" is the
+              one thing that stops it -- and it stops the generation happening at all, rather than throwing
+              the result away. If the provider fails, the offline placeholder is used and a warning says why.
+            </div>
+          </div>
+          </div>
+        </div>
+
+        {# The layer editing, below BOTH ways of supplying artwork: the
+           header, description, legal, CTA and layer images apply to the
+           templates whichever route the picture came from -- a custom
+           hero or an AI one -- so the section sits under both and shows
+           whenever either is on. #}
+        <details id="layer_overrides_section" data-role="layer-overrides-section" class="layer-section layer-overrides-box" style="margin-top: 0.6rem;">
+          <summary><span class="caret">&#9656;</span>Update layers across all sizes <span style="font-weight: 400; color: var(--muted);">(header, description, legal, CTA, layer images)</span></summary>
           {# Everything in this section normally edits a COPY of each
              template -- which is why retyping a description has never
              changed anything in default_templates/. Ticking this writes
@@ -482,7 +685,7 @@
           </div>
 
 
-          <details class="layer-section" data-layer-section="header"{% if prefill.get('layer_header_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="header">
           <summary><span class="caret">&#9656;</span>Header text</summary>
           {% set header_editable = 'header' in editable_text_layers %}
           {% if not header_editable %}
@@ -541,6 +744,37 @@
               <input type="number" class="font-size-input" id="layer_header_glow_opacity" name="layer_header_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_header_glow_opacity', '') }}">
             </label>
           </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_header_shadow">
+              <input type="checkbox" id="layer_header_shadow" name="layer_header_shadow" value="1" {% if prefill.get('layer_header_shadow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Drop shadow under header text</span>
+            </label>
+            <label for="layer_header_shadow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_header_shadow_color" name="layer_header_shadow_color" value="{{ prefill.get('layer_header_shadow_color', '#000000') }}">
+            </label>
+            <label for="layer_header_shadow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Opacity %</span>
+              <input type="number" class="font-size-input" id="layer_header_shadow_opacity" name="layer_header_shadow_opacity" min="0" max="100" placeholder="75" value="{{ prefill.get('layer_header_shadow_opacity', '') }}">
+            </label>
+            <label for="layer_header_shadow_distance" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Distance px</span>
+              <input type="number" class="font-size-input" id="layer_header_shadow_distance" name="layer_header_shadow_distance" min="0" max="500" placeholder="5" value="{{ prefill.get('layer_header_shadow_distance', '') }}">
+            </label>
+            <label for="layer_header_shadow_spread" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Spread %</span>
+              <input type="number" class="font-size-input" id="layer_header_shadow_spread" name="layer_header_shadow_spread" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_header_shadow_spread', '') }}">
+            </label>
+            <label for="layer_header_shadow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_header_shadow_size" name="layer_header_shadow_size" min="0" max="250" placeholder="5" value="{{ prefill.get('layer_header_shadow_size', '') }}">
+            </label>
+            <label for="layer_header_shadow_angle" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Angle &deg;</span>
+              <input type="number" class="font-size-input" id="layer_header_shadow_angle" name="layer_header_shadow_angle" min="-360" max="360" placeholder="120" value="{{ prefill.get('layer_header_shadow_angle', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: 0.1rem;">Photoshop's own dials, in the PSD's pixels. Ticked, this shadow replaces the layer's own drop shadow on every size; the live-text PSD gets it as a real layer effect.</div>
             <div class="inline-controls" style="margin-top: 0.4rem;">
               <label for="layer_header_stroke_size" style="font-weight: 400;">
                 <span style="white-space: nowrap;">Stroke size</span>
@@ -599,7 +833,7 @@
           </fieldset>
           </details>
 
-          <details class="layer-section" data-layer-section="description"{% if prefill.get('layer_description_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="description">
           <summary><span class="caret">&#9656;</span>Description text</summary>
           {% set description_editable = 'description' in editable_text_layers %}
           {% if not description_editable %}
@@ -658,6 +892,37 @@
               <input type="number" class="font-size-input" id="layer_description_glow_opacity" name="layer_description_glow_opacity" min="0" max="100" placeholder="100" value="{{ prefill.get('layer_description_glow_opacity', '') }}">
             </label>
           </div>
+          <div class="inline-controls" style="margin-top: 0.4rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_description_shadow">
+              <input type="checkbox" id="layer_description_shadow" name="layer_description_shadow" value="1" {% if prefill.get('layer_description_shadow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Drop shadow under description text</span>
+            </label>
+            <label for="layer_description_shadow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_description_shadow_color" name="layer_description_shadow_color" value="{{ prefill.get('layer_description_shadow_color', '#000000') }}">
+            </label>
+            <label for="layer_description_shadow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Opacity %</span>
+              <input type="number" class="font-size-input" id="layer_description_shadow_opacity" name="layer_description_shadow_opacity" min="0" max="100" placeholder="75" value="{{ prefill.get('layer_description_shadow_opacity', '') }}">
+            </label>
+            <label for="layer_description_shadow_distance" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Distance px</span>
+              <input type="number" class="font-size-input" id="layer_description_shadow_distance" name="layer_description_shadow_distance" min="0" max="500" placeholder="5" value="{{ prefill.get('layer_description_shadow_distance', '') }}">
+            </label>
+            <label for="layer_description_shadow_spread" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Spread %</span>
+              <input type="number" class="font-size-input" id="layer_description_shadow_spread" name="layer_description_shadow_spread" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_description_shadow_spread', '') }}">
+            </label>
+            <label for="layer_description_shadow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_description_shadow_size" name="layer_description_shadow_size" min="0" max="250" placeholder="5" value="{{ prefill.get('layer_description_shadow_size', '') }}">
+            </label>
+            <label for="layer_description_shadow_angle" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Angle &deg;</span>
+              <input type="number" class="font-size-input" id="layer_description_shadow_angle" name="layer_description_shadow_angle" min="-360" max="360" placeholder="120" value="{{ prefill.get('layer_description_shadow_angle', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: 0.1rem;">Photoshop's own dials, in the PSD's pixels. Ticked, this shadow replaces the layer's own drop shadow on every size; the live-text PSD gets it as a real layer effect.</div>
             <div class="inline-controls" style="margin-top: 0.4rem;">
               <label for="layer_description_stroke_size" style="font-weight: 400;">
                 <span style="white-space: nowrap;">Stroke size</span>
@@ -725,7 +990,7 @@
           {% set legal_present = 'legal' in present_text_layers %}
           {% set legal_editable = 'legal' in editable_text_layers %}
           {% if legal_present %}
-          <details class="layer-section" data-layer-section="legal"{% if prefill.get('layer_legal_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="legal">
           <summary><span class="caret">&#9656;</span>Legal text</summary>
           {% if not legal_editable %}
             <div class="hint layer-off-note">The <code>legal</code> layer is switched off in your saved
@@ -842,7 +1107,7 @@
           </details>
           {% endif %}
 
-          <details class="layer-section" data-layer-section="cta"{% if prefill.get('layer_cta_text') %} open{% endif %}>
+          <details class="layer-section" data-layer-section="cta">
           <summary><span class="caret">&#9656;</span>CTA button</summary>
           <div class="field" data-layer-controls="cta" style="margin-top: 0.9rem; margin-bottom: 0.6rem;">
             <label for="layer_cta_text" style="font-weight: 400;">CTA button text</label>
@@ -928,7 +1193,7 @@
               ('layer_product_image', 'Product'),
           ] %}
           {% set has_layer_images = layer_image_fields | selectattr('0', 'in', prefill_files) | list %}
-          <details class="layer-section"{% if has_layer_images %} open{% endif %}>
+          <details class="layer-section">
           <summary><span class="caret">&#9656;</span>Layer images <span style="font-weight: 400; color: var(--muted);">(logo, product)</span></summary>
           <div class="inline-controls" style="margin-top: 0.4rem;">
             <label for="layer_logo_image" data-layer-controls="logo" style="font-weight: 400;">
@@ -938,6 +1203,132 @@
             <label for="layer_product_image" data-layer-controls="product" style="font-weight: 400;">
               <span style="white-space: nowrap;">Product image</span>
               <input type="file" id="layer_product_image" name="layer_product_image" accept=".png,.webp,.jpg,.jpeg,.psd" style="width: auto;">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: 0.6rem; margin-bottom: 0.1rem;"><strong>Logo effects</strong> -- drawn under the logo on every size (this run's upload or the template's own), and written into the live-text PSD and the saved template as real layer effects.</div>
+          <div class="inline-controls" style="margin-top: 0.2rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_logo_glow">
+              <input type="checkbox" id="layer_logo_glow" name="layer_logo_glow" value="1" {% if prefill.get('layer_logo_glow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Outer glow</span>
+            </label>
+            <label for="layer_logo_glow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_logo_glow_color" name="layer_logo_glow_color" value="{{ prefill.get('layer_logo_glow_color', '#ffffff') }}">
+            </label>
+            <label for="layer_logo_glow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_logo_glow_size" name="layer_logo_glow_size" min="0" max="250" placeholder="12" value="{{ prefill.get('layer_logo_glow_size', '') }}">
+            </label>
+            <label for="layer_logo_glow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Opacity %</span>
+              <input type="number" class="font-size-input" id="layer_logo_glow_opacity" name="layer_logo_glow_opacity" min="0" max="100" placeholder="75" value="{{ prefill.get('layer_logo_glow_opacity', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.3rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_logo_shadow">
+              <input type="checkbox" id="layer_logo_shadow" name="layer_logo_shadow" value="1" {% if prefill.get('layer_logo_shadow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Drop shadow</span>
+            </label>
+            <label for="layer_logo_shadow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_logo_shadow_color" name="layer_logo_shadow_color" value="{{ prefill.get('layer_logo_shadow_color', '#000000') }}">
+            </label>
+            <label for="layer_logo_shadow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Opacity %</span>
+              <input type="number" class="font-size-input" id="layer_logo_shadow_opacity" name="layer_logo_shadow_opacity" min="0" max="100" placeholder="75" value="{{ prefill.get('layer_logo_shadow_opacity', '') }}">
+            </label>
+            <label for="layer_logo_shadow_distance" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Distance px</span>
+              <input type="number" class="font-size-input" id="layer_logo_shadow_distance" name="layer_logo_shadow_distance" min="0" max="500" placeholder="5" value="{{ prefill.get('layer_logo_shadow_distance', '') }}">
+            </label>
+            <label for="layer_logo_shadow_spread" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Spread %</span>
+              <input type="number" class="font-size-input" id="layer_logo_shadow_spread" name="layer_logo_shadow_spread" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_logo_shadow_spread', '') }}">
+            </label>
+            <label for="layer_logo_shadow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_logo_shadow_size" name="layer_logo_shadow_size" min="0" max="250" placeholder="5" value="{{ prefill.get('layer_logo_shadow_size', '') }}">
+            </label>
+            <label for="layer_logo_shadow_angle" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Angle &deg;</span>
+              <input type="number" class="font-size-input" id="layer_logo_shadow_angle" name="layer_logo_shadow_angle" min="-360" max="360" placeholder="120" value="{{ prefill.get('layer_logo_shadow_angle', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.3rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_logo_stroke">
+              <input type="checkbox" id="layer_logo_stroke" name="layer_logo_stroke" value="1" {% if prefill.get('layer_logo_stroke') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Stroke</span>
+            </label>
+            <label for="layer_logo_stroke_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_logo_stroke_color" name="layer_logo_stroke_color" value="{{ prefill.get('layer_logo_stroke_color', '#000000') }}">
+            </label>
+            <label for="layer_logo_stroke_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_logo_stroke_size" name="layer_logo_stroke_size" min="0" max="100" placeholder="3" value="{{ prefill.get('layer_logo_stroke_size', '') }}">
+            </label>
+          </div>
+          <div class="hint" style="margin-top: 0.6rem; margin-bottom: 0.1rem;"><strong>Product effects</strong> -- drawn under the product on every size (this run's upload or the template's own), and written into the live-text PSD and the saved template as real layer effects.</div>
+          <div class="inline-controls" style="margin-top: 0.2rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_product_glow">
+              <input type="checkbox" id="layer_product_glow" name="layer_product_glow" value="1" {% if prefill.get('layer_product_glow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Outer glow</span>
+            </label>
+            <label for="layer_product_glow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_product_glow_color" name="layer_product_glow_color" value="{{ prefill.get('layer_product_glow_color', '#ffffff') }}">
+            </label>
+            <label for="layer_product_glow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_product_glow_size" name="layer_product_glow_size" min="0" max="250" placeholder="12" value="{{ prefill.get('layer_product_glow_size', '') }}">
+            </label>
+            <label for="layer_product_glow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Opacity %</span>
+              <input type="number" class="font-size-input" id="layer_product_glow_opacity" name="layer_product_glow_opacity" min="0" max="100" placeholder="75" value="{{ prefill.get('layer_product_glow_opacity', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.3rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_product_shadow">
+              <input type="checkbox" id="layer_product_shadow" name="layer_product_shadow" value="1" {% if prefill.get('layer_product_shadow') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Drop shadow</span>
+            </label>
+            <label for="layer_product_shadow_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_product_shadow_color" name="layer_product_shadow_color" value="{{ prefill.get('layer_product_shadow_color', '#000000') }}">
+            </label>
+            <label for="layer_product_shadow_opacity" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Opacity %</span>
+              <input type="number" class="font-size-input" id="layer_product_shadow_opacity" name="layer_product_shadow_opacity" min="0" max="100" placeholder="75" value="{{ prefill.get('layer_product_shadow_opacity', '') }}">
+            </label>
+            <label for="layer_product_shadow_distance" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Distance px</span>
+              <input type="number" class="font-size-input" id="layer_product_shadow_distance" name="layer_product_shadow_distance" min="0" max="500" placeholder="5" value="{{ prefill.get('layer_product_shadow_distance', '') }}">
+            </label>
+            <label for="layer_product_shadow_spread" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Spread %</span>
+              <input type="number" class="font-size-input" id="layer_product_shadow_spread" name="layer_product_shadow_spread" min="0" max="100" placeholder="0" value="{{ prefill.get('layer_product_shadow_spread', '') }}">
+            </label>
+            <label for="layer_product_shadow_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_product_shadow_size" name="layer_product_shadow_size" min="0" max="250" placeholder="5" value="{{ prefill.get('layer_product_shadow_size', '') }}">
+            </label>
+            <label for="layer_product_shadow_angle" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Angle &deg;</span>
+              <input type="number" class="font-size-input" id="layer_product_shadow_angle" name="layer_product_shadow_angle" min="-360" max="360" placeholder="120" value="{{ prefill.get('layer_product_shadow_angle', '') }}">
+            </label>
+          </div>
+          <div class="inline-controls" style="margin-top: 0.3rem;">
+            <label class="checkbox-row" style="margin: 0;" for="layer_product_stroke">
+              <input type="checkbox" id="layer_product_stroke" name="layer_product_stroke" value="1" {% if prefill.get('layer_product_stroke') %}checked{% endif %}>
+              <span style="white-space: nowrap;">Stroke</span>
+            </label>
+            <label for="layer_product_stroke_color" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Color</span>
+              <input type="color" id="layer_product_stroke_color" name="layer_product_stroke_color" value="{{ prefill.get('layer_product_stroke_color', '#000000') }}">
+            </label>
+            <label for="layer_product_stroke_size" style="font-weight: 400;">
+              <span style="white-space: nowrap;">Size px</span>
+              <input type="number" class="font-size-input" id="layer_product_stroke_size" name="layer_product_stroke_size" min="0" max="100" placeholder="3" value="{{ prefill.get('layer_product_stroke_size', '') }}">
             </label>
           </div>
           {% if has_layer_images %}
@@ -966,174 +1357,7 @@
             </div>
           {% endif %}
           </details>
-        </div>
-        </div>
-        </div>
-
-        <label style="margin-top: 0.9rem; display: block;">Upload AI Image</label>
-        <div class="ai-hero-callout" style="margin-top: 0.3rem;">
-          <div class="checkbox-row" style="margin: 0;">
-            <input type="checkbox" id="upload_ai_enabled" name="upload_ai_enabled" value="1" {% if prefill.get('upload_ai_enabled') %}checked{% endif %}>
-            <span><span class="ai-badge">AI</span> Generate the hero image with AI instead of uploading one --
-            it becomes the backdrop on every size saved in <code>default_templates/</code>, the {{ content_psd_label }}
-            included (uses a real GenAI provider -- can take up to ~40 seconds)</span>
-          </div>
-          {# Everything the generator needs lives under its own checkbox and
-             stays out of sight until it is ticked. Unticked, none of it does
-             anything, and a dozen controls dimmed-but-present is most of what
-             makes this form long. #}
-          <div data-role="upload-ai-body">
-          <div class="inline-controls" style="margin-top: 0.5rem;">
-              <label class="provider-control" for="upload_ai_provider" style="font-weight: 400;">
-                <span style="white-space: nowrap;">Provider</span>
-                <select class="font-family-select" id="upload_ai_provider" name="upload_ai_provider">
-                  <option value="pollinations" {% if prefill.get('upload_ai_provider', 'pollinations') == 'pollinations' %}selected{% endif %}>Pollinations (free, no key)</option>
-                  <option value="ideogram" {% if prefill.get('upload_ai_provider') == 'ideogram' %}selected{% endif %}>Ideogram (needs a paid API key -- best for design/typography)</option>
-                </select>
-              </label>
-            </div>
-          <div data-role="upload-ai-options" style="margin-top: 0.6rem;">
-            <div class="checkbox-row" style="margin-top: 0;">
-              <input type="checkbox" id="upload_ai_keep" name="upload_ai_keep" value="1" {% if prefill.get('upload_ai_keep') %}checked{% endif %}>
-              <span>Keep this image <span style="font-weight: 400; color: var(--muted);">(don't generate a new one)</span></span>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Tick this and the next Generate reuses the image from your last run instead of calling the
-              provider. Two generations from an identical prompt are never the same picture, so without it,
-              nudging a font size or a glow colour means losing the backdrop you were nudging it against --
-              and paying for the replacement. Untick it whenever you want a fresh one. It has no effect on a
-              first run: there's nothing to keep yet.
-            </div>
-            <div class="hint layer-off-note" data-role="upload-ai-kept-note" hidden style="margin-top: 0.4rem;">
-              Generating is switched off and the prompt, provider and backdrop tuning below are disabled --
-              the last run's image is reused as-is, and no API call is made. Tick "Generate the hero image
-              with AI" again (or untick this) whenever you want a fresh one.
-            </div>
-
-            <div data-role="upload-ai-fresh" style="margin-top: 0.7rem;">
-            <label for="upload_ai_prompt" style="font-weight: 400;">Image prompt <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
-            <input type="text" id="upload_ai_prompt" name="upload_ai_prompt" placeholder="Describe the scene only, e.g. chilled bottle on wet slate, morning light" value="{{ prefill.get('upload_ai_prompt', '') }}">
-            <p class="hint" style="margin-top: 0.3rem;">Describe what you want to see. Leave the exclusions out -- "no text" is already sent as a negative prompt on every backdrop run, and typed here it makes the model paint those words. If you do type one, it is moved out of the prompt for you.</p>
-
-            <div class="field" style="margin-top: 0.7rem; margin-bottom: 0;">
-              <label for="upload_ai_reference" style="font-weight: 400;">Reference images <span style="font-weight: 400; color: var(--muted);">(optional -- a mood board of up to {{ reference_limit }}: make the backdrop look like these)</span></label>
-              <div class="drop-zone" data-role="reference-drop-zone">
-                <input type="file" id="upload_ai_reference" name="upload_ai_reference" accept="image/*,video/*,.png,.webp,.jpg,.jpeg,.heic,.heif,.tif,.tiff,.gif,.bmp,.psd,.mp4,.mov,.m4v,.webm" multiple data-has-prior="{{ 'true' if prefill_files.get('upload_ai_reference') else 'false' }}">
-                <input type="text" data-role="reference-url" placeholder="...or drag pictures in from web pages, or paste an image address and press Enter" style="margin-top: 0.4rem;">
-                <div data-role="reference-url-list"></div>
-                <div class="hint" data-role="reference-status" hidden style="margin: 0.3rem 0 0; color: #fcd34d;"></div>
-                <div class="hint" style="margin: 0.3rem 0 0;">Drop pictures or short videos here, choose files, or drag pictures straight off web pages -- up to {{ reference_limit }} together. PNG, JPEG, WebP, PSD (flattened), iPhone HEIC, TIFF, GIF; a video's middle frame is used. Their palette, lighting and mood are matched -- not their subject; the scene still comes from the brief.</div>
-                <div class="checkbox-row" style="margin-top: 0.4rem;">
-                  <input type="checkbox" id="upload_ai_send_references" name="upload_ai_send_references" value="1" {% if prefill.get('upload_ai_send_references') %}checked{% endif %}>
-                  <span>Send the mood board to Ideogram as style references <span style="font-weight: 400; color: var(--muted);">(copies the pictures' whole look -- layout and lettering included, so a board of finished ads comes back as an ad. Off, only their palette, lighting and mood are described to the model, which is what a clean hero wants.)</span></span>
-                </div>
-              </div>
-              {% for slot in reference_slots %}
-                {% if prefill_files.get(slot) %}
-                  <div class="layer-image-cached" data-role="layer-cached-{{ slot }}" data-prefill-hint style="margin-top: 0.4rem;">
-                    {% if edit_job_id %}
-                      <img src="{{ url_for('serve_upload', job_id=edit_job_id, filename=prefill_files.get(slot)) }}" alt="Reference image">
-                    {% endif %}
-                    <div class="layer-image-cached-meta">
-                      <strong>Kept from your last run</strong>
-                      <span class="layer-image-cached-name" title="{{ prefill_files.get(slot) }}">{{ prefill_files.get(slot) }}</span>
-                    </div>
-                    <button type="button" class="clear-btn" data-role="layer-clear-btn-{{ slot }}" title="Drop this reference image">&times;</button>
-                    <input type="hidden" name="{{ slot }}_clear" value="">
-                  </div>
-                {% endif %}
-              {% endfor %}
-              <div class="hint" data-role="reference-provider-note" style="margin-top: 0.3rem;">
-                With Ideogram the pictures themselves are sent as style references. With Pollinations they can't be
-                (that service only takes web addresses), so the app describes their colours and lighting in
-                the prompt instead -- a similar feel rather than a close match.
-              </div>
-            </div>
-            {# Only Ideogram is worth handing a laid-out ad or live type to;
-               Pollinations has no typography to speak of, so these switches are
-               hidden rather than offered and disappointed. #}
-            <div data-role="ideogram-only">
-            <div class="inline-controls" style="margin-top: 0.6rem;">
-              <label class="provider-control" for="upload_ai_speed" style="font-weight: 400;">
-                <span style="white-space: nowrap;">Rendering</span>
-                <select class="font-family-select" id="upload_ai_speed" name="upload_ai_speed">
-                  {% for value, label in ideogram_speeds %}
-                    <option value="{{ value }}" {% if prefill.get('upload_ai_speed', default_ideogram_speed) == value %}selected{% endif %}>{{ label }}</option>
-                  {% endfor %}
-                </select>
-              </label>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Ideogram bills per image, and a run is normally one image (the backdrop is reused across every
-              size). Draft on Turbo, tick "Keep this image" while you adjust text and styling (free), and switch
-              to Quality only for the one you'll keep. "Generate the whole ad" below is one image per size.
-              The results page says exactly what each run cost.
-            </div>
-            <div class="checkbox-row" style="margin-top: 0.5rem;">
-              <input type="checkbox" id="upload_ai_full_ad" name="upload_ai_full_ad" value="1" {% if prefill.get('upload_ai_full_ad') %}checked{% endif %}>
-              <span>Generate the whole ad, text included <span style="font-weight: 400; color: var(--muted);">(the model paints the headline, product name and CTA into the picture -- expect words. Leave unticked for a text-free backdrop under your templates)</span></span>
-            </div>
-            <div class="field" style="margin-top: 0.5rem; margin-bottom: 0;">
-              <label for="upload_ai_headline" style="font-weight: 400;">Ad headline <span style="font-weight: 400; color: var(--muted);">(optional)</span></label>
-              <input type="text" id="upload_ai_headline" name="upload_ai_headline" placeholder="Leave blank to use the header text, then the campaign message" value="{{ prefill.get('upload_ai_headline', '') }}">
-              <div class="hint" style="margin-top: 0.2rem;">
-                The words the model is told to set, quoted exactly. Separate from the header override above,
-                which greys out when the template's header layer is switched off -- right for a layer nobody
-                will draw, wrong here, where the copy goes into the prompt rather than into a layer.
-              </div>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              The model lays out the entire creative and the result is used as-is -- your saved templates are
-              not drawn over it, or its headline and theirs would both appear. Type is where Turbo is weakest
-              (misspellings, smeared letters): draft on Turbo, then re-run the keeper on Quality. The prompt is composed from the
-              campaign brief: product name, header text and CTA text go in as exact quoted copy, audience and
-              market steer the art direction. One generation per output size, at that size's own shape, since
-              a laid-out ad can't be cropped from a square without losing the edge of the headline -- so this
-              costs one API call per size, not one per run. The campaign backdrop generator is skipped
-              while this is on -- its image would be replaced unseen.
-            </div>
-            <div class="checkbox-row" style="margin-top: 0.5rem;">
-              <input type="checkbox" id="upload_ai_allow_text" name="upload_ai_allow_text" value="1" {% if prefill.get('upload_ai_allow_text') %}checked{% endif %}>
-              <span>Let the model set type <span style="font-weight: 400; color: var(--muted);">(logo, headline, a laid-out creative -- applies to both generators)</span></span>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Off, the image is a backdrop: no-text is asked for, the result is checked for lettering, a
-              run that comes back with words is regenerated, and anything left is painted out -- because
-              the template's own header, description and CTA sit on top of it. Tick this and all three
-              stand down, so Ideogram can render the typography it is actually good at.
-              <strong>It lifts the ban; it doesn't place an order.</strong> A prompt like "marathon
-              runners" still describes a photograph and still comes back as one -- ask for the words you
-              want, in quotes: <em>poster reading "First 500 get free cans"</em>. Leave the prompt blank
-              and one is built for you. Expect words in the picture, and check they say what you want.
-            </div>
-            </div>
-            <div class="checkbox-row" style="margin-top: 0.5rem;">
-              <input type="hidden" name="upload_ai_background_style_seen" value="1">
-              <input type="checkbox" id="upload_ai_background_style" name="upload_ai_background_style" value="1" {% if prefill.get('upload_ai_background_style', True) %}checked{% endif %}>
-              <span>Optimize the prompt for backdrops <span style="font-weight: 400; color: var(--muted);">(recommended)</span></span>
-            </div>
-            <div class="hint" style="margin-top: 0.2rem;">
-              Adds "sharp focus, crisp detail, no faces, no logos, space for overlaid text" to your prompt.
-              Models are worst at faces, hands and lettering -- exactly what a backdrop doesn't need -- so
-              steering away from them removes most of what reads as distortion. It asks for sharpness, not
-              softness: use the band and glow controls to keep text legible over a crisp backdrop.
-              <strong>With "Let the model set type" ticked this switches to design guidance instead</strong>
-              -- "professional graphic design, clean legible typography, balanced composition" -- since the
-              backdrop wording asks for the opposite of what that mode is for. The full prompt used is shown
-              on the results page.
-            </div>
-            </div>
-            <div class="hint" style="margin-top: 0.4rem;">
-              The generated image fills each template's <code>background</code> layer only, so the logo,
-              product, CTA and text those templates carry stay where they were designed. While this is ticked
-              it wins over the hero image above and the "Background image" field further down: ticking it
-              means "make me a new background", and it makes one on every Generate. "Keep this image" is the
-              one thing that stops it -- and it stops the generation happening at all, rather than throwing
-              the result away. If the provider fails, the offline placeholder is used and a warning says why.
-            </div>
-          </div>
-          </div>
-        </div>
+        </details>
 
         {# Its own section, and below both ways of supplying artwork on
            purpose: hiding is about what the templates DRAW, not about where
@@ -1573,9 +1797,22 @@
 
       var customHeroToggle = root.querySelector('[data-role="custom-hero-toggle"]');
       var customHeroBody = root.querySelector('[data-role="custom-hero-body"]');
+      // The layer editing shows for either route -- a custom hero or an
+      // AI one -- and folds away only when neither is on.
+      var layerOverrides = root.querySelector('[data-role="layer-overrides-section"]');
+      var layerOverridesLabel = root.querySelector('[data-role="layer-overrides-label"]');
+      var heroPlacement = root.querySelector('[data-role="hero-placement-section"]');
+      var syncLayerOverrides = function () {
+        var aiBox = root.querySelector('[name="upload_ai_enabled"]');
+        var on = (customHeroToggle && customHeroToggle.checked) || (aiBox && aiBox.checked);
+        if (layerOverrides) layerOverrides.hidden = !on;
+        if (layerOverridesLabel) layerOverridesLabel.hidden = !on;
+        if (heroPlacement) heroPlacement.hidden = !on;
+      };
       if (customHeroToggle && customHeroBody) {
         var syncCustomHero = function () {
           customHeroBody.hidden = !customHeroToggle.checked;
+          syncLayerOverrides();
         };
         // Custom hero and AI hero are the two ways in, and exactly one
         // is on: ticking one unticks the other, and unticking one ticks
@@ -1605,6 +1842,7 @@
       if (aiBody && aiEnabled) {
         var syncAiBody = function () {
           aiBody.hidden = !aiEnabled.checked;
+          syncLayerOverrides();
         };
         aiEnabled.addEventListener("change", function () {
           if (customHeroToggle && customHeroToggle.checked === aiEnabled.checked) {
@@ -1968,9 +2206,20 @@
         tile.style.cssText = "width:2.5rem;height:2.5rem;border-radius:4px;background:#1e293b;color:#94a3b8;font-size:0.6rem;display:flex;align-items:center;justify-content:center;font-weight:700;flex:none;";
         tile.hidden = true;
         chip.insertBefore(tile, img);
+        // The "Kept from your last run" chip for the same field stands
+        // down while a new file is chosen: the new file replaces the
+        // kept one, and two chips under one input read as two files.
+        var keptChip = null;
+        if (fileInput.name) {
+          var rowMatch = fileInput.name.match(/^psd_file_(\d+)$/);
+          keptChip = rowMatch
+            ? document.querySelector('[data-role="psd-currently-' + rowMatch[1] + '"]')
+            : document.querySelector('[data-role="layer-cached-' + fileInput.name + '"]');
+        }
         fileInput.addEventListener("change", function () {
           var file = fileInput.files && fileInput.files[0];
           if (img.src && img.src.indexOf("blob:") === 0) URL.revokeObjectURL(img.src);
+          if (keptChip) keptChip.hidden = !!file;
           if (!file) { chip.hidden = true; return; }
           var ext = (file.name.split(".").pop() || "").toLowerCase();
           var drawable = /^image\//.test(file.type) && ext !== "psd" && ext !== "heic" && ext !== "heif";

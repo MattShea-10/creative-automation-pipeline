@@ -253,7 +253,7 @@ def replace_pixel_layers(psd_path, images: dict) -> list:
                 if (layer.name or "").strip().lower() == name and layer.kind == "pixel":
                     index, original = position, layer
                     break
-            if original is None:
+            if original is None and name != "background":
                 continue
             image = wanted[name]
             if image.mode != "RGBA":
@@ -261,6 +261,16 @@ def replace_pixel_layers(psd_path, images: dict) -> list:
             if image.size != canvas:
                 image = image.resize(canvas, Image.LANCZOS)
             cropped, left, top = _tight_bbox_crop(image)
+            if original is None:
+                # No background layer in the file (deleted rather than
+                # emptied): the hero goes in as one, at the bottom of
+                # the stack, under everything.
+                rebuilt = psd.create_pixel_layer(cropped, name="background", top=top, left=left)
+                if rebuilt is not None:
+                    psd.remove(rebuilt)
+                    psd.insert(0, rebuilt)
+                    replaced.append("background")
+                continue
             psd.remove(original)
             rebuilt = psd.create_pixel_layer(
                 cropped, name=original.name, top=top, left=left
@@ -373,6 +383,13 @@ def pair_type_layers_with_pixels(psd_path, images: dict, prefer: str = "text") -
                 cropped, psd, name=pixel_name, top=top, left=left
             )
             pixels.visible = not live_wins
+            # The flag every Photoshop layer carries (see
+            # set_type_layer_effects); a layer without it shows no
+            # Effects in Photoshop, whatever it is later given.
+            try:
+                pixels._record.flags.undocumented_1 = True
+            except Exception:  # noqa: BLE001
+                pass
             # frompil appends to the document; it belongs directly above
             # the text it stands in for, inside whatever group that is.
             if pixels in list(psd):
@@ -691,7 +708,7 @@ def _tell_the_shape_panel_its_radii(layer, radius_px: float) -> None:
     for entry in entries:
         try:
             entry[b"keyOriginType"] = Integer(2)
-            radii = Descriptor(classID=b"radii")
+            radii = _ps_descriptor(b"radii")
             radii[b"unitValueQuadVersion"] = Integer(1)
             for key in (
                 b"topRight",
@@ -835,12 +852,204 @@ def set_shape_layer_style(psd_path, styles: dict) -> list:
     return restyled
 
 
+# A complete, empty layer-effects block exactly as Photoshop writes one:
+# every effect present in the structure and switched off (drop shadow,
+# inner shadow, outer glow, colour/gradient overlays, stroke, inner
+# glow, bevel, satin), version 0, the null class names, `Scl ` 100%.
+# Lifted from a layer Photoshop saved, then disabled. A block built from
+# scratch with just the one effect in it -- `Scl `, the switch, `OrGl`
+# -- was silently ignored by Photoshop: the logo came in with no
+# Effects at all, while a layer whose block came from Photoshop kept
+# them. The base is decoded on demand and the form's effects set into it.
+_PHOTOSHOP_EMPTY_LFX2_B64 = (
+    "AAAAAAAAABAAAAABAAAAAAAAbnVsbAAAAAwAAAAAU2NsIFVudEYjUHJjQFkAAAAAAAAAAAAObWFzdGVyRlhTd2l0Y2hib29sAQAA"
+    "AA9kcm9wU2hhZG93TXVsdGlWbExzAAAAAU9iamMAAAABAAAAAAAARHJTaAAAAA8AAAAAZW5hYmJvb2wAAAAAB3ByZXNlbnRib29s"
+    "AAAAAAxzaG93SW5EaWFsb2dib29sAQAAAABNZCAgZW51bQAAAABCbG5NAAAACG11bHRpcGx5AAAAAENsciBPYmpjAAAAAQAAAAAA"
+    "AFJHQkMAAAADAAAAAFJkICBkb3ViAAAAAAAAAAAAAAAAR3JuIGRvdWIAAAAAAAAAAAAAAABCbCAgZG91YgAAAAAAAAAAAAAAAE9w"
+    "Y3RVbnRGI1ByY0BBgAAAAAAAAAAAAHVnbGdib29sAQAAAABsYWdsVW50RiNBbmdAVoAAAAAAAAAAAABEc3RuVW50RiNQeGxACAAA"
+    "AAAAAAAAAABDa210VW50RiNQeGwAAAAAAAAAAAAAAABibHVyVW50RiNQeGxAMAAAAAAAAAAAAABOb3NlVW50RiNQcmMAAAAAAAAA"
+    "AAAAAABBbnRBYm9vbAAAAAAAVHJuU09iamMAAAABAAAAAAAAU2hwQwAAAAIAAAAATm0gIFRFWFQAAAAHAEwAaQBuAGUAYQByAAAA"
+    "AAAAQ3J2IFZsTHMAAAACT2JqYwAAAAEAAAAAAABDclB0AAAAAgAAAABIcnpuZG91YgAAAAAAAAAAAAAAAFZydGNkb3ViAAAAAAAA"
+    "AABPYmpjAAAAAQAAAAAAAENyUHQAAAACAAAAAEhyem5kb3ViQG/gAAAAAAAAAAAAVnJ0Y2RvdWJAb+AAAAAAAAAAAA1sYXllckNv"
+    "bmNlYWxzYm9vbAEAAAAQaW5uZXJTaGFkb3dNdWx0aVZsTHMAAAABT2JqYwAAAAEAAAAAAABJclNoAAAADgAAAABlbmFiYm9vbAAA"
+    "AAAHcHJlc2VudGJvb2wAAAAADHNob3dJbkRpYWxvZ2Jvb2wBAAAAAE1kICBlbnVtAAAAAEJsbk0AAAAIbXVsdGlwbHkAAAAAQ2xy"
+    "IE9iamMAAAABAAAAAAAAUkdCQwAAAAMAAAAAUmQgIGRvdWIAAAAAAAAAAAAAAABHcm4gZG91YgAAAAAAAAAAAAAAAEJsICBkb3Vi"
+    "AAAAAAAAAAAAAAAAT3BjdFVudEYjUHJjQEGAAAAAAAAAAAAAdWdsZ2Jvb2wBAAAAAGxhZ2xVbnRGI0FuZ0BWgAAAAAAAAAAAAERz"
+    "dG5VbnRGI1B4bEAIAAAAAAAAAAAAAENrbXRVbnRGI1B4bAAAAAAAAAAAAAAAAGJsdXJVbnRGI1B4bEAcAAAAAAAAAAAAAE5vc2VV"
+    "bnRGI1ByYwAAAAAAAAAAAAAAAEFudEFib29sAAAAAABUcm5TT2JqYwAAAAEAAAAAAABTaHBDAAAAAgAAAABObSAgVEVYVAAAAAcA"
+    "TABpAG4AZQBhAHIAAAAAAABDcnYgVmxMcwAAAAJPYmpjAAAAAQAAAAAAAENyUHQAAAACAAAAAEhyem5kb3ViAAAAAAAAAAAAAAAA"
+    "VnJ0Y2RvdWIAAAAAAAAAAE9iamMAAAABAAAAAAAAQ3JQdAAAAAIAAAAASHJ6bmRvdWJAb+AAAAAAAAAAAABWcnRjZG91YkBv4AAA"
+    "AAAAAAAAAE9yR2xPYmpjAAAAAQAAAAAAAE9yR2wAAAAOAAAAAGVuYWJib29sAAAAAAdwcmVzZW50Ym9vbAAAAAAMc2hvd0luRGlh"
+    "bG9nYm9vbAEAAAAATWQgIGVudW0AAAAAQmxuTQAAAAZub3JtYWwAAAAAQ2xyIE9iamMAAAABAAAAAAAAUkdCQwAAAAMAAAAAUmQg"
+    "IGRvdWJAb+AAAAAAAAAAAABHcm4gZG91YkBv4AAAAAAAAAAAAEJsICBkb3ViQG/gAAAAAAAAAAAAT3BjdFVudEYjUHJjQFCAAAAA"
+    "AAAAAAAAR2x3VGVudW0AAAAAQkVURQAAAABTZkJMAAAAAENrbXRVbnRGI1B4bEBRAAAAAAAAAAAAAGJsdXJVbnRGI1B4bEAAAAAA"
+    "AAAAAAAAAE5vc2VVbnRGI1ByYwAAAAAAAAAAAAAAAFNoZE5VbnRGI1ByYwAAAAAAAAAAAAAAAEFudEFib29sAAAAAABUcm5TT2Jq"
+    "YwAAAAEAAAAAAABTaHBDAAAAAgAAAABObSAgVEVYVAAAAAcATABpAG4AZQBhAHIAAAAAAABDcnYgVmxMcwAAAAJPYmpjAAAAAQAA"
+    "AAAAAENyUHQAAAACAAAAAEhyem5kb3ViAAAAAAAAAAAAAAAAVnJ0Y2RvdWIAAAAAAAAAAE9iamMAAAABAAAAAAAAQ3JQdAAAAAIA"
+    "AAAASHJ6bmRvdWJAb+AAAAAAAAAAAABWcnRjZG91YkBv4AAAAAAAAAAAAElucHJVbnRGI1ByYz/wAAAAAAAAAAAADnNvbGlkRmls"
+    "bE11bHRpVmxMcwAAAAFPYmpjAAAAAQAAAAAAAFNvRmkAAAAGAAAAAGVuYWJib29sAAAAAAdwcmVzZW50Ym9vbAAAAAAMc2hvd0lu"
+    "RGlhbG9nYm9vbAEAAAAATWQgIGVudW0AAAAAQmxuTQAAAAZub3JtYWwAAAAAQ2xyIE9iamMAAAABAAAAAAAAUkdCQwAAAAMAAAAA"
+    "UmQgIGRvdWJAYCAPwAAAAAAAAABHcm4gZG91YkBgIA/AAAAAAAAAAEJsICBkb3ViQGAgD8AAAAAAAAAAT3BjdFVudEYjUHJjQFkA"
+    "AAAAAAAAAAARZ3JhZGllbnRGaWxsTXVsdGlWbExzAAAAAU9iamMAAAABAAAAAAAAR3JGbAAAAA4AAAAAZW5hYmJvb2wAAAAAB3By"
+    "ZXNlbnRib29sAAAAAAxzaG93SW5EaWFsb2dib29sAQAAAABNZCAgZW51bQAAAABCbG5NAAAABm5vcm1hbAAAAABPcGN0VW50RiNQ"
+    "cmNAWQAAAAAAAAAAAABHcmFkT2JqYwAAAAkARwByAGEAZABpAGUAbgB0AAAAAAAAR3JkbgAAAAUAAAAATm0gIFRFWFQAAAAMAEcA"
+    "cgBhAHkALAAgAFcAaABpAHQAZQAAAAAAAEdyZEZlbnVtAAAAAEdyZEYAAAAAQ3N0UwAAAABJbnRyZG91YkCwAAAAAAAAAAAAAENs"
+    "cnNWbExzAAAAAk9iamMAAAABAAAAAAAAQ2xydAAAAAQAAAAAQ2xyIE9iamMAAAABAAAAAAAAUkdCQwAAAAMAAAAAUmQgIGRvdWJA"
+    "auAFAAAAAAAAAABHcm4gZG91YkBq4AUAAAAAAAAAAEJsICBkb3ViQGrgBQAAAAAAAAAAVHlwZWVudW0AAAAAQ2xyeQAAAABVc3JT"
+    "AAAAAExjdG5sb25nAAAAAAAAAABNZHBubG9uZwAAADJPYmpjAAAAAQAAAAAAAENscnQAAAAEAAAAAENsciBPYmpjAAAAAQAAAAAA"
+    "AFJHQkMAAAADAAAAAFJkICBkb3ViQG/gAAAAAAAAAAAAR3JuIGRvdWJAb+AAAAAAAAAAAABCbCAgZG91YkBv4AAAAAAAAAAAAFR5"
+    "cGVlbnVtAAAAAENscnkAAAAAVXNyUwAAAABMY3RubG9uZwAAEAAAAAAATWRwbmxvbmcAAAAyAAAAAFRybnNWbExzAAAAAk9iamMA"
+    "AAABAAAAAAAAVHJuUwAAAAMAAAAAT3BjdFVudEYjUHJjQFkAAAAAAAAAAAAATGN0bmxvbmcAAAAAAAAAAE1kcG5sb25nAAAAMk9i"
+    "amMAAAABAAAAAAAAVHJuUwAAAAMAAAAAT3BjdFVudEYjUHJjQFkAAAAAAAAAAAAATGN0bmxvbmcAABAAAAAAAE1kcG5sb25nAAAA"
+    "MgAAAABBbmdsVW50RiNBbmdAVoAAAAAAAAAAAABUeXBlZW51bQAAAABHcmRUAAAAAExuciAAAAAAUnZyc2Jvb2wAAAAAAER0aHJi"
+    "b29sAAAAAABnczk5ZW51bQAAAB9ncmFkaWVudEludGVycG9sYXRpb25NZXRob2RUeXBlAAAAAFNtb28AAAAAQWxnbmJvb2wBAAAA"
+    "AFNjbCBVbnRGI1ByY0BZAAAAAAAAAAAAAE9mc3RPYmpjAAAAAQAAAAAAAFBudCAAAAACAAAAAEhyem5VbnRGI1ByYwAAAAAAAAAA"
+    "AAAAAFZydGNVbnRGI1ByYwAAAAAAAAAAAAAADGZyYW1lRlhNdWx0aVZsTHMAAAABT2JqYwAAAAEAAAAAAABGckZYAAAACgAAAABl"
+    "bmFiYm9vbAAAAAAHcHJlc2VudGJvb2wAAAAADHNob3dJbkRpYWxvZ2Jvb2wBAAAAAFN0eWxlbnVtAAAAAEZTdGwAAAAASW5zRgAA"
+    "AABQbnRUZW51bQAAAABGckZsAAAAAFNDbHIAAAAATWQgIGVudW0AAAAAQmxuTQAAAAZub3JtYWwAAAAAT3BjdFVudEYjUHJjQFkA"
+    "AAAAAAAAAAAAU3ogIFVudEYjUHhsP/AAAAAAAAAAAAAAQ2xyIE9iamMAAAABAAAAAAAAUkdCQwAAAAMAAAAAUmQgIGRvdWIAAAAA"
+    "AAAAAAAAAABHcm4gZG91YgAAAAAAAAAAAAAAAEJsICBkb3ViAAAAAAAAAAAAAAAJb3ZlcnByaW50Ym9vbAAAAAAASXJHbE9iamMA"
+    "AAABAAAAAAAASXJHbAAAAA8AAAAAZW5hYmJvb2wAAAAAB3ByZXNlbnRib29sAAAAAAxzaG93SW5EaWFsb2dib29sAQAAAABNZCAg"
+    "ZW51bQAAAABCbG5NAAAABnNjcmVlbgAAAABDbHIgT2JqYwAAAAEAAAAAAABSR0JDAAAAAwAAAABSZCAgZG91YkBv4AAAAAAAAAAA"
+    "AEdybiBkb3ViQG/gAAAAAAAAAAAAQmwgIGRvdWJAb+AAAAAAAAAAAABPcGN0VW50RiNQcmNAQYAAAAAAAAAAAABHbHdUZW51bQAA"
+    "AABCRVRFAAAAAFNmQkwAAAAAQ2ttdFVudEYjUHhsAAAAAAAAAAAAAAAAYmx1clVudEYjUHhsQBwAAAAAAAAAAAAATm9zZVVudEYj"
+    "UHJjAAAAAAAAAAAAAAAAU2hkTlVudEYjUHJjAAAAAAAAAAAAAAAAQW50QWJvb2wAAAAAAFRyblNPYmpjAAAAAQAAAAAAAFNocEMA"
+    "AAACAAAAAE5tICBURVhUAAAABwBMAGkAbgBlAGEAcgAAAAAAAENydiBWbExzAAAAAk9iamMAAAABAAAAAAAAQ3JQdAAAAAIAAAAA"
+    "SHJ6bmRvdWIAAAAAAAAAAAAAAABWcnRjZG91YgAAAAAAAAAAT2JqYwAAAAEAAAAAAABDclB0AAAAAgAAAABIcnpuZG91YkBv4AAA"
+    "AAAAAAAAAFZydGNkb3ViQG/gAAAAAAAAAAAASW5wclVudEYjUHJjQEkAAAAAAAAAAAAAZ2x3U2VudW0AAAAASUdTcgAAAABTcmNF"
+    "AAAAAGViYmxPYmpjAAAAAQAAAAAAAGViYmwAAAAWAAAAAGVuYWJib29sAAAAAAdwcmVzZW50Ym9vbAAAAAAMc2hvd0luRGlhbG9n"
+    "Ym9vbAEAAAAAaGdsTWVudW0AAAAAQmxuTQAAAAZzY3JlZW4AAAAAaGdsQ09iamMAAAABAAAAAAAAUkdCQwAAAAMAAAAAUmQgIGRv"
+    "dWJAb+AAAAAAAAAAAABHcm4gZG91YkBv4AAAAAAAAAAAAEJsICBkb3ViQG/gAAAAAAAAAAAAaGdsT1VudEYjUHJjQEkAAAAAAAAA"
+    "AAAAc2R3TWVudW0AAAAAQmxuTQAAAAhtdWx0aXBseQAAAABzZHdDT2JqYwAAAAEAAAAAAABSR0JDAAAAAwAAAABSZCAgZG91YgAA"
+    "AAAAAAAAAAAAAEdybiBkb3ViAAAAAAAAAAAAAAAAQmwgIGRvdWIAAAAAAAAAAAAAAABzZHdPVW50RiNQcmNASQAAAAAAAAAAAABi"
+    "dmxUZW51bQAAAABidmxUAAAAAFNmQkwAAAAAYnZsU2VudW0AAAAAQkVTbAAAAABJbnJCAAAAAHVnbGdib29sAQAAAABsYWdsVW50"
+    "RiNBbmdAVoAAAAAAAAAAAABMYWxkVW50RiNBbmdAPgAAAAAAAAAAAABzcmdSVW50RiNQcmNAWQAAAAAAAAAAAABibHVyVW50RiNQ"
+    "eGxAHAAAAAAAAAAAAABidmxEZW51bQAAAABCRVNzAAAAAEluICAAAAAAVHJuU09iamMAAAABAAAAAAAAU2hwQwAAAAIAAAAATm0g"
+    "IFRFWFQAAAAHAEwAaQBuAGUAYQByAAAAAAAAQ3J2IFZsTHMAAAACT2JqYwAAAAEAAAAAAABDclB0AAAAAgAAAABIcnpuZG91YgAA"
+    "AAAAAAAAAAAAAFZydGNkb3ViAAAAAAAAAABPYmpjAAAAAQAAAAAAAENyUHQAAAACAAAAAEhyem5kb3ViQG/gAAAAAAAAAAAAVnJ0"
+    "Y2RvdWJAb+AAAAAAAAAAAA5hbnRpYWxpYXNHbG9zc2Jvb2wAAAAAAFNmdG5VbnRGI1B4bAAAAAAAAAAAAAAACHVzZVNoYXBlYm9v"
+    "bAAAAAAKdXNlVGV4dHVyZWJvb2wAAAAAAENoRlhPYmpjAAAAAQAAAAAAAENoRlgAAAAMAAAAAGVuYWJib29sAAAAAAdwcmVzZW50"
+    "Ym9vbAAAAAAMc2hvd0luRGlhbG9nYm9vbAEAAAAATWQgIGVudW0AAAAAQmxuTQAAAAhtdWx0aXBseQAAAABDbHIgT2JqYwAAAAEA"
+    "AAAAAABSR0JDAAAAAwAAAABSZCAgZG91YgAAAAAAAAAAAAAAAEdybiBkb3ViAAAAAAAAAAAAAAAAQmwgIGRvdWIAAAAAAAAAAAAA"
+    "AABBbnRBYm9vbAEAAAAASW52cmJvb2wBAAAAAE9wY3RVbnRGI1ByY0BJAAAAAAAAAAAAAGxhZ2xVbnRGI0FuZ0BWgAAAAAAAAAAA"
+    "AERzdG5VbnRGI1B4bEBJAAAAAAAAAAAAAGJsdXJVbnRGI1B4bEBUAAAAAAAAAAAAAE1wZ1NPYmpjAAAAAQAAAAAAAFNocEMAAAAC"
+    "AAAAAE5tICBURVhUAAAABwBMAGkAbgBlAGEAcgAAAAAAAENydiBWbExzAAAAAk9iamMAAAABAAAAAAAAQ3JQdAAAAAIAAAAASHJ6"
+    "bmRvdWIAAAAAAAAAAAAAAABWcnRjZG91YgAAAAAAAAAAT2JqYwAAAAEAAAAAAABDclB0AAAAAgAAAABIcnpuZG91YkBv4AAAAAAA"
+    "AAAAAFZydGNkb3ViQG/gAAAAAAAAAAAObnVtTW9kaWZ5aW5nRlhsb25nAAAAAAAAAA=="
+)
+
+
+def _empty_effects_block():
+    """A fresh lfx2 block for a layer that has none -- see the constant."""
+    import base64
+    import io
+
+    from psd_tools.psd.descriptor import DescriptorBlock2
+
+    return DescriptorBlock2.read(io.BytesIO(base64.b64decode("".join(_PHOTOSHOP_EMPTY_LFX2_B64))))
+
+
+# The legacy effects block (`lrFX`) Photoshop writes next to every
+# lfx2 -- the same six effects in the pre-CS format, kept in sync with
+# the descriptor block. Photoshop still writes it for every layer with
+# effects, and a layer carrying lfx2 alone was ignored (the logo opened
+# with no Effects while the header, which had both, kept its shadow).
+# Lifted from a Photoshop-saved layer with everything off; the drop
+# shadow and outer glow in it are set to match what goes into lfx2.
+_PHOTOSHOP_EMPTY_LRFX_B64 = (
+    "AAAABzhCSU1jbW5TAAAABwAAAAABAAA4QklNZHNkdwAAADMAAAACABAAAAAAAAAAWgAAAAMAAAAAAAAAAAAAAAA4QklNbXVsIAAB"
+    "WQAAAAAAAAAAAAA4QklNaXNkdwAAADMAAAACAAcAAAAAAAAAWgAAAAMAAAAAAAAAAAAAAAA4QklNbXVsIAABWQAAAAAAAAAAAAA4"
+    "QklNb2dsdwAAACoAAAACAAIAAAAAAAAAAP///////wAAOEJJTW5vcm0AqAAA////////AAA4QklNaWdsdwAAACsAAAACAAcAAAAA"
+    "AAAAAP///////wAAOEJJTXNjcm4AWQEAAP///////wAAOEJJTWJldmwAAABOAAAAAgBaAAAABwAAAAcAADhCSU1zY3JuOEJJTW11"
+    "bCAAAP///////wAAAAAAAAAAAAAAAAKAgAABAAAA////////AAAAAAAAAAAAAAAAOEJJTXNvZmkAAAAiAAAAAjhCSU1ub3JtAACB"
+    "gYGBgYEAAP8AAACBgYGBgYEAAAAA"
+)
+
+
+def _empty_legacy_effects_block():
+    import base64
+    import io
+
+    from psd_tools.psd.effects_layer import EffectsLayer
+
+    return EffectsLayer.read(io.BytesIO(base64.b64decode("".join(_PHOTOSHOP_EMPTY_LRFX_B64))))
+
+
+def _sync_legacy_effects(block, shadow, glow):
+    """Set lrFX's drop shadow and outer glow from the form's specs.
+    Sizes are 16.16 fixed point, colours 16-bit per channel, opacity
+    0-255 -- the legacy encoding."""
+    from psd_tools.constants import BlendMode
+    from psd_tools.psd.color import Color
+    from psd_tools.psd.effects_layer import EffectOSType
+
+    def fixed(px):
+        return int(round(float(px) * 65536))
+
+    def colour16(rgb):
+        r, g, b = rgb
+        return Color(values=[int(r) * 257, int(g) * 257, int(b) * 257, 0])
+
+    if shadow:
+        item = block.get(EffectOSType.DROP_SHADOW)
+        if item is not None:
+            item.enabled = 1
+            item.blur = fixed(max(0.0, float(shadow.get("size", 5))))
+            item.distance = fixed(max(0.0, float(shadow.get("distance", 5))))
+            item.angle = fixed(float(shadow.get("angle", 120)))
+            item.use_global_angle = 0
+            item.opacity = int(round(max(0, min(100, float(shadow.get("opacity", 75)))) * 2.55))
+            item.blend_mode = BlendMode.MULTIPLY
+            item.color = colour16(shadow.get("color", (0, 0, 0)))
+            item.native_color = colour16(shadow.get("color", (0, 0, 0)))
+    if glow:
+        item = block.get(EffectOSType.OUTER_GLOW)
+        if item is not None:
+            item.enabled = 1
+            item.blur = fixed(max(1.0, float(glow.get("radius", 8))))
+            item.opacity = int(round(max(0, min(100, float(glow.get("opacity", 100)))) * 2.55))
+            item.blend_mode = BlendMode.SCREEN
+            item.color = colour16(glow.get("color", (255, 255, 255)))
+            item.native_color = colour16(glow.get("color", (255, 255, 255)))
+    return block
+
+
+def _count_enabled_effects(block) -> int:
+    """How many effects in an lfx2 block are switched on -- what
+    Photoshop keeps in `numModifyingFX`."""
+    count = 0
+    for key, value in block.items():
+        if key in (b"Scl ", b"masterFXSwitch", b"numModifyingFX"):
+            continue
+        items = list(value) if type(value).__name__ == "List" else [value]
+        for item in items:
+            try:
+                if item[b"enab"].value:
+                    count += 1
+            except (KeyError, TypeError, AttributeError):
+                continue
+    return count
+
+
+def _ps_descriptor(class_id: bytes):
+    """A descriptor the way Photoshop writes one. Its class *name* is
+    the null character, not the empty string: Photoshop stores the name
+    as a null-terminated Unicode string, so "no name" is one character
+    long (\\x00) -- and reading a zero-length name back is one of the
+    things that makes it refuse the layer ("not compatible with this
+    version of Photoshop"). Every descriptor in a file Photoshop saved
+    has name == "\\x00"; every one built here does too."""
+    from psd_tools.psd.descriptor import Descriptor
+
+    return Descriptor(name="\x00", classID=class_id)
+
+
 def _rgb_descriptor(rgb):
     """An RGBC colour descriptor, the shape Photoshop stores colours in
     inside a layer effect."""
     from psd_tools.psd.descriptor import Descriptor, Double
 
-    colour = Descriptor(classID=b"RGBC")
+    colour = _ps_descriptor(b"RGBC")
     red, green, blue = rgb
     colour[b"Rd  "] = Double(float(red))
     colour[b"Grn "] = Double(float(green))
@@ -848,29 +1057,60 @@ def _rgb_descriptor(rgb):
     return colour
 
 
-def _outer_glow_descriptor(color, radius_px: float, opacity: int):
+def _linear_contour_descriptor():
+    """The straight-line contour every effect in a Photoshop-written file
+    carries as `TrnS` -- a `ShpC` shape with two curve points. Photoshop
+    writes it on every shadow, glow and stroke it saves; a descriptor
+    without it is not the shape it expects and it gives up on the layer
+    ("not compatible with this version of Photoshop")."""
+    from psd_tools.psd.descriptor import Descriptor, Double, List, String
+
+    def point(x, y):
+        pt = _ps_descriptor(b"CrPt")
+        pt[b"Hrzn"] = Double(float(x))
+        pt[b"Vrtc"] = Double(float(y))
+        return pt
+
+    contour = _ps_descriptor(b"ShpC")
+    contour[b"Nm  "] = String("Linear\x00")
+    contour[b"Crv "] = List([point(0, 0), point(255, 255)])
+    return contour
+
+
+def _outer_glow_descriptor(color, radius_px: float, opacity: int, spread_pct: float = 0.0):
     """Photoshop's Outer Glow, as its `OrGl` descriptor.
 
     Screen blend, soft technique -- the same defaults the fx dialog
     starts from, which is what makes the result recognisable as "a glow"
     rather than something odd that happens to have the right colour.
+    `radius_px` is the dialog's Size and `spread_pct` its Spread: the
+    solid share of that size before the soft fall-off. The caller maps
+    the renderer's halo onto the pair (see webapp's live_text_effects);
+    written with no spread, the same size came out as a faint haze next
+    to the preview's.
     """
     from psd_tools.psd.descriptor import Bool, Descriptor, Enumerated, UnitFloat
     from psd_tools.terminology import Unit
 
-    glow = Descriptor(classID=b"OrGl")
+    glow = _ps_descriptor(b"OrGl")
     glow[b"enab"] = Bool(True)
     glow[b"present"] = Bool(True)
     glow[b"showInDialog"] = Bool(True)
-    glow[b"Md  "] = Enumerated(b"BlnM", b"Scrn")
+    # The long names, not the four-letter codes: that is what Photoshop
+    # itself writes inside lfx2 (b"screen", b"multiply", b"normal"), and
+    # the codes are what made it refuse the layer.
+    glow[b"Md  "] = Enumerated(b"BlnM", b"screen")
     glow[b"Clr "] = _rgb_descriptor(color)
     glow[b"Opct"] = UnitFloat(float(max(0, min(100, opacity))), Unit.Percent)
     glow[b"GlwT"] = Enumerated(b"BETE", b"SfBL")
-    glow[b"Ckmt"] = UnitFloat(0.0, Unit.Pixels)
+    # A percentage, tagged as pixels -- Photoshop's own habit (see the
+    # drop shadow's Ckmt).
+    glow[b"Ckmt"] = UnitFloat(float(max(0.0, min(100.0, spread_pct))), Unit.Pixels)
     glow[b"blur"] = UnitFloat(float(max(1.0, radius_px)), Unit.Pixels)
     glow[b"Nose"] = UnitFloat(0.0, Unit.Percent)
     glow[b"ShdN"] = UnitFloat(0.0, Unit.Percent)
     glow[b"AntA"] = Bool(False)
+    glow[b"TrnS"] = _linear_contour_descriptor()
     glow[b"Inpr"] = UnitFloat(50.0, Unit.Percent)
     return glow
 
@@ -881,17 +1121,46 @@ def _stroke_descriptor(color, size_px: float):
     from psd_tools.psd.descriptor import Bool, Descriptor, Enumerated, UnitFloat
     from psd_tools.terminology import Unit
 
-    stroke = Descriptor(classID=b"FrFX")
+    stroke = _ps_descriptor(b"FrFX")
     stroke[b"enab"] = Bool(True)
     stroke[b"present"] = Bool(True)
     stroke[b"showInDialog"] = Bool(True)
     stroke[b"Styl"] = Enumerated(b"FStl", b"OutF")
     stroke[b"PntT"] = Enumerated(b"FrFl", b"SClr")
-    stroke[b"Md  "] = Enumerated(b"BlnM", b"Nrml")
+    stroke[b"Md  "] = Enumerated(b"BlnM", b"normal")
     stroke[b"Opct"] = UnitFloat(100.0, Unit.Percent)
     stroke[b"Sz  "] = UnitFloat(float(max(1.0, size_px)), Unit.Pixels)
     stroke[b"Clr "] = _rgb_descriptor(color)
+    stroke[b"overprint"] = Bool(False)
     return stroke
+
+
+def _drop_shadow_descriptor(color, opacity, angle, distance, spread, size):
+    """Photoshop's Drop Shadow, as its `DrSh` descriptor -- multiply
+    blend, the dialog's defaults, the numbers as typed on the form."""
+    from psd_tools.psd.descriptor import Bool, Descriptor, Enumerated, UnitFloat
+    from psd_tools.terminology import Unit
+
+    shadow = _ps_descriptor(b"DrSh")
+    shadow[b"enab"] = Bool(True)
+    shadow[b"present"] = Bool(True)
+    shadow[b"showInDialog"] = Bool(True)
+    shadow[b"Md  "] = Enumerated(b"BlnM", b"multiply")
+    shadow[b"Clr "] = _rgb_descriptor(color)
+    shadow[b"Opct"] = UnitFloat(float(max(0, min(100, opacity))), Unit.Percent)
+    shadow[b"uglg"] = Bool(False)
+    shadow[b"lagl"] = UnitFloat(float(angle), Unit.Angle)
+    shadow[b"Dstn"] = UnitFloat(float(max(0.0, distance)), Unit.Pixels)
+    # Spread is a percentage in the dialog, but Photoshop stores it with
+    # the pixel unit tag like the other sizes -- a percent-tagged value
+    # here is another thing it refuses.
+    shadow[b"Ckmt"] = UnitFloat(float(max(0.0, min(100.0, spread))), Unit.Pixels)
+    shadow[b"blur"] = UnitFloat(float(max(0.0, size)), Unit.Pixels)
+    shadow[b"Nose"] = UnitFloat(0.0, Unit.Percent)
+    shadow[b"AntA"] = Bool(False)
+    shadow[b"TrnS"] = _linear_contour_descriptor()
+    shadow[b"layerConceals"] = Bool(True)
+    return shadow
 
 
 def set_type_layer_effects(psd_path, effects: dict) -> list:
@@ -900,7 +1169,7 @@ def set_type_layer_effects(psd_path, effects: dict) -> list:
     `effects` maps a lowercased layer (or group) name to a dict with any
     of:
 
-        glow    {"color": (r, g, b), "radius": px, "opacity": 0-100}
+        glow    {"color": (r, g, b), "radius": px, "opacity": 0-100, "spread": 0-100}
         stroke  {"color": (r, g, b), "size": px}
 
     Both sizes are in document pixels, already resolved by the caller
@@ -933,7 +1202,10 @@ def set_type_layer_effects(psd_path, effects: dict) -> list:
     try:
         from psd_tools import PSDImage
         from psd_tools.constants import Tag
-        from psd_tools.psd.descriptor import Bool, DescriptorBlock2, UnitFloat
+        from collections import OrderedDict
+
+        from psd_tools.psd.descriptor import Bool, Integer, List, UnitFloat
+        from psd_tools.psd.tagged_blocks import TaggedBlock
         from psd_tools.terminology import Unit
     except ImportError:
         return []
@@ -943,6 +1215,12 @@ def set_type_layer_effects(psd_path, effects: dict) -> list:
         return []
 
     layers = _named_type_layers(psd)
+    # Picture layers too: a glow or a shadow on the logo or the product
+    # is a layer effect like any other.
+    for layer in psd:
+        key = (layer.name or "").strip().lower()
+        if key and key not in layers and layer.kind == "pixel":
+            layers[key] = layer
     styled = []
     for name, spec in (effects or {}).items():
         layer = layers.get(name.strip().lower())
@@ -950,26 +1228,104 @@ def set_type_layer_effects(psd_path, effects: dict) -> list:
             continue
         glow = spec.get("glow")
         stroke = spec.get("stroke")
-        if not glow and not stroke:
+        shadow = spec.get("shadow")
+        if not glow and not stroke and not shadow:
             continue
         try:
-            block = DescriptorBlock2(classID=b"null", version=0, data_version=16)
+            # The layer's existing effects stay unless replaced: a glow
+            # from the form must not strip the drop shadow the designer
+            # gave the header.
+            existing = layer.tagged_blocks.get_data(Tag.OBJECT_BASED_EFFECTS_LAYER_INFO)
+            block = existing if existing is not None else _empty_effects_block()
+            if not block.name:
+                # See _ps_descriptor: Photoshop needs the null name.
+                block.name = "\x00"
+            # lfx2's "object effects version" is 0 in every file Photoshop
+            # writes. psd-tools' DescriptorBlock2 defaults to 1 -- and its
+            # tagged_blocks.set_data() rebuilds the block through that
+            # default (DescriptorBlock2(items)), which also drops the null
+            # name. Photoshop reads version 1 as "a newer format than I
+            # know" and refuses the layer. So: version 0, and the block
+            # goes in as-is rather than through set_data.
+            block.version = 0
             block[b"masterFXSwitch"] = Bool(True)
             # The effects' own scale. 100% means "the sizes below are in
             # the document's pixels", which is what the renderer measured
             # them in.
             block[b"Scl "] = UnitFloat(100.0, Unit.Percent)
+            # Photoshop 2021+ keeps effects that can have several
+            # instances -- drop shadow, stroke -- in a list
+            # (`dropShadowMulti`, `frameFXMulti`) and reads that in
+            # preference to the older single key. A block that already
+            # has the list gets the effect there; one without (a
+            # header Photoshop saved with a single shadow) keeps the
+            # single key. Never both: the list would win and the
+            # single one would be a shadow nobody sees.
+            def put(single_key, multi_key, descriptor):
+                if multi_key in block:
+                    block[multi_key] = List([descriptor])
+                    block.pop(single_key, None)
+                else:
+                    block[single_key] = descriptor
+
+            if shadow:
+                put(b"DrSh", b"dropShadowMulti", _drop_shadow_descriptor(
+                    shadow.get("color", (0, 0, 0)),
+                    shadow.get("opacity", 75),
+                    shadow.get("angle", 120),
+                    shadow.get("distance", 5),
+                    shadow.get("spread", 0),
+                    shadow.get("size", 5),
+                ))
             if glow:
                 block[b"OrGl"] = _outer_glow_descriptor(
                     glow.get("color", (255, 255, 255)),
                     glow.get("radius", 8),
                     glow.get("opacity", 100),
+                    glow.get("spread", 0),
                 )
             if stroke:
-                block[b"FrFX"] = _stroke_descriptor(
+                put(b"FrFX", b"frameFXMulti", _stroke_descriptor(
                     stroke.get("color", (0, 0, 0)), stroke.get("size", 1)
-                )
-            layer.tagged_blocks.set_data(Tag.OBJECT_BASED_EFFECTS_LAYER_INFO, block)
+                ))
+            # numModifyingFX is Photoshop's count of the effects that are
+            # switched on -- 0 on a layer with none, 1 on the header with
+            # its one shadow, and read before the effects themselves: a
+            # block saying 0 is a block Photoshop doesn't look inside.
+            # The logo's fresh block came from a layer with nothing on,
+            # so it said 0 with a glow switched on inside it, and the
+            # logo opened with no Effects. Counted from what is actually
+            # enabled now.
+            block[b"numModifyingFX"] = Integer(_count_enabled_effects(block))
+            layer.tagged_blocks[Tag.OBJECT_BASED_EFFECTS_LAYER_INFO] = TaggedBlock(
+                key=Tag.OBJECT_BASED_EFFECTS_LAYER_INFO, data=block
+            )
+            # The layer flag every Photoshop-written layer carries (bit 5
+            # of the record's flags byte, undocumented in Adobe's spec).
+            # A layer psd-tools builds from a picture has it off, and
+            # Photoshop shows no Effects on such a layer no matter what
+            # its effects blocks say -- proven by bisecting a download:
+            # the same file with only this bit flipped on the logo
+            # opened with the logo's glow listed.
+            try:
+                layer._record.flags.undocumented_1 = True
+            except Exception:  # noqa: BLE001
+                pass
+            # The legacy twin, kept in step (see _PHOTOSHOP_EMPTY_LRFX_B64).
+            legacy = layer.tagged_blocks.get_data(Tag.EFFECTS_LAYER)
+            if legacy is None:
+                legacy = _empty_legacy_effects_block()
+            _sync_legacy_effects(legacy, shadow, glow)
+            layer.tagged_blocks[Tag.EFFECTS_LAYER] = TaggedBlock(key=Tag.EFFECTS_LAYER, data=legacy)
+            # And in Photoshop's order: the two effects blocks lead the
+            # layer's extra data, ahead of the name, id and the rest.
+            ordered = OrderedDict()
+            for key in (Tag.OBJECT_BASED_EFFECTS_LAYER_INFO, Tag.EFFECTS_LAYER):
+                ordered[key] = layer.tagged_blocks[key]
+            for key, value in layer.tagged_blocks.items():
+                if key not in ordered:
+                    ordered[key] = value
+            layer.tagged_blocks._items = ordered
         except Exception:  # noqa: BLE001
             continue
         styled.append(layer.name)
@@ -1131,6 +1487,61 @@ def set_type_layer_colors(psd_path, colors: dict) -> list:
     except Exception:
         return []
     return recoloured
+
+
+def set_type_layer_font_size(psd_path, sizes: dict) -> list:
+    """Resize live Photoshop type layers in place, keeping them text.
+
+    `sizes` maps a lowercased layer name to the size in the PSD's own
+    pixels the words should render at. Photoshop renders a type layer
+    at FontSize x the layer's transform scale (a header scaled with
+    Free Transform keeps its FontSize and carries a matrix), so the
+    stored FontSize is the wanted pixels divided by that scale. Every
+    style run gets the size -- a header set in two sizes becomes one
+    size, which is what typing one size on the form means.
+
+    Returns the names of the layers resized; [] when nothing could be.
+    """
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return []
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    layers = _named_type_layers(psd)
+    resized = []
+    for name, px in (sizes or {}).items():
+        layer = layers.get(name.strip().lower())
+        if layer is None or not px or px <= 0:
+            continue
+        try:
+            transform = layer.transform
+            scale = float(transform[3]) if transform and len(transform) >= 4 and transform[3] else 1.0
+            runs = layer.engine_dict["StyleRun"]["RunArray"]
+        except Exception:  # noqa: BLE001
+            continue
+        stored = float(px) / (scale or 1.0)
+        touched = False
+        for run in runs:
+            try:
+                data = run["StyleSheet"]["StyleSheetData"]
+                if "FontSize" in data:
+                    data["FontSize"].value = stored
+                    touched = True
+            except Exception:  # noqa: BLE001
+                continue
+        if touched:
+            resized.append(layer.name)
+    if not resized:
+        return []
+    _forget_document_text_engine(psd)
+    try:
+        psd.save(psd_path)
+    except Exception:  # noqa: BLE001
+        return []
+    return resized
 
 
 def _tight_bbox_crop(layer_img: Image.Image) -> Tuple[Image.Image, int, int]:

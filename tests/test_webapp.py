@@ -242,16 +242,15 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertNotIn(b"manual-creative-box", r.data)
 
     def test_index_and_edit_page_both_show_a_reset_link_back_to_a_blank_form(self):
-        # The top-of-page "Reset form" link is just a plain link to "/" --
-        # index() always renders with prefill={}/prefill_files={}/
-        # edit_job_id=None, so following it is a guaranteed full reset
-        # (typed fields, attached files, and "editing a prior batch"
-        # state all go away) with no separate reset logic to keep in
-        # sync with the form itself.
+        # The top-of-page "Reset form" button posts to /reset, which puts
+        # the saved templates back to template-backup.zip and then sends
+        # the browser to "/" -- index() always renders with prefill from
+        # the remembered fields only, edit_job_id=None, so typed fields,
+        # attached files, and "editing a prior batch" state all go away.
         r = self.client.get("/")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b'>Reset form</a>', r.data)
-        self.assertIn(b'href="/"', r.data)  # the reset link's target -- index()'s own route
+        self.assertIn(b'>Reset form</button>', r.data)
+        self.assertIn(b'action="/reset"', r.data)
 
         data = {
             "hero_image": (self._sample_image_bytes(), "hero.png"),
@@ -264,7 +263,7 @@ class WebAppSmokeTest(unittest.TestCase):
 
         edit_page = self.client.get(f"/edit/{job_id}")
         self.assertEqual(edit_page.status_code, 200)
-        self.assertIn(b'>Reset form</a>', edit_page.data)
+        self.assertIn(b'>Reset form</button>', edit_page.data)
 
     def test_generate_renders_default_sizes_and_zip(self):
         data = {
@@ -1775,6 +1774,46 @@ class PsdTemplateSectionTest(unittest.TestCase):
         self.assertGreater(g_, r_)
         self.assertGreater(g_, b_)
 
+    def test_a_fresh_psd_drop_switches_the_form_s_layer_styling_off_and_forgets_it(self):
+        """The round trip app -> Photoshop -> app: a glow recoloured in
+        Photoshop came back drawn over by the green one the form still
+        remembered from the run that made the file. A PSD dropped this
+        run is the design, so the form's glow/shadow/outline/colour/
+        font/size for the layers are switched off for the run, saved as
+        off, and the results page says so. A carried-forward row (no
+        fresh file) leaves the form alone."""
+        data = {
+            "psd_size_1": "300x250",
+            "psd_file_1": (self._sample_psd_bytes(color=(90, 200, 40)), "template.psd"),
+            "custom_sizes": "300x250",
+            "header": "",
+            "description": "",
+            "layer_header_glow": "1", "layer_header_glow_color": "#28c91d",
+            "layer_header_shadow": "1", "layer_header_shadow_color": "#b40ee1",
+            "layer_description_use_custom_color": "1", "layer_description_text_color": "#ff0000",
+            "layer_logo_glow": "1",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        html = r.get_data(as_text=True)
+        self.assertIn("A PSD was dropped this run (template.psd)", html)
+        self.assertIn("header glow, header shadow, description use custom color, logo glow", html)
+        prefs = json.loads(webapp._preferences_path().read_text())
+        self.assertEqual(prefs.get("layer_header_glow"), "")
+        self.assertEqual(prefs.get("layer_header_shadow"), "")
+        self.assertEqual(prefs.get("layer_description_use_custom_color"), "")
+        # The colours themselves stay remembered -- only the switches go.
+        self.assertEqual(prefs.get("layer_header_glow_color"), "#28c91d")
+
+        # No fresh file: the styling is left on and nothing is said.
+        data2 = {"custom_sizes": "300x250", "header": "", "description": "",
+                 "hero_image": (self._sample_image_bytes(), "hero.png"),
+                 "layer_header_glow": "1", "layer_header_glow_color": "#28c91d"}
+        r2 = self.client.post("/generate", data=data2, content_type="multipart/form-data")
+        self.assertEqual(r2.status_code, 200)
+        self.assertNotIn("was dropped this run", r2.get_data(as_text=True))
+        self.assertEqual(json.loads(webapp._preferences_path().read_text()).get("layer_header_glow"), "1")
+
     def test_generate_missing_hero_and_template_for_size_flashes_and_redirects(self):
         data = {
             "custom_sizes": "300x250",
@@ -2038,6 +2077,97 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         webapp.DEFAULT_TEMPLATES_DIR = self._orig_default_templates_dir
         webapp.TEMPLATE_BACKUPS_DIR = self._orig_template_backups_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
+
+    def test_reset_form_restores_the_templates_from_the_backup_zip(self):
+        """"Reset form" puts default_templates/ back to the copies in
+        template-backup.zip: each size in the zip replaces the current
+        file (kept in _template_backups/), Finder's __MACOSX shadows are
+        ignored, and a size the zip doesn't carry is left alone."""
+        self._write_default_template("tester-720x480.psd", b"edited-720")
+        self._write_default_template("tester-160x600.psd", b"edited-160")
+        self._write_default_template("tester-3840x2160.psd", b"edited-3840")
+        zip_path = webapp.DEFAULT_TEMPLATES_DIR / webapp.TEMPLATE_RESET_ZIP_NAME
+        with zipfile.ZipFile(zip_path, "w") as zf:
+            zf.writestr("tester-720x480.psd", b"pristine-720")
+            zf.writestr("__MACOSX/._tester-720x480.psd", b"finder-shadow")
+            zf.writestr("tester-160x600.psd", b"pristine-160")
+            zf.writestr("README.txt", b"not a template")
+
+        response = self.client.post("/reset", follow_redirects=True)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-720x480.psd").read_bytes(), b"pristine-720")
+        self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-160x600.psd").read_bytes(), b"pristine-160")
+        self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-3840x2160.psd").read_bytes(), b"edited-3840")
+        self.assertFalse((webapp.DEFAULT_TEMPLATES_DIR / "README.txt").exists())
+        self.assertFalse((webapp.DEFAULT_TEMPLATES_DIR / "._tester-720x480.psd").exists())
+        backups = sorted(p.name for p in webapp.TEMPLATE_BACKUPS_DIR.iterdir())
+        self.assertEqual(len(backups), 2, backups)
+        self.assertTrue(all(b.startswith(("tester-720x480.", "tester-160x600.")) for b in backups), backups)
+        self.assertEqual({p.read_bytes() for p in webapp.TEMPLATE_BACKUPS_DIR.iterdir()}, {b"edited-720", b"edited-160"})
+        html = response.get_data(as_text=True)
+        self.assertIn("Templates restored from template-backup.zip", html)
+        self.assertIn("3840x2160", html)
+
+    def test_reset_form_wipes_every_remembered_field_and_every_kept_file(self):
+        """Reset means a blank form: the remembered fields (campaign
+        brief, brand colours, section switches) and every file carried
+        from the last run -- hero, logo, product, the size-specific PSD
+        rows -- are all forgotten, not just the PSD rows."""
+        job_id = "abcdef0123456789"
+        uploads = webapp.JOBS_DIR / job_id / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "mine-720x480.psd").write_bytes(b"psd")
+        (uploads / "hero.png").write_bytes(self._sample_image_bytes().getvalue())
+        (uploads / "logo.png").write_bytes(self._sample_image_bytes().getvalue())
+        (uploads / "product.png").write_bytes(self._sample_image_bytes().getvalue())
+        (webapp.JOBS_DIR / job_id / "form_state.json").write_text(json.dumps({
+            "files": {
+                "psd_file_1": "mine-720x480.psd", "upload_hero_image": "hero.png",
+                "layer_logo_image": "logo.png", "layer_product_image": "product.png",
+            },
+            "promoted_psd_rows": [1],
+        }))
+        webapp._preferences_path().write_text(json.dumps({
+            "last_job_id": job_id, "psd_size_1": "720x480", "psd_make_saved": "1",
+            "product_name": "Forget me", "brand_color_1": "#123456", "brand_color_1_enabled": "1",
+            "copy_language": "fr", "layer_header_text": "old prompt",
+        }))
+        before = self.client.get("/").get_data(as_text=True)
+        for kept in ("mine-720x480.psd", "hero.png", "logo.png", "product.png", "Forget me", "#123456", "old prompt"):
+            self.assertIn(kept, before, kept)
+
+        response = self.client.post("/reset", follow_redirects=True)
+
+        self.assertEqual(response.status_code, 200)
+        after = self.client.get("/").get_data(as_text=True)
+        for gone in ("mine-720x480.psd", "hero.png", "logo.png", "product.png", "Forget me", "#123456", "old prompt", 'value="720x480"'):
+            self.assertNotIn(gone, after, gone)
+        self.assertFalse(webapp._preferences_path().exists())
+        self.assertIn("Every field was cleared", response.get_data(as_text=True))
+
+    def test_reset_form_accepts_the_zip_under_the_folder_s_own_name_too(self):
+        """A zip of the folder made in Finder is called default_templates.zip;
+        the reset takes that name as well as template-backup.zip, and
+        failing both, the only zip in the folder."""
+        self._write_default_template("tester-720x480.psd", b"edited")
+        with zipfile.ZipFile(webapp.DEFAULT_TEMPLATES_DIR / "default_templates.zip", "w") as zf:
+            zf.writestr("tester-720x480.psd", b"pristine")
+        response = self.client.post("/reset", follow_redirects=True)
+        self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-720x480.psd").read_bytes(), b"pristine")
+        self.assertIn("Templates restored from default_templates.zip", response.get_data(as_text=True))
+
+        (webapp.DEFAULT_TEMPLATES_DIR / "default_templates.zip").rename(webapp.DEFAULT_TEMPLATES_DIR / "mine.zip")
+        self._write_default_template("tester-720x480.psd", b"edited again")
+        self.client.post("/reset", follow_redirects=True)
+        self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-720x480.psd").read_bytes(), b"pristine")
+
+    def test_reset_form_without_a_backup_zip_says_so_and_touches_nothing(self):
+        self._write_default_template("tester-720x480.psd", b"edited-720")
+        response = self.client.post("/reset", follow_redirects=True)
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual((webapp.DEFAULT_TEMPLATES_DIR / "tester-720x480.psd").read_bytes(), b"edited-720")
+        self.assertIn("No backup zip", response.get_data(as_text=True))
 
     def _write_default_template(self, filename, data: bytes) -> Path:
         path = webapp.DEFAULT_TEMPLATES_DIR / filename
@@ -2446,13 +2576,44 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
             r_, g_, b_ = img.getpixel((img.width // 2, img.height // 2))
         self.assertGreater(g_, 150, "the saved template renders, not the row's older copy")
         self.assertIn(b"new-square.psd", self.client.get("/").data)
-        # Unticked, the box stays unticked on the next fresh form.
-        self.client.post("/generate", data={
+        # Unticked, the box stays unticked on the next fresh form -- and a
+        # drop made with it unticked says so on the results page, so a
+        # forgotten untick can't read as the app not saving.
+        r = self.client.post("/generate", data={
             "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "upload_custom_hero_enabled": "1",
+            "psd_size_1": "1080x1080",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(108, 108), color=(30, 200, 30))), "one-off.psd"),
             "custom_sizes": "300x250", "header": "", "description": "",
         }, content_type="multipart/form-data")
+        self.assertIn(b"were used for this run only", r.data)
+        self.assertNotIn(b"is now the saved template", r.data)
         page = self.client.get("/").data
         self.assertNotIn(b'name="psd_make_saved" value="1" checked', page)
+
+    def test_a_promoted_upload_is_named_for_its_size_and_is_the_only_file_for_that_size(self):
+        # A dropped PSD becomes tester-<WxH>.psd whatever it was called,
+        # and any other file in the folder claiming that size -- an old
+        # hydroboost-... or a stray upload under its own name -- goes to
+        # the backups folder, so each size has exactly one template.
+        self._write_default_template("hydroboost-1080x1080.psd", self._sample_psd_bytes(size=(108, 108), color=(200, 200, 10)))
+        self._write_default_template("My_Ad_1080x1080_final.psd", self._sample_psd_bytes(size=(108, 108), color=(200, 200, 10)))
+        r = self.client.post("/generate", data={
+            "hero_image": (self._sample_image_bytes(color=(10, 10, 200)), "hero.png"),
+            "upload_custom_hero_enabled": "1",
+            "psd_size_1": "1080x1080",
+            "psd_file_1": (io.BytesIO(self._sample_psd_bytes(size=(108, 108), color=(200, 30, 30))), "whatever.psd"),
+            "psd_make_saved": "1", 
+            "header": "", "description": "",
+        }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"is now the saved template (tester-1080x1080.psd)", r.data)
+        names = sorted(p.name for p in webapp.DEFAULT_TEMPLATES_DIR.glob("*.psd"))
+        self.assertEqual([n for n in names if "1080x1080" in n], ["tester-1080x1080.psd"])
+        backups = sorted(p.name for p in webapp.TEMPLATE_BACKUPS_DIR.glob("*1080x1080*.psd"))
+        self.assertTrue(any(n.startswith("hydroboost-1080x1080.") for n in backups), backups)
+        self.assertTrue(any(n.startswith("My_Ad_1080x1080_final.") for n in backups), backups)
+        self.assertEqual(webapp._default_template_paths().get((1080, 1080)).name, "tester-1080x1080.psd")
 
     def test_a_row_size_a_few_pixels_off_a_known_size_goes_to_that_slot(self):
         # A 728x480 canvas dropped for the 720x480 slot: the row is
@@ -2499,7 +2660,9 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         page = self.client.get("/").data
         self.assertIn(b'name="upload_custom_hero_enabled" value="1"', page)
         self.assertIn(b'value="Remembered words"', page)
-        self.assertIsNotNone(re.search(rb'name="layer_logo_hidden" value="1"[^>]*\schecked', page))
+        # ...but not the hide boxes: a hide is for one run (see
+        # REMEMBERED_SECTION_FIELDS).
+        self.assertIsNone(re.search(rb'name="layer_logo_hidden" value="1"[^>]*\schecked', page))
         self.assertIn(b'name="psd_as_is" value="1" checked', page)
         self.assertIn(f'name="carry_files_job_id" value="{job_id}"'.encode(), page)
         self.assertNotIn(b'name="edit_job_id"', page)
@@ -2997,30 +3160,28 @@ class PaidProviderTest(unittest.TestCase):
         self.assertEqual(seeds, [4242, 4242])
 
     def test_full_ad_prompt_quotes_the_copy_and_describes_the_direction(self):
-        # A model told "write a headline" invents one; handed the words in
-        # quotes it sets those words. Audience and market steer art
-        # direction only -- nobody wants "runners 25-34" rendered into the
-        # picture, so they are described rather than quoted.
+        # Short, and with as little quoted text as an ad can carry: the
+        # headline and the button. Asked for the product name AND a
+        # headline AND a supporting line AND a button -- plus "(not
+        # written on the ad)" asides -- the model set most of it as
+        # gibberish. The product is the subject, not a third piece of
+        # type; audience and market stay out of the prompt entirely.
         import webapp
 
         prompt = webapp._build_full_ad_prompt(
             "HydroBoost", "Stay charged", "First 500 get free cans",
             "Claim my spot", "runners 25-34", "UK",
         )
-        self.assertIn('the product name "HydroBoost" set as type', prompt)
-        self.assertIn('reading exactly "First 500 get free cans"', prompt)
-        self.assertIn('reading exactly "Claim my spot"', prompt)
-        # The campaign message is its own copy, not a spare headline.
-        self.assertIn('a supporting line reading exactly "Stay charged"', prompt)
-        self.assertIn("HydroBoost", prompt)
-        self.assertNotIn('"runners 25-34"', prompt)
-        self.assertIn("runners 25-34", prompt)
-        self.assertIn("hero product image", prompt)
-        # ...and told so in as many words. Handed "for Active Adults
-        # 18-34" the model set "ArrCtive Adullts 8-34" under the headline.
-        self.assertIn("runners 25-34 (not written on the ad)", prompt)
-        self.assertIn("UK market (not written on the ad)", prompt)
-        self.assertIn("only the quoted words appear as text", prompt)
+        self.assertIn('headline text "First 500 get free cans"', prompt)
+        self.assertIn('a button with the text "Claim my spot"', prompt)
+        self.assertIn("for HydroBoost", prompt)
+        self.assertNotIn('"HydroBoost"', prompt)
+        self.assertNotIn("Stay charged", prompt, "no supporting line beside a headline")
+        self.assertNotIn("runners", prompt)
+        self.assertNotIn("UK", prompt)
+        self.assertNotIn("not written", prompt)
+        self.assertIn("only the quoted text appears", prompt)
+        self.assertEqual(prompt.count('"'), 4, "two quoted strings, no more")
 
     def test_whole_ad_sizes_are_told_their_real_safe_area(self):
         # A 160x600 skyscraper comes back from Ideogram as 1:3 and is
@@ -3038,7 +3199,7 @@ class PaidProviderTest(unittest.TestCase):
         self.assertIn("at least 3% of the width", webapp._full_ad_margin_clause(1080, 1080, "ideogram"))
         # A provider that renders the exact size has no crop to allow for.
         self.assertAlmostEqual(webapp._full_ad_safe_area(160, 600, "pollinations")[0], 10 / 160, places=3)
-        self.assertIn("cut-off letters", webapp.FULL_AD_NEGATIVE_CLAUSE)
+        self.assertIn("cropped text", webapp.FULL_AD_NEGATIVE_CLAUSE)
 
     def test_full_ad_prompt_carries_the_ticked_brand_colours(self):
         # A hex triplet alone reads to an image model as text rather than
@@ -3070,8 +3231,8 @@ class PaidProviderTest(unittest.TestCase):
         import webapp
 
         prompt = webapp._build_full_ad_prompt(None, None, None, None, None, None)
-        self.assertIn("advertisement layout", prompt)
-        self.assertIn("hero product image", prompt)
+        self.assertIn("advertising poster", prompt)
+        self.assertIn("hero shot of the product", prompt)
         self.assertNotIn('""', prompt)
 
     def test_full_ad_falls_back_to_the_campaign_message_for_a_headline(self):
@@ -3082,7 +3243,7 @@ class PaidProviderTest(unittest.TestCase):
         prompt = webapp._build_full_ad_prompt(
             "HydroBoost", "Stay charged", None, None, None, None
         )
-        self.assertIn('a large headline reading exactly "Stay charged"', prompt)
+        self.assertIn('headline text "Stay charged"', prompt)
         self.assertNotIn("supporting line", prompt)
 
     def test_full_ad_does_not_repeat_a_message_identical_to_the_headline(self):
@@ -5534,6 +5695,19 @@ class LayerOverrideHelpersTest(unittest.TestCase):
     layer-override feature (src/image_ops.py) -- no PSD parsing or Flask
     involved, just Image-in/Image-out correctness."""
 
+    def test_a_template_glow_comes_back_at_the_size_it_went_in(self):
+        """The live-text export writes the renderer's halo radius r as
+        Photoshop Size 2.7r (the fit that matches the preview). Reading
+        a template's glow back for a redraw inverts that, so a glow the
+        app wrote -- or one set in Photoshop -- is drawn at its own
+        strength, not 2.7x bigger every trip."""
+        # 40px type, glow 20% -> radius 8px -> Photoshop Size 21.6px.
+        self.assertEqual(webapp._template_glow_percent({"size": 21.6}, 1.0, 40), 20)
+        # Scaled with the box: the template at half size draws it at 10%
+        # of the same 40px reference... which is the same halo, smaller.
+        self.assertEqual(webapp._template_glow_percent({"size": 21.6}, 0.5, 40), 10)
+        self.assertEqual(webapp._template_glow_percent({"size": 0}, 1.0, 40), 1)
+
     def test_apply_layer_image_override_fits_vertical_and_centers(self):
         from src.image_ops import apply_layer_image_override
 
@@ -6342,7 +6516,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         }
         r = self.client.post("/generate", data=data, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200)
-        self.assertIn(b'reading exactly &#34;First 500 get free cans&#34;', r.data)
+        self.assertIn(b'headline text &#34;First 500 get free cans&#34;', r.data)
 
     def _solid_png(self, color, size=(1200, 1200)):
         buf = io.BytesIO()
@@ -7212,7 +7386,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             }, content_type="multipart/form-data")
             self.assertEqual(r.status_code, 200)
             page = r.data.decode()
-            cards = page.count('<div class="card">')
+            cards = page.count('<div class="card"')
             self.assertGreaterEqual(cards, 1)
             self.assertEqual(len(sent), cards, "full-ad mode is one image per size")
             self.assertIn(
@@ -7233,29 +7407,49 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertEqual(r.status_code, 200)
         self.assertNotIn("spend this run", r.data.decode())
 
-    def test_a_paid_provider_gets_one_retry_for_lettering_not_two(self):
-        # Every retry after a text-check failure is a paid image. Two
-        # retries meant a "one image" run could quietly bill three.
+    def test_a_paid_provider_regenerates_twice_before_painting_out_and_keeps_the_cleanest(self):
+        # "If there is text, create another image": a paid provider gets
+        # two fresh pictures after a text-check failure before the free
+        # paint-out, the retry asks in the prompt itself for plain
+        # unbranded objects, and when every attempt has lettering the
+        # one with the least is the one kept.
         from unittest import mock
         import webapp as _webapp
         from src.text_check import TextCheckResult, TextFinding
 
         self._stage_real_template()
         sent = []
-        always_text = TextCheckResult(available=True, findings=[TextFinding("SALE", 0.99, (1, 1, 10, 5))])
+        results = iter([
+            TextCheckResult(available=True, findings=[TextFinding("MIKASA", 0.99, (1, 1, 200, 60))]),
+            TextCheckResult(available=True, findings=[TextFinding("RIKU", 0.99, (1, 1, 20, 8))]),
+            TextCheckResult(available=True, findings=[TextFinding("SALE", 0.99, (1, 1, 90, 30))]),
+        ])
+        checked = []
+
+        def fake_find(image):
+            result = next(results)
+            checked.append((image, result))
+            return result
+
+        painted = []
         original = _webapp.get_provider
-        _webapp.get_provider = lambda name, rendering_speed=None: self._paid_stub(sent)
+        stub = self._paid_stub(sent)
+        _webapp.get_provider = lambda name, rendering_speed=None: stub
         try:
-            with mock.patch.object(_webapp, "find_text", lambda image: always_text), \
-                 mock.patch.object(_webapp, "remove_text", lambda image, result: (image, 0, "too large")):
+            with mock.patch.object(_webapp, "find_text", fake_find), \
+                 mock.patch.object(_webapp, "scrub_text", lambda image: (painted.append(image) or image, ["1 word painted out."], TextCheckResult(available=True))):
                 r = self.client.post("/generate", data={
                     "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
                 }, content_type="multipart/form-data")
             self.assertEqual(r.status_code, 200)
         finally:
             _webapp.get_provider = original
-        self.assertEqual(len(sent), 2, "one retry, not AI_TEXT_RETRIES")
-        self.assertIn("Ideogram spend this run: about $0.18 (2 images at Quality).", r.data.decode())
+        self.assertEqual(len(sent), 3, "two retries after the first, then the paint-out")
+        self.assertIn("Ideogram spend this run: about $0.27 (3 images at Quality).", r.data.decode())
+        self.assertIn("plain and unbranded", sent[1])
+        self.assertNotIn("plain and unbranded", sent[0])
+        # The attempt with the least lettering (the 20x8 "RIKU") is the one painted out.
+        self.assertIs(painted[0], checked[1][0])
 
     def test_the_rendering_speed_chosen_on_the_form_reaches_the_provider(self):
         import webapp as _webapp
@@ -7455,7 +7649,6 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         self.assertTrue(sent)
         for negative in sent:
             self.assertIn("fine print", negative)
-            self.assertIn("demographic text", negative)
         self.assertIn("Whole ad on Turbo", r.data.decode())
         # And the plain statement that the words were asked for -- the
         # one thing a "why is there text" reader needs to see first.
@@ -7644,6 +7837,48 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         import zipfile as _zipfile
         names = _zipfile.ZipFile(next((webapp.JOBS_DIR / job2).glob("*.zip"))).namelist()
         self.assertTrue(any(f"_{approved}.png" in n for n in names))
+
+    def test_a_whole_ad_is_a_design_with_the_prompt_sent_as_written_and_a_short_headline(self):
+        # Ideogram sets type cleanly as a DESIGN with MagicPrompt off --
+        # the rewrite paraphrased the quoted headline, which then came
+        # back misspelled -- and only for a headline it can hold: past
+        # about six words it invents letters, so a long one is flagged.
+        import webapp as _webapp
+        self._stage_real_template()
+        sent = []
+
+        class _Paid:
+            name = "stub"
+            cost_per_image = 0.09
+            rendering_speed = "QUALITY"
+            supports_negative_prompt = True
+            supports_render_mode = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, **kw):
+                from PIL import Image as _Image
+                sent.append((prompt, kw))
+                return _Image.new("RGB", (width, height), (200, 120, 40))
+
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name, rendering_speed=None: _Paid()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_full_ad": "1",
+                "upload_ai_provider": "ideogram", "upload_ai_speed": "QUALITY", "header": "", "description": "",
+                "upload_ai_headline": "Rehydrate your whole summer with a brand new sports drink today",
+                "layer_cta_text": "Shop now",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+        self.assertTrue(sent)
+        for prompt, kw in sent:
+            self.assertEqual(kw, {"photographic": False, "rewrite_prompt": False})
+            self.assertIn('headline text "Rehydrate your whole summer with a brand new sports drink today"', prompt)
+            self.assertIn('button with the text "Shop now"', prompt)
+            self.assertNotIn("not written", prompt)
+            self.assertLess(len(prompt), 420, prompt)
+        self.assertIn("the headline is 11 words", r.data.decode())
 
     def test_in_whole_ad_mode_an_approved_size_is_not_generated_again(self):
         # Whole-ad mode bills one image per size, so this is where a kept
@@ -10070,6 +10305,287 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         shadowed = out.getpixel((5, 5))
         self.assertTrue(all(abs(c - int(n * 0.4)) <= 2 for c, n in zip(shadowed, (20, 120, 220))), shadowed)
         self.assertEqual(out.getpixel((30, 5)), (255, 255, 255), "the layer's own pixels are Photoshop's")
+
+    def test_hide_boxes_are_not_remembered_on_a_fresh_form(self):
+        # Ticked once, they stayed ticked run after run, and a later
+        # run came back as nine blank canvases. A hide is for one run.
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "layer_header_hidden": "1", "layer_logo_hidden": "1"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"header (hidden)", r.data)
+        page = self.client.get("/").data.decode()
+        for name in ("header", "logo"):
+            box = re.search(rf'name="layer_{name}_hidden" value="1"[^>]*>', page)
+            self.assertIsNotNone(box, name)
+            self.assertNotIn("checked", box.group(0), f"{name} hide box remembered")
+        # The custom-hero section itself is still remembered.
+        toggle = re.search(r'id="upload_custom_hero_enabled"[^>]*>', page)
+        self.assertIn("checked", toggle.group(0))
+
+    def test_an_emptied_background_layer_takes_the_hero_and_the_old_words_go(self):
+        # The background picture deleted in Photoshop (the layer kept,
+        # empty) so the hero can take its place. The hero fills the
+        # canvas, and a redrawn text layer wipes its old words first --
+        # skipped, the wipe left every translated header doubled over
+        # the English.
+        from psd_tools import PSDImage
+        from psd_tools.api.layers import PixelLayer
+        template = webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd"
+        psd = PSDImage.open(self.template)
+        for layer in list(psd):
+            if layer.name.lower() == "background":
+                index = list(psd).index(layer)
+                psd.remove(layer)
+                empty = PixelLayer.frompil(Image.new("RGBA", (1, 1), (0, 0, 0, 0)), psd, name="background", top=0, left=0)
+                psd.remove(empty)
+                psd.insert(index, empty)
+        psd.save(template)
+        with mock.patch.object(webapp, "localize_message", side_effect=lambda t, l: ("ES " + t, True)):
+            r = self.client.post(
+                "/generate",
+                data={"upload_custom_hero_enabled": "1", "copy_language": "es", "header": "", "description": "",
+                      "custom_sizes": "1080x1080",
+                      "upload_hero_image": (self._png((10, 200, 10)), "hero.png")},
+                content_type="multipart/form-data",
+            )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"1080x1080: updated layer(s) -- background, header", r.data)
+        job = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job / "creative_campaign1_1080x1080.png") as img:
+            r_, g_, b_ = img.convert("RGB").getpixel((20, img.height - 20))
+        self.assertGreater(g_, 150, "the hero fills the emptied background")
+        self.assertLess(r_, 100)
+        # ...and the live-text file carries the hero in that layer too.
+        self.assertIn(b"source PSD&#39;s artwork replaced -- background", r.data)
+        live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
+        background = next(l for l in PSDImage.open(live) if l.name.lower() == "background")
+        self.assertEqual(tuple(background.bbox), (0, 0, 1080, 1080))
+        self.assertGreater(background.topil().convert("RGB").getpixel((20, 1060))[1], 150)
+
+    def test_a_form_drop_shadow_is_drawn_line_by_line_and_reaches_the_live_text_psd(self):
+        # Opacity, distance, spread, size, angle from the form: drawn
+        # under the header at the template's own two line sizes (a
+        # restyle no longer collapses the header to one size that
+        # clips), and written into the live-text PSD as a real
+        # Photoshop Drop Shadow.
+        from psd_tools import PSDImage
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "layer_header_shadow": "1", "layer_header_shadow_color": "#ff0000",
+                  "layer_header_shadow_opacity": "100", "layer_header_shadow_distance": "12",
+                  "layer_header_shadow_spread": "40", "layer_header_shadow_size": "10"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"header drawn line by line at the template&#39;s own sizes", r.data)
+        self.assertIn(b"1080x1080: updated layer(s) -- background, header.", r.data)
+        job = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job / "creative_campaign1_1080x1080.png") as img:
+            box = img.convert("RGB").crop((140, 112, 936, 260))
+            reds = sum(1 for r_, g_, b_ in box.getdata() if r_ > 180 and g_ < 80 and b_ < 80)
+        self.assertGreater(reds, 500, "a red shadow under the header")
+        live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
+        header = next(l for l in PSDImage.open(live) if l.name.lower() == "header")
+        kinds = {type(e).__name__: e for e in header.effects}
+        self.assertIn("DropShadow", kinds)
+        self.assertEqual(float(kinds["DropShadow"].choke), 40.0)
+
+    def test_the_campaign_brief_is_remembered_on_a_fresh_form(self):
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "product_name": "HydroBoost", "market": "US", "audience": "Active adults 18-34",
+                  "campaign_message": "Rehydrate summer with a new sports drink"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        page = self.client.get("/").data
+        self.assertIn(b'name="product_name" placeholder="e.g. HydroBoost Sports Drink" value="HydroBoost"', page)
+        self.assertIn(b'value="Active adults 18-34"', page)
+        self.assertIn(b"Rehydrate summer with a new sports drink</textarea>", page)
+
+    def test_every_form_style_lands_in_the_saved_template_as_live_type(self):
+        # Size, colour, glow, stroke and drop shadow from the form go
+        # into the template's type layers as type properties and layer
+        # effects -- the header stays editable text, nothing is
+        # rasterised in its place.
+        from psd_tools import PSDImage
+        from src.image_ops import get_psd_layer_text_style
+        template = webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd"
+        shutil.copy(self.template, template)
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "update_saved_templates": "1",
+                  "layer_header_text": "Stay cool", "layer_header_font_size": "80",
+                  "layer_header_use_custom_color": "1", "layer_header_text_color": "#22aa44",
+                  "layer_header_glow": "1", "layer_header_glow_color": "#ffffff", "layer_header_glow_size": "10",
+                  "layer_header_stroke_size": "2", "layer_header_stroke_color": "#000000",
+                  "layer_header_shadow": "1", "layer_header_shadow_opacity": "60", "layer_header_shadow_distance": "7",
+                  "layer_header_shadow_spread": "20", "layer_header_shadow_size": "9"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"saved template tester-1080x1080.psd updated -- header", r.data)
+        header = next(l for l in PSDImage.open(template) if l.name.lower() == "header")
+        self.assertEqual(header.kind, "type", "still live text")
+        self.assertEqual(header.text, "Stay cool")
+        style = get_psd_layer_text_style(template, "header")
+        self.assertEqual(style["font_size"], 80)
+        self.assertEqual(tuple(style["color"]), (34, 170, 68))
+        kinds = {type(e).__name__: e for e in header.effects}
+        self.assertEqual({"DropShadow", "OuterGlow", "Stroke"} - set(kinds), set(), kinds)
+        self.assertEqual((float(kinds["DropShadow"].opacity), float(kinds["DropShadow"].choke)), (60.0, 20.0))
+
+    def test_the_live_text_download_is_named_after_its_template(self):
+        # The file that comes out is the file that goes back in: a
+        # live-text PSD made from tester-1080x1080.psd downloads as
+        # tester-1080x1080.psd (no run stamp), and sits in the zip
+        # under that name too.
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"), "layer_header_text": "Hello"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        page = r.data.decode()
+        link = re.search(r'href="(/download-psd/[0-9a-f]{32}/[^"]*source-template\.psd\?as=tester-1080x1080\.psd)"', page)
+        self.assertIsNotNone(link, page[:200])
+        download = self.client.get(link.group(1).replace("&amp;", "&"))
+        self.assertEqual(download.status_code, 200)
+        self.assertIn('filename=tester-1080x1080.psd', download.headers.get("Content-Disposition", ""))
+        job = re.search(r"/download/([0-9a-f]{32})", page).group(1)
+        with zipfile.ZipFile(io.BytesIO(self.client.get(f"/download/{job}").data)) as bundle:
+            names = [n.rsplit("/", 1)[-1] for n in bundle.namelist()]
+        self.assertIn("tester-1080x1080.psd", names)
+
+    def test_a_rasterised_text_layer_is_a_picture_and_is_left_alone(self):
+        # A description rasterised in Photoshop is a picture with a
+        # text layer's name. Typed copy for it used to wipe the box and
+        # draw plain type over the artwork; now it is used as it is.
+        from psd_tools import PSDImage
+        from psd_tools.api.layers import PixelLayer
+        template = webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd"
+        psd = PSDImage.open(self.template)
+        target = next(l for l in psd if l.name.lower() == "header")
+        index = list(psd).index(target)
+        art = Image.new("RGBA", (400, 100), (255, 0, 255, 255))
+        psd.remove(target)
+        picture = PixelLayer.frompil(art, psd, name="header", top=112, left=140)
+        psd.remove(picture)
+        psd.insert(index, picture)
+        psd.save(template)
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "layer_header_text": "New words", "layer_header_glow": "1"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"header is a picture in this size&#39;s template", r.data)
+        self.assertNotIn(b"updated layer(s) -- background, header", r.data)
+        job = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job / "creative_campaign1_1080x1080.png") as img:
+            self.assertEqual(img.convert("RGB").getpixel((300, 160)), (255, 0, 255), "the picture stands")
+
+    def test_a_template_with_no_background_layer_still_takes_the_hero(self):
+        # Deleted rather than emptied: no layer named background at all.
+        # The hero fills the canvas under everything, the other layers
+        # come back over it, and the live-text file gets a background
+        # layer put in at the bottom.
+        from psd_tools import PSDImage
+        template = webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd"
+        psd = PSDImage.open(self.template)
+        for layer in list(psd):
+            if layer.name.lower() == "background":
+                psd.remove(layer)
+        psd.save(template)
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 200, 10)), "hero.png")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"1080x1080: updated layer(s) -- background", r.data)
+        job = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job / "creative_campaign1_1080x1080.png") as img:
+            rgb = img.convert("RGB")
+            corner = rgb.getpixel((20, img.height - 20))
+            self.assertGreater(corner[1], 150, "the hero fills the canvas")
+            # ...and the logo is still on top of it (the pristine template's logo box).
+            logo = rgb.getpixel((530, 410))
+            self.assertNotEqual(logo, corner, "the logo comes back over the hero")
+        live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
+        layers = list(PSDImage.open(live))
+        self.assertEqual(layers[0].name.lower(), "background", "put in at the bottom of the stack")
+        self.assertEqual(tuple(layers[0].bbox), (0, 0, 1080, 1080))
+
+    def test_a_glow_and_a_drop_shadow_on_the_logo_and_product_are_drawn_and_written_as_effects(self):
+        from psd_tools import PSDImage
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "layer_logo_glow": "1", "layer_logo_glow_color": "#00ffff", "layer_logo_glow_size": "30",
+                  "layer_logo_glow_opacity": "90",
+                  "layer_logo_shadow": "1", "layer_logo_shadow_distance": "16", "layer_logo_shadow_spread": "30"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"logo (glow + shadow)", r.data)
+        job = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job / "creative_campaign1_1080x1080.png") as img:
+            rgb = img.convert("RGB")
+            # Just outside the logo's box (405..661 x 326..497 in the template): cyan glow over the blue hero.
+            around = [rgb.getpixel((x, 320)) for x in range(420, 650, 10)]
+        self.assertTrue(any(g > 150 and b > 150 and r_ < 120 for r_, g, b in around), around)
+        live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
+        logo = next(l for l in PSDImage.open(live) if l.name.lower() == "logo")
+        kinds = {type(e).__name__: e for e in logo.effects}
+        self.assertIn("OuterGlow", kinds)
+        self.assertIn("DropShadow", kinds)
+        self.assertEqual(float(kinds["DropShadow"].choke), 30.0)
+
+    def test_a_stroke_on_the_logo_is_drawn_and_written_as_a_layer_effect(self):
+        from psd_tools import PSDImage
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "layer_logo_stroke": "1", "layer_logo_stroke_color": "#ff00ff", "layer_logo_stroke_size": "12"},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"logo (stroke)", r.data)
+        job = re.search(rb"/download/([0-9a-f]{32})", r.data).group(1).decode()
+        with Image.open(webapp.JOBS_DIR / job / "creative_campaign1_1080x1080.png") as img:
+            rgb = img.convert("RGB")
+            # Just outside the logo's box: a magenta outline over the blue hero.
+            around = [rgb.getpixel((x, 322)) for x in range(420, 650, 10)]
+        self.assertTrue(any(r_ > 150 and b > 150 and g < 120 for r_, g, b in around), around)
+        live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
+        logo = next(l for l in PSDImage.open(live) if l.name.lower() == "logo")
+        kinds = {type(e).__name__: e for e in logo.effects}
+        self.assertIn("Stroke", kinds)
+        self.assertEqual(float(kinds["Stroke"].size), 12.0)
 
     def test_a_type_layers_picture_is_the_words_alone(self):
         # A background box behind the description is this form's

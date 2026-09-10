@@ -1197,3 +1197,172 @@ class PsdExportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FormDropShadowTest(unittest.TestCase):
+    def test_a_drop_shadow_from_the_form_becomes_a_real_layer_effect_and_keeps_the_others(self):
+        import shutil, tempfile
+        from pathlib import Path
+        from psd_tools import PSDImage
+        from src.psd_export import set_type_layer_effects
+        source = Path("default_templates/tester-1080x1080.psd")
+        if not source.is_file():
+            self.skipTest("project template not present")
+        tmp = Path(tempfile.mkdtemp()) / "fx.psd"
+        shutil.copy(source, tmp)
+        before = {type(e).__name__ for e in next(l for l in PSDImage.open(tmp) if l.name == "header").effects}
+        self.assertEqual(
+            set_type_layer_effects(tmp, {"header": {
+                "shadow": {"color": (255, 0, 0), "opacity": 80, "angle": 120, "distance": 12, "spread": 40, "size": 10},
+                "glow": {"color": (0, 255, 0), "radius": 6, "opacity": 50},
+            }}),
+            ["header"],
+        )
+        header = next(l for l in PSDImage.open(tmp) if l.name == "header")
+        kinds = {type(e).__name__: e for e in header.effects}
+        self.assertIn("DropShadow", kinds)
+        self.assertIn("OuterGlow", kinds)
+        shadow = kinds["DropShadow"]
+        self.assertEqual((float(shadow.opacity), float(shadow.distance), float(shadow.choke), float(shadow.size)), (80.0, 12.0, 40.0, 10.0))
+        # Effects the layer already had and the form did not touch stay.
+        for name in before - {"DropShadow", "OuterGlow"}:
+            self.assertIn(name, kinds)
+
+    def test_effects_are_written_in_the_exact_shape_photoshop_writes_them(self):
+        """Photoshop opened a download and said the header layer "is not
+        compatible with this version of Photoshop" -- its way of giving
+        up on an lfx2 block it can't parse. Comparing against a file it
+        saved itself: inside lfx2 blend modes are the long names
+        ("multiply", "screen", "normal"), not the four-letter codes; the
+        spread (Ckmt) carries the pixel unit tag even though the dialog
+        shows a percentage; and every shadow, glow and stroke carries a
+        `TrnS` linear contour. This pins all three."""
+        from psd_tools.constants import Tag
+        from psd_tools.terminology import Unit
+        from src.psd_export import _drop_shadow_descriptor, _outer_glow_descriptor, _stroke_descriptor
+
+        shadow = _drop_shadow_descriptor((0, 0, 0), 75, 120, 5, 30, 5)
+        glow = _outer_glow_descriptor((255, 255, 0), 8, 60)
+        stroke = _stroke_descriptor((0, 0, 0), 2)
+        self.assertEqual(shadow[b"Md  "].enum, b"multiply")
+        self.assertEqual(glow[b"Md  "].enum, b"screen")
+        self.assertEqual(stroke[b"Md  "].enum, b"normal")
+        self.assertEqual(shadow[b"Ckmt"].unit, Unit.Pixels)
+        self.assertEqual(glow[b"Ckmt"].unit, Unit.Pixels)
+        # A glow's spread lands in Ckmt, like a shadow's.
+        self.assertEqual(_outer_glow_descriptor((255, 255, 0), 8, 60, 45)[b"Ckmt"].value, 45.0)
+        for fx in (shadow, glow):
+            contour = fx[b"TrnS"]
+            self.assertEqual(contour.classID, b"ShpC")
+            self.assertEqual(contour[b"Nm  "].value, "Linear\x00")
+            points = [(p[b"Hrzn"].value, p[b"Vrtc"].value) for p in contour[b"Crv "]]
+            self.assertEqual(points, [(0.0, 0.0), (255.0, 255.0)])
+        self.assertIn(b"overprint", stroke)
+        # Key order matches Photoshop's too -- the contour sits where it
+        # puts it, before the trailing flag.
+        self.assertEqual(list(shadow.keys())[-3:], [b"AntA", b"TrnS", b"layerConceals"])
+        self.assertEqual(list(glow.keys())[-3:], [b"AntA", b"TrnS", b"Inpr"])
+
+        # And it survives a save/reload through psd-tools unchanged.
+        source = Path("default_templates/tester-1080x1080.psd")
+        if not source.is_file():
+            self.skipTest("project template not present")
+        from src.psd_export import set_type_layer_effects
+        tmp = Path(tempfile.mkdtemp()) / "fx.psd"
+        shutil.copy(source, tmp)
+        set_type_layer_effects(tmp, {"header": {"shadow": {"color": (0, 0, 0), "opacity": 75, "spread": 30}, "glow": {"color": (0, 255, 0), "radius": 6, "opacity": 50}}})
+        header = next(l for l in PSDImage.open(tmp) if l.name == "header")
+        block = header.tagged_blocks.get_data(Tag.OBJECT_BASED_EFFECTS_LAYER_INFO)
+        # The shadow lives in the *Multi list when the block has one
+        # (the cloud template's header), else under the single key.
+        written = block[b"dropShadowMulti"][0] if b"dropShadowMulti" in block else block[b"DrSh"]
+        self.assertEqual(written[b"Md  "].enum, b"multiply")
+        self.assertEqual(written[b"Ckmt"].unit, Unit.Pixels)
+        self.assertIn(b"TrnS", block[b"OrGl"])
+        # The two that actually made Photoshop refuse the layer: the
+        # block's "object effects version" must be 0 (psd-tools defaults
+        # to 1, and its set_data() rebuilt the block through that
+        # default), and every descriptor's class name is the null
+        # character, never the empty string -- Photoshop stores the name
+        # null-terminated, so "no name" is one character long.
+        self.assertEqual(block.version, 0)
+        self.assertEqual(block.name, "\x00")
+
+        def every_descriptor(value):
+            if hasattr(value, "items") and type(value).__name__ != "List":
+                yield value
+                for child in value.values():
+                    yield from every_descriptor(child)
+            elif type(value).__name__ == "List":
+                for child in value:
+                    yield from every_descriptor(child)
+
+        names = {(d.classID, d.name) for d in every_descriptor(block)}
+        self.assertTrue(all(name != "" for _, name in names), names)
+        for class_id in (b"DrSh", b"OrGl", b"RGBC", b"ShpC", b"CrPt"):
+            self.assertIn((class_id, "\x00"), names)
+
+    def test_a_layer_with_no_effects_gets_a_complete_photoshop_block_not_a_bare_one(self):
+        """A block holding only the one effect (Scl, the switch, OrGl)
+        was ignored by Photoshop -- the logo opened with no Effects at
+        all. A layer that had no block gets Photoshop's own full
+        structure (every effect present and off) with the form's set
+        into it; and a drop shadow or stroke goes into the *Multi list
+        when the block has one, never beside it as a single key."""
+        from psd_tools.constants import Tag
+        from src.psd_export import set_type_layer_effects
+        source = Path("default_templates/tester-1080x1080.psd")
+        if not source.is_file():
+            self.skipTest("project template not present")
+        tmp = Path(tempfile.mkdtemp()) / "fx.psd"
+        shutil.copy(source, tmp)
+        # Strip the logo's block so it starts from nothing.
+        psd = PSDImage.open(tmp)
+        logo = next(l for l in psd if l.name.lower() == "logo")
+        logo.tagged_blocks.pop(Tag.OBJECT_BASED_EFFECTS_LAYER_INFO, None)
+        logo.tagged_blocks.pop(Tag.EFFECTS_LAYER, None)
+        psd.save(tmp)
+        set_type_layer_effects(tmp, {"logo": {
+            "glow": {"color": (41, 187, 22), "radius": 30, "opacity": 75, "spread": 33},
+            "shadow": {"color": (0, 0, 0), "opacity": 60, "distance": 8, "size": 6},
+            "stroke": {"color": (255, 0, 255), "size": 4},
+        }})
+        logo = next(l for l in PSDImage.open(tmp) if l.name.lower() == "logo")
+        block = logo.tagged_blocks.get_data(Tag.OBJECT_BASED_EFFECTS_LAYER_INFO)
+        self.assertEqual(block.version, 0)
+        self.assertEqual(block.name, "\x00")
+        self.assertEqual(
+            list(block.keys()),
+            [b"Scl ", b"masterFXSwitch", b"dropShadowMulti", b"innerShadowMulti", b"OrGl", b"solidFillMulti",
+             b"gradientFillMulti", b"frameFXMulti", b"IrGl", b"ebbl", b"ChFX", b"numModifyingFX"],
+        )
+        self.assertNotIn(b"DrSh", block)
+        self.assertNotIn(b"FrFX", block)
+        self.assertEqual(len(block[b"dropShadowMulti"]), 1)
+        self.assertTrue(block[b"dropShadowMulti"][0][b"enab"].value)
+        self.assertEqual(len(block[b"frameFXMulti"]), 1)
+        self.assertEqual(block[b"frameFXMulti"][0][b"Sz  "].value, 4.0)
+        self.assertTrue(block[b"OrGl"][b"enab"].value)
+        # Untouched effects stay present and off, as Photoshop keeps them.
+        self.assertFalse(block[b"IrGl"][b"enab"].value)
+        # numModifyingFX is Photoshop's count of switched-on effects,
+        # read before the effects themselves: at 0 the block is skipped.
+        self.assertEqual(block[b"numModifyingFX"].value, 3)
+        # And the record flag bit every Photoshop layer carries: found
+        # by bisecting a download -- the same file with only this bit
+        # flipped on the logo was the one Photoshop listed the glow on.
+        self.assertTrue(logo._record.flags.undocumented_1)
+        kinds = {type(e).__name__ for e in logo.effects if e.enabled}
+        self.assertEqual(kinds, {"DropShadow", "OuterGlow", "Stroke"})
+        # Photoshop also keeps the legacy lrFX twin in step, and leads
+        # the layer's extra data with the two effects blocks. A layer
+        # with lfx2 alone, at the end, opened with no Effects at all.
+        from psd_tools.psd.effects_layer import EffectOSType
+        keys = list(logo.tagged_blocks.keys())
+        self.assertEqual(keys[:2], [Tag.OBJECT_BASED_EFFECTS_LAYER_INFO, Tag.EFFECTS_LAYER])
+        legacy = logo.tagged_blocks.get_data(Tag.EFFECTS_LAYER)
+        self.assertEqual(legacy.get(EffectOSType.OUTER_GLOW).enabled, 1)
+        self.assertEqual(legacy.get(EffectOSType.DROP_SHADOW).enabled, 1)
+        self.assertEqual(legacy.get(EffectOSType.OUTER_GLOW).color.values[:3], [41 * 257, 187 * 257, 22 * 257])
+        self.assertEqual(legacy.get(EffectOSType.DROP_SHADOW).blur, 6 * 65536)
+        self.assertEqual(legacy.get(EffectOSType.INNER_GLOW).enabled, 0)

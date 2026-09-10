@@ -74,6 +74,7 @@ from src.psd_export import (
     set_flattened_preview,
     set_shape_layer_style,
     set_type_layer_effects,
+    set_type_layer_font_size,
     pair_type_layers_with_pixels,
     set_type_layer_raster,
     set_layer_visibility,
@@ -109,11 +110,15 @@ from src.image_ops import (
     get_psd_layer_effect_reach,
     font_covers_text,
     get_psd_layer_foreground,
+    get_psd_composite_rgba,
+    get_psd_layer_rgba,
+    draw_layer_effects,
     _reconstruct_box_background,
     get_psd_group_text,
     get_psd_group_text_box,
     get_psd_layer_stack,
     get_psd_layer_names,
+    get_psd_pixel_layer_names,
     get_psd_visible_layers,
     get_psd_buried_layers,
     get_psd_layer_text_style,
@@ -279,6 +284,18 @@ EDIT_TEXT_FIELD_NAMES = (
     "layer_description_background_blur",
     "layer_legal_glow_color", "layer_legal_glow_size", "layer_legal_glow_opacity",
     "layer_header_stroke_size", "layer_header_stroke_color",
+    "layer_header_shadow_color", "layer_header_shadow_opacity", "layer_header_shadow_distance",
+    "layer_header_shadow_spread", "layer_header_shadow_size", "layer_header_shadow_angle",
+    "layer_description_shadow_color", "layer_description_shadow_opacity", "layer_description_shadow_distance",
+    "layer_description_shadow_spread", "layer_description_shadow_size", "layer_description_shadow_angle",
+    "layer_logo_glow_color", "layer_logo_glow_size", "layer_logo_glow_opacity",
+    "layer_logo_shadow_color", "layer_logo_shadow_opacity", "layer_logo_shadow_distance",
+    "layer_logo_shadow_spread", "layer_logo_shadow_size", "layer_logo_shadow_angle",
+    "layer_product_glow_color", "layer_product_glow_size", "layer_product_glow_opacity",
+    "layer_product_shadow_color", "layer_product_shadow_opacity", "layer_product_shadow_distance",
+    "layer_product_shadow_spread", "layer_product_shadow_size", "layer_product_shadow_angle",
+    "layer_logo_stroke_color", "layer_logo_stroke_size",
+    "layer_product_stroke_color", "layer_product_stroke_size",
     "layer_description_stroke_size", "layer_description_stroke_color",
     "layer_legal_stroke_size", "layer_legal_stroke_color",
     "layer_cta_stroke_size", "layer_cta_stroke_color", "layer_cta_radius",
@@ -328,7 +345,9 @@ EDIT_CHECKBOX_FIELD_NAMES = (
     "upload_ai_keep",
     "upload_ai_allow_text",
     "upload_ai_full_ad",
-    "layer_header_glow",
+    "layer_header_glow", "layer_header_shadow", "layer_description_shadow",
+    "layer_logo_glow", "layer_logo_shadow", "layer_product_glow", "layer_product_shadow",
+    "layer_logo_stroke", "layer_product_stroke",
     "layer_description_glow",
     "layer_header_background",
     "layer_description_background",
@@ -366,6 +385,7 @@ AI_GENERATED_CAMPAIGN_FILENAME = "ai_generated_campaign.png"
 # real-world default-template files look like "tester-728x480.psd" or
 # "hero_970x90_v2.psd", size embedded mid-name after a prefix).
 _SIZE_IN_FILENAME_RE = re.compile(r"(\d+)\s*[xX]\s*(\d+)")
+SIZE_IN_NAME_RE_LOOSE = re.compile(r"\d{2,5}x\d{2,5}")
 
 
 # Nothing useful comes of asking a provider for more than this, and the
@@ -540,6 +560,32 @@ def _env_int(name: str, default: int) -> int:
 # deliberately small, and 0 turns the retries off while leaving the
 # warning in place.
 AI_TEXT_RETRY_LIMIT = max(0, _env_int("AI_TEXT_RETRIES", 2))
+# ...and how many of those a PAID provider gets (each one is an image).
+AI_PAID_TEXT_RETRIES = max(0, _env_int("AI_PAID_TEXT_RETRIES", 2))
+
+# Into the prompt itself on a retry -- what the model paints comes from
+# the prompt, and the objects it paints come with markings unless told
+# otherwise: a volleyball with its maker's name on it, a can with a
+# label, a shirt with a slogan.
+NO_TEXT_RETRY_CLAUSE = (
+    "every object plain and unbranded with no printed markings, no lettering on any "
+    "surface, no logos on equipment or clothing"
+)
+
+
+def _text_amount(result) -> float:
+    """How much lettering a text check found -- the area of its boxes,
+    or the count when there are no boxes -- to rank attempts by."""
+    findings = getattr(result, "findings", None) or []
+    area = 0.0
+    for finding in findings:
+        box = getattr(finding, "box", None)
+        try:
+            _left, _top, box_w, box_h = box  # (left, top, width, height)
+            area += max(0, box_w) * max(0, box_h)
+        except Exception:  # noqa: BLE001
+            area += 1.0
+    return area or float(len(findings))
 
 # Not a word about text in here, even to ask for room for it: "space
 # for overlaid text" reads to a typography model as "put text here",
@@ -917,48 +963,42 @@ def _build_full_ad_prompt(
     """Compose a brief for a COMPLETE ad -- headline, hero, call to
     action -- out of what the campaign brief already says.
 
-    The copy goes in quoted. A model handed "write a headline" invents
-    one; handed the exact words in quotes it sets those words, which is
-    the difference between a mock-up and something that could run. The
-    audience and market steer art direction only, so they are described
-    rather than quoted -- nobody wants "ages 25-34" rendered into the
-    picture.
+    Short, and with as little quoted text as an ad can carry. A
+    typography model sets one or two short quoted strings cleanly;
+    asked for the product name AND a headline AND a supporting line
+    AND a button, in a prompt that also told it what NOT to write, it
+    set most of them as gibberish ("the expensive one isn't creating
+    words"). So: the headline (the campaign message when there is no
+    headline), the button label if there is one, and the product named
+    as the subject rather than as a third piece of type. Audience and
+    market are left out of the prompt altogether -- they were only ever
+    art direction, and "(not written on the ad)" is exactly the kind of
+    aside a model letters.
     """
-    parts = ["a complete advertisement layout"]
+    headline = (header_text or campaign_message or "").strip()
+    parts = ["a polished advertising poster"]
     if product_name:
         parts.append(f"for {product_name}")
-    lines = []
-    if product_name:
-        lines.append(f'the product name "{product_name}" set as type')
-    if header_text:
-        lines.append(f'a large headline reading exactly "{header_text}"')
-        # The campaign message is its own piece of copy, not a spare
-        # headline. With a headline already given it becomes the
-        # supporting line under it; on its own it IS the headline, since
-        # an ad with no words at the top is not an ad.
-        if campaign_message and campaign_message.strip() != header_text.strip():
-            lines.append(f'a supporting line reading exactly "{campaign_message}"')
-    elif campaign_message:
-        lines.append(f'a large headline reading exactly "{campaign_message}"')
-    lines.append("a hero product image as the focus")
+    if headline:
+        parts.append(f'with large bold headline text "{headline}"')
+    else:
+        parts.append(f'with the product name "{product_name}" as large bold headline text' if product_name else "with a large bold headline")
     if cta_text:
-        lines.append(f'a clear call-to-action button reading exactly "{cta_text}"')
-    parts.append("with " + ", ".join(lines))
+        parts.append(f'and a button with the text "{cta_text.strip()}"')
+    parts.append("a hero shot of the product as the focus")
     palette = _brand_palette_phrase(brand_colors)
     if palette:
         parts.append(palette)
-    if audience:
-        # Described, and told NOT to be written: handed "for Active
-        # Adults 18-34" the model set "ArrCtive Adullts 8-34" under the
-        # headline. Every word not in quotes is art direction.
-        parts.append(f"styled to appeal to {audience} (not written on the ad)")
-    if market:
-        parts.append(f"for the {market} market (not written on the ad)")
     parts.append(
-        "professional advertising design, clean legible typography, only the quoted words "
-        "appear as text, balanced composition, generous margins so nothing is cropped at the edges"
+        "clean modern layout, crisp legible typography, only the quoted text appears, "
+        "generous margins, nothing touching the edges"
     )
     return ", ".join(parts)
+
+
+# A headline longer than this comes back misspelled more often than not:
+# the model sets six words cleanly and starts inventing letters after.
+FULL_AD_HEADLINE_WORDS = 6
 
 
 # What a whole-ad generation must not add of its own accord: the
@@ -966,10 +1006,8 @@ def _build_full_ad_prompt(
 # and pseudo-legal lines models like to fill a bottom edge with -- which
 # come out as gibberish, since there are no real words to set.
 FULL_AD_NEGATIVE_CLAUSE = (
-    "extra text, additional words, audience description as text, demographic text, "
-    "fine print, small print, disclaimer, legal text, footnote, lorem ipsum, "
-    "gibberish lettering, misspelled words, duplicated words, "
-    "cropped text, cut-off letters, elements touching the edge of the frame"
+    "extra text, fine print, disclaimer, lorem ipsum, gibberish lettering, "
+    "misspelled words, cropped text"
 )
 
 
@@ -1180,17 +1218,21 @@ def _generate_text_free(
     verify = getattr(provider, "name", "") != "mock"
     retry_limit = AI_TEXT_RETRY_LIMIT if verify else 0
     if getattr(provider, "cost_per_image", 0):
-        # Every retry here is a paid image. One more go when the first
-        # came back with lettering is worth it; a third is money spent
-        # on a prompt that has twice shown it wants to letter, and the
-        # paint-out afterwards is free.
-        retry_limit = min(retry_limit, 1)
+        # Every retry here is a paid image. Two more goes when the
+        # first came back with lettering: a fresh picture beats a
+        # painted-out one ("if there is text, create another image"),
+        # and the paint-out afterwards is the last resort, not the plan.
+        retry_limit = min(retry_limit, AI_PAID_TEXT_RETRIES)
+    # Every attempt is kept: if none comes back clean, the one with the
+    # least lettering is the one to paint out, not simply the last.
+    tried = []
     while attempts <= retry_limit:
         # First attempt asks politely; every retry escalates, since the
         # polite phrasing has by then demonstrably failed for this prompt.
-        # Escalation goes into the negative prompt too -- the same
-        # reasoning applies to the retry as to the first attempt.
-        used = prompt
+        # Escalation goes into the prompt itself as well as the negative
+        # prompt: a volleyball comes with a brand on it, and the
+        # negative prompt alone did not take the brand off the ball.
+        used = prompt if attempts == 0 else f"{prompt}, {NO_TEXT_RETRY_CLAUSE}"
         negative_used = (
             negative if attempts == 0 else f"{negative}, {NO_TEXT_ESCALATION}"
         )
@@ -1203,6 +1245,9 @@ def _generate_text_free(
         result = find_text(image)
         if not result.available or not result.found_text:
             break
+        tried.append((image, result, used, negative_used))
+    else:
+        image, result, used, negative_used = min(tried, key=lambda t: _text_amount(t[1]))
     if getattr(provider, "supports_negative_prompt", False):
         shown = f"{used}  [excluded: {negative_used}]"
     else:
@@ -1402,6 +1447,25 @@ def _default_size_templates() -> tuple:
             continue
         template_paths[size] = path
     return templates, template_paths
+
+
+# Saved templates are named for their size: tester-720x480.psd.
+SAVED_TEMPLATE_PREFIX = "tester-"
+
+
+def _files_claiming_size(size) -> list:
+    """Every PSD in default_templates/ whose name carries `size`, in
+    folder order -- the ones _default_template_paths() chooses between."""
+    if not DEFAULT_TEMPLATES_DIR.is_dir():
+        return []
+    found = []
+    for path in sorted(DEFAULT_TEMPLATES_DIR.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
+            continue
+        match = _SIZE_IN_FILENAME_RE.search(path.name)
+        if match and (int(match.group(1)), int(match.group(2))) == tuple(size):
+            found.append(path)
+    return found
 
 
 def _default_template_paths() -> dict:
@@ -1740,6 +1804,53 @@ def _parse_stroke_size(raw) -> int:
     except (TypeError, ValueError):
         return 0
     return max(0, min(100, value))
+
+
+def _template_glow_percent(template_glow: dict, fx_scale: float, design_font_px: float) -> int:
+    """A template's own Outer Glow as the form's glow size -- a percentage
+    of the font size -- for the renderer to redraw it from. Photoshop's
+    Size is the halo's full reach; the renderer's radius is the blur it
+    starts from, and the two meet at Size = 2.7 x radius (the fit the
+    live-text export uses in the other direction), so a glow the app
+    wrote into a template comes back at the strength it went in."""
+    size_px = float(template_glow.get("size", 0) or 0) * fx_scale
+    radius_px = size_px / 2.7
+    return max(1, int(round(radius_px / max(float(design_font_px), 1.0) * 100)))
+
+
+FORM_LAYER_STYLING_FIELDS = tuple(
+    [f"layer_{layer}_{control}" for layer in ("header", "description", "legal", "cta")
+     for control in ("glow", "shadow", "use_custom_color", "stroke_size", "font_size", "font_family")]
+    + ["layer_cta_text_stroke_size"]
+    + [f"layer_{layer}_{control}" for layer in ("logo", "product") for control in ("glow", "shadow", "stroke")]
+)
+
+
+def _switch_off_form_layer_styling() -> list:
+    """Blank the form's layer-styling switches and values for this
+    request (see FORM_LAYER_STYLING_FIELDS), so the parse below sees
+    them off and _remember_form_fields() saves them off. Returns plain
+    names of what was actually on, for the note."""
+    form = request.form.copy()
+    was_on = []
+    for name in FORM_LAYER_STYLING_FIELDS:
+        if (form.get(name) or "").strip():
+            was_on.append(name[len("layer_"):].replace("_", " "))
+            form[name] = ""
+    if was_on:
+        request.form = form
+        # The form was remembered at the top of the request, before the
+        # drops were looked at: overwrite those entries so the next
+        # form opens with the switches off too.
+        prefs = _load_preferences()
+        for name in FORM_LAYER_STYLING_FIELDS:
+            if name in REMEMBERED_FIELD_NAMES:
+                prefs[name] = ""
+        try:
+            _preferences_path().write_text(json.dumps(prefs, indent=2), encoding="utf-8")
+        except OSError:
+            pass
+    return was_on
 
 
 def _parse_glow_size(raw) -> int:
@@ -2316,6 +2427,115 @@ def reference_thumb():
     return response
 
 
+TEMPLATE_RESET_ZIP_NAME = "template-backup.zip"
+# The names the reset looks for, in order. The first is the documented
+# one; the others are what a zip of the folder is naturally called.
+TEMPLATE_RESET_ZIP_NAMES = (TEMPLATE_RESET_ZIP_NAME, "default_templates.zip", "default-templates.zip")
+
+
+def template_reset_zip() -> Path | None:
+    """The zip the reset restores from: one of the known names in
+    default_templates/, or -- when none of those is there -- the only
+    .zip in the folder, whatever it is called. None when there isn't one."""
+    for name in TEMPLATE_RESET_ZIP_NAMES:
+        candidate = DEFAULT_TEMPLATES_DIR / name
+        if candidate.is_file():
+            return candidate
+    zips = sorted(p for p in DEFAULT_TEMPLATES_DIR.glob("*.zip") if p.is_file())
+    return zips[0] if len(zips) == 1 else None
+
+
+def restore_templates_from_backup(zip_path: Path | None = None) -> tuple[list[str], list[str], str | None]:
+    """Put the saved templates back to the copies in the backup zip.
+
+    Every tester-WxH.psd in the zip replaces the one in default_templates/
+    (the one being replaced is moved to _template_backups/ first, stamped,
+    so nothing is lost). Sizes the zip does not carry are left as they
+    are. Returns (restored names, untouched sizes, error message)."""
+    if zip_path is None:
+        zip_path = template_reset_zip()
+    if zip_path is None or not zip_path.is_file():
+        return [], [], (
+            f"No backup zip in {DEFAULT_TEMPLATES_DIR.name}/ -- nothing to restore from. "
+            f"Put the tester-WxH.psd files in a zip named {TEMPLATE_RESET_ZIP_NAME} "
+            "(or default_templates.zip) in that folder."
+        )
+    restored: list[str] = []
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                name = Path(info.filename).name
+                # Finder's zips carry a __MACOSX/._name shadow for every
+                # file; only the real PSDs, named for a size, count.
+                if info.is_dir() or info.filename.startswith("__MACOSX/") or name.startswith("._"):
+                    continue
+                if name.lower().rsplit(".", 1)[-1] != "psd" or not SIZE_IN_NAME_RE_LOOSE.search(name):
+                    continue
+                dest = DEFAULT_TEMPLATES_DIR / name
+                if dest.exists():
+                    TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+                    shutil.move(str(dest), str(TEMPLATE_BACKUPS_DIR / f"{dest.stem}.{stamp}{dest.suffix}"))
+                with zf.open(info) as src, open(dest, "wb") as out:
+                    shutil.copyfileobj(src, out)
+                restored.append(name)
+    except (OSError, zipfile.BadZipFile) as exc:
+        return restored, [], f"Could not restore the templates from {zip_path.name}: {exc}"
+    restored_sizes = {m.group(0).lower() for m in (SIZE_IN_NAME_RE_LOOSE.search(n) for n in restored) if m}
+    untouched = sorted(
+        {
+            m.group(0)
+            for m in (SIZE_IN_NAME_RE_LOOSE.search(f.name) for f in DEFAULT_TEMPLATES_DIR.glob("*.psd"))
+            if m and m.group(0).lower() not in restored_sizes
+        }
+    )
+    return restored, untouched, None
+
+
+def forget_remembered_form() -> bool:
+    """Wipe everything the next form would otherwise open with: the
+    remembered fields (campaign brief, brand colours, languages, every
+    section's typed values and switches) and the pointer to the last
+    run's files (custom hero, logo, product, CTA, references, the
+    size-specific PSD rows). After this the form opens as if the app had
+    never been run. The Ideogram key lives in .env and is not touched.
+    Returns whether anything was there to forget."""
+    path = _preferences_path()
+    had_anything = bool(_load_preferences())
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError:
+        try:
+            path.write_text("{}", encoding="utf-8")
+        except OSError:
+            pass
+    return had_anything
+
+
+@app.route("/reset", methods=["POST"])
+def reset_form():
+    """The "Reset form" button. A blank form -- every remembered field and
+    every file kept from the last run forgotten -- and the saved
+    templates put back to the ones in default_templates/template-backup.zip:
+    the way to undo a run of drops and Photoshop edits and start over
+    from the known-good set."""
+    restored, untouched, error = restore_templates_from_backup()
+    forget_remembered_form()
+    cleared = "Every field was cleared, and nothing is carried over from your last run."
+    if error:
+        flash(error)
+        flash(cleared, "ok")
+    else:
+        message = f"Templates restored from {(template_reset_zip() or Path(TEMPLATE_RESET_ZIP_NAME)).name}: {', '.join(restored)}."
+        if untouched:
+            message += f" Not in the zip, so left as they were: {', '.join(untouched)}."
+        message += " The replaced files are in _template_backups/. " + cleared
+        flash(message, "ok")
+    return redirect(url_for("index"))
+
+
 @app.route("/settings/ideogram-key", methods=["POST"])
 def set_ideogram_key():
     """The box at the top of the form. For someone running the packaged
@@ -2345,11 +2565,26 @@ BRAND_COLOR_FIELD_NAMES = tuple(
 # with an ad in progress, a fresh form should open on the same layout,
 # copy, hide boxes and rows as the last run, not blank.
 SECTION_FIELD_PREFIXES = ("layer_", "psd_", "upload_hero", "upload_custom_hero", "upload_ai_enabled")
+# The hide boxes are NOT remembered: a run is the design, and hiding a
+# layer is a one-off decision for that run. Carried over, every box
+# ticked once stayed ticked, and a later run came back as nine blank
+# canvases with a note nobody reads -- four times in one day.
 REMEMBERED_SECTION_FIELDS = tuple(
     name for name in EDIT_TEXT_FIELD_NAMES + EDIT_CHECKBOX_FIELD_NAMES
-    if name.startswith(SECTION_FIELD_PREFIXES)
+    if name.startswith(SECTION_FIELD_PREFIXES) and not name.endswith("_hidden")
 )
-REMEMBERED_FIELD_NAMES = BRAND_COLOR_FIELD_NAMES + ("copy_language", "psd_make_saved") + REMEMBERED_SECTION_FIELDS
+# The campaign brief too: product, market, audience and message are the
+# same from run to run of one campaign, and retyping them was the
+# first thing every fresh form asked for.
+CAMPAIGN_BRIEF_FIELD_NAMES = ("product_name", "market", "audience", "campaign_message")
+# psd_make_saved starts ticked and stays as last set: ticked, a dropped
+# PSD replaces the saved template for its size; unticked, drops are
+# one-offs -- and the results page says so every time, since an
+# untick that outlives the run it was meant for otherwise reads as
+# "doesn't look like it updated".
+REMEMBERED_FIELD_NAMES = (
+    CAMPAIGN_BRIEF_FIELD_NAMES + BRAND_COLOR_FIELD_NAMES + ("copy_language", "psd_make_saved") + REMEMBERED_SECTION_FIELDS
+)
 # The files those sections hold (hero image, layer images, PSD rows)
 # are carried from the last run on a fresh form too: a form that
 # remembers the hide boxes but forgets the hero would be half a memory.
@@ -3143,10 +3378,13 @@ def generate():
     prior_promoted_rows = {int(r) for r in (prior_form_state.get("promoted_psd_rows") or []) if str(r).isdigit()}
     promoted_psd_rows: set = set()
     psd_size_snaps: list = []  # (row, as typed, used) -- noted once background_notes exists
+    fresh_psd_drops: list = []  # filenames dropped THIS run, not carried
     for i in range(1, MAX_PSD_TEMPLATES + 1):
         psd_size_raw = (request.form.get(f"psd_size_{i}") or "").strip()
         psd_file = request.files.get(f"psd_file_{i}")
         psd_file_fresh = psd_file is not None and bool(psd_file.filename)
+        if psd_file_fresh:
+            fresh_psd_drops.append(psd_file.filename)
         # The "x" button next to a row on the Edit page (see index.html)
         # sets this hidden field so a carried-forward template can be
         # cancelled outright -- otherwise there'd be no way to say "stop
@@ -3226,6 +3464,7 @@ def generate():
     content_psd_file = request.files.get("content_psd")
     content_psd_fresh = content_psd_file is not None and bool(content_psd_file.filename)
     if content_psd_fresh:
+        fresh_psd_drops.append(content_psd_file.filename)
         if not _allowed(content_psd_file.filename, ALLOWED_PSD_TEMPLATE_EXTENSIONS):
             return _keep_submission(
                 f"{CONTENT_PSD_LABEL} content PSD: '{content_psd_file.filename}' isn't a supported file type. "
@@ -3898,6 +4137,12 @@ def generate():
             f"{size_label(*used)} slot (the Size field is set to that)."
         )
         form_field_overrides[f"psd_size_{row}"] = size_label(*used)
+    if fresh_psd_sizes and not request.form.get("psd_make_saved"):
+        background_warnings.append(
+            "The PSD(s) you dropped were used for this run only -- \"The most recent upload is the "
+            "template\" is unticked, so default_templates/ was not changed. Tick it (above the rows) "
+            "and run again to make them the saved templates."
+        )
     if request.form.get("psd_make_saved") and fresh_psd_sizes:
         saved_paths = _default_template_paths()
         stamp = _datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
@@ -3912,11 +4157,21 @@ def generate():
             source_path = psd_template_paths.get(source)
             if source_path is None:
                 continue
-            dest = saved_paths.get(target) or (DEFAULT_TEMPLATES_DIR / f"template-{size_label(*target)}.psd")
+            # One file per size, always named for the size:
+            # tester-720x480.psd. Whatever else in the folder claims
+            # that size -- an older upload under its own name, a
+            # hydroboost-... left from before -- is moved to the
+            # backups folder, so the size has exactly one template and
+            # its name says which.
+            dest = DEFAULT_TEMPLATES_DIR / f"{SAVED_TEMPLATE_PREFIX}{size_label(*target)}.psd"
             try:
                 DEFAULT_TEMPLATES_DIR.mkdir(parents=True, exist_ok=True)
+                TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+                for other in _files_claiming_size(target):
+                    if other == dest:
+                        continue
+                    shutil.move(str(other), str(TEMPLATE_BACKUPS_DIR / f"{other.stem}.{stamp}{other.suffix}"))
                 if dest.exists():
-                    TEMPLATE_BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
                     shutil.copy(dest, TEMPLATE_BACKUPS_DIR / f"{dest.stem}.{stamp}{dest.suffix}")
                 shutil.copy(source_path, dest)
                 promoted.append((target, source, dest))
@@ -3977,6 +4232,22 @@ def generate():
     # bbox). Only meaningful when there's at least one template-covered
     # size to apply them to; parsed once, applied per-size in the render
     # loop below via get_psd_layer_boxes()/apply_layer_*_override().
+    # A PSD dropped this run is the design: the styling the form carries
+    # for the layers -- glow, shadow, outline, colour, font, size, for
+    # the text layers and the pictures -- is switched off for this run
+    # and forgotten, so the file's own styling shows. Without this the
+    # round trip app -> Photoshop -> app never closed: a glow recoloured
+    # in Photoshop came back drawn over by the green one the form still
+    # remembered from the run that made the file. Tick a control again
+    # to override the file from here on.
+    if fresh_psd_drops:
+        switched_off = _switch_off_form_layer_styling()
+        if switched_off:
+            background_notes.append(
+                "A PSD was dropped this run (" + ", ".join(fresh_psd_drops) + "), so the form's own layer "
+                "styling -- " + ", ".join(switched_off) + " -- was switched off and the file's styling is used. "
+                "Tick a control again to override the file."
+            )
     layer_header_text = (request.form.get("layer_header_text") or "").strip() or None
     # Same idea as the description override just below -- these three let
     # the user override the PSD's own font family/size/color for the
@@ -4005,6 +4276,86 @@ def generate():
     )
     layer_header_background_blur = _parse_band_blur(request.form.get("layer_header_background_blur"))
     layer_header_stroke_size = _parse_stroke_size(request.form.get("layer_header_stroke_size"))
+
+    def _parse_form_shadow(key):
+        """The form's drop shadow for a text layer, as the dict the
+        renderer draws from (see _draw_text_shadow) -- or None when
+        the box is off. Photoshop's own dials: opacity %, distance px,
+        spread % (the solid part of the size), size px, angle deg."""
+        if not request.form.get(f"layer_{key}_shadow"):
+            return None
+
+        def number(name, default, low, high):
+            raw = (request.form.get(f"layer_{key}_shadow_{name}") or "").strip()
+            try:
+                value = float(raw) if raw else default
+            except ValueError:
+                value = default
+            return max(low, min(high, value))
+
+        return {
+            "color": _parse_hex_color(request.form.get(f"layer_{key}_shadow_color"), default=(0, 0, 0)),
+            "opacity": number("opacity", 75, 0, 100),
+            "distance": number("distance", 5, 0, 500),
+            "spread": number("spread", 0, 0, 100),
+            "size": number("size", 5, 0, 250),
+            "angle": number("angle", 120, -360, 360),
+        }
+
+    layer_header_shadow = _parse_form_shadow("header")
+    layer_description_shadow = _parse_form_shadow("description")
+
+    def _parse_picture_glow(key):
+        """An outer glow for a picture layer (logo, product): colour,
+        size in the PSD's pixels, opacity %. None when the box is off."""
+        if not request.form.get(f"layer_{key}_glow"):
+            return None
+        raw_size = (request.form.get(f"layer_{key}_glow_size") or "").strip()
+        raw_opacity = (request.form.get(f"layer_{key}_glow_opacity") or "").strip()
+        try:
+            size = float(raw_size) if raw_size else 12.0
+        except ValueError:
+            size = 12.0
+        try:
+            opacity = float(raw_opacity) if raw_opacity else 75.0
+        except ValueError:
+            opacity = 75.0
+        return {
+            "color": _parse_hex_color(request.form.get(f"layer_{key}_glow_color"), default=(255, 255, 255)),
+            "size": max(0.0, min(250.0, size)),
+            "opacity": max(0.0, min(100.0, opacity)),
+        }
+
+    def _parse_picture_stroke(key):
+        """An outline round a picture layer (logo, product): colour and
+        width in the PSD's pixels. None when the box is off."""
+        if not request.form.get(f"layer_{key}_stroke"):
+            return None
+        raw_size = (request.form.get(f"layer_{key}_stroke_size") or "").strip()
+        try:
+            size = float(raw_size) if raw_size else 3.0
+        except ValueError:
+            size = 3.0
+        return {
+            "color": _parse_hex_color(request.form.get(f"layer_{key}_stroke_color"), default=(0, 0, 0)),
+            "size": max(0.0, min(100.0, size)),
+        }
+
+    # Effects on the picture layers, keyed as _layer_effect_images() reads them.
+    picture_layer_fx = {}
+    for key in ("logo", "product"):
+        spec = {}
+        glow_spec = _parse_picture_glow(key)
+        shadow_spec = _parse_form_shadow(key)
+        stroke_spec = _parse_picture_stroke(key)
+        if glow_spec and glow_spec["size"] > 0 and glow_spec["opacity"] > 0:
+            spec["glow"] = glow_spec
+        if shadow_spec:
+            spec["shadow"] = shadow_spec
+        if stroke_spec and stroke_spec["size"] > 0:
+            spec["stroke"] = stroke_spec
+        if spec:
+            picture_layer_fx[key] = spec
     layer_header_stroke_color = _parse_hex_color(
         request.form.get("layer_header_stroke_color"), default=(0, 0, 0)
     )
@@ -4209,8 +4560,8 @@ def generate():
         background_warnings.append(
             "Every template layer is hidden on this run (Hide layers: "
             + ", ".join(sorted(hidden_layer_names))
-            + "), so each size shows only its background. The hide boxes carry over "
-            "from your last run -- untick them under \"Hide layers\" if that isn't what you meant."
+            + "), so each size shows only its background. Untick them under \"Hide layers\" "
+            "if that isn't what you meant -- they are not remembered on the next fresh form."
         )
 
     layer_image_overrides: dict = {}  # {"logo"/"cta"/"product"/"background": Image.Image}
@@ -4555,15 +4906,31 @@ def generate():
                 "Whole ad on Turbo: Turbo is the roughest pass for typography and tends to misspell "
                 "and smear type. Fine for finding a layout; switch Rendering to Quality for the one you keep."
             )
+        headline_words = len((upload_ai_headline or layer_header_text or campaign_message or "").split())
+        if headline_words > FULL_AD_HEADLINE_WORDS:
+            background_warnings.append(
+                f"Whole ad: the headline is {headline_words} words. The model sets up to about "
+                f"{FULL_AD_HEADLINE_WORDS} cleanly and starts misspelling after that -- type a shorter "
+                "\"AI headline\" (or header text) for clean lettering."
+            )
+        render_mode = (
+            # A designed layout, and the prompt exactly as written: the
+            # MagicPrompt rewrite has been seen to paraphrase the quoted
+            # headline, which is then set misspelled.
+            {"photographic": False, "rewrite_prompt": False}
+            if getattr(provider_for_ads, "supports_render_mode", False) and not upload_ai_reference_bytes
+            else {}
+        )
         for width, height in sizes:
             try:
                 ad_image = provider_for_ads.generate(
-                    f"{full_ad_prompt}, {_full_ad_margin_clause(width, height, upload_ai_provider)}",
+                    full_ad_prompt,
                     width=width,
                     height=height,
                     negative_prompt=", ".join(
                         c for c in (FULL_AD_NEGATIVE_CLAUSE, PALETTE_NEGATIVE_CLAUSE if brand_colors else None) if c
                     ),
+                    **render_mode,
                     **(
                         {"style_reference": upload_ai_reference_bytes}
                         if upload_ai_reference_bytes
@@ -4621,6 +4988,7 @@ def generate():
         # offering it alongside is the difference between "you can move
         # this text" and "you can retype this text".
         source_psd_filename = None
+        source_psd_download_name = None
         if (width, height) in psd_as_is_sizes:
             if request.form.get("psd_as_is_hero") and "background" in layer_image_overrides:
                 background_notes.append(
@@ -4790,7 +5158,14 @@ def generate():
             # Otherwise its pixels are the file's pixels, untouched --
             # the design is the PSD, not this app's rendering of it.
             own_text_layers: dict = {}
+            # Which named layers are live type and which are pictures --
+            # a rasterised header or description is a picture.
+            type_layers_in_template: set = set()
+            pixel_layers_in_template: set = set()
+            pictures_noted: set = set()
             if (width, height) in size_template_paths:
+                type_layers_in_template = set(get_psd_text_layers(size_template_paths.get((width, height))) or {})
+                pixel_layers_in_template = get_psd_pixel_layer_names(size_template_paths.get((width, height)))
                 # visible_only: a layer switched off in Photoshop has no
                 # words on the creative to translate.
                 own_text_layers = get_psd_text_layers(size_template_paths.get((width, height)), visible_only=True) or {}
@@ -4871,6 +5246,9 @@ def generate():
                 or layer_legal_use_custom_color
                 or layer_header_glow
                 or layer_description_glow
+                or layer_header_shadow
+                or layer_description_shadow
+                or picture_layer_fx
                 or layer_legal_glow
                 or layer_cta_glow
                 or layer_header_background
@@ -5004,6 +5382,11 @@ def generate():
                 # wrongly True the wipe found no new backdrop to wipe
                 # to and quietly did nothing, and the template's old
                 # words showed through under the new ones.
+                # Whether the template has a background layer at all --
+                # even an empty one (see the override loop below).
+                has_background_layer = "background" in {
+                    n.strip().lower() for n in get_psd_layer_names(psd_path_for_size)
+                } if psd_path_for_size is not None else False
                 background_replaced_this_request = (
                     "background" in size_image_overrides
                     and not ("background" in propagated_layer_names and (width, height) == content_psd_size)
@@ -5172,6 +5555,22 @@ def generate():
                 for layer_name in ordered_layer_names:
                     override_image = size_image_overrides[layer_name]
                     box = layer_boxes.get(layer_name)
+                    if (
+                        layer_name == "background"
+                        and (box is None or (box[2] - box[0]) * (box[3] - box[1]) < 0.01 * final_image.width * final_image.height)
+                    ):
+                        # ...or no background layer at all (deleted
+                        # rather than emptied): same thing, the hero
+                        # fills the canvas, and the live-text file gets
+                        # a background layer put in at the bottom.
+                        # The background layer is there but empty -- its
+                        # picture deleted in Photoshop so the hero can
+                        # take its place -- so it has no box of its own.
+                        # The background IS the canvas: the hero fills
+                        # it. (Skipping it left the old backdrop and, with
+                        # the wipe below expecting a new one, every
+                        # redrawn text layer doubled over its old words.)
+                        box = (0, 0, final_image.width, final_image.height)
                     if box is None:
                         continue
                     if layer_name in propagated_layer_names and (width, height) == content_psd_size:
@@ -5206,11 +5605,21 @@ def generate():
                             if psd_path_for_size is not None
                             else None
                         )
+                        if layers_alpha_source is None and psd_path_for_size is not None and not has_background_layer:
+                            # Nothing to hide: with no background layer
+                            # every visible layer is foreground, and all
+                            # of it goes back over the hero.
+                            layers_alpha_source = get_psd_composite_rgba(psd_path_for_size)
                         old_backdrop = (
                             get_psd_backdrop(psd_path_for_size, keep_layer_names=(layer_name,))
                             if psd_path_for_size is not None
                             else None
                         )
+                        if old_backdrop is None and psd_path_for_size is not None and not has_background_layer:
+                            # No background layer to compare against: the
+                            # file's own picture shows its transparency
+                            # as white, so white is the old backdrop.
+                            old_backdrop = Image.new("RGBA", psd_canvas_size or final_image.size, (255, 255, 255, 255))
                         if layers_alpha_source is not None and old_backdrop is not None:
                             layers_alpha_source = _fit_rgba_like_final_image(layers_alpha_source)
                             old_backdrop = _fit_rgba_like_final_image(old_backdrop.convert("RGBA"))
@@ -5270,6 +5679,39 @@ def generate():
                         + " covered and not drawn -- as in Photoshop. Drag the layer above "
                         "the background and re-save the template to use it."
                     )
+                # The form's glow and drop shadow on the picture layers
+                # (logo, product): drawn under the layer's own pixels --
+                # this run's upload if there was one, the template's
+                # otherwise -- in this size's pixels, and into the
+                # layered PSD's patch for the layer. The live-text file
+                # and the saved template get them as real layer effects
+                # (see live_text_effects below).
+                picture_fx_applied: dict = {}
+                for fx_key, fx_spec in (picture_layer_fx or {}).items():
+                    if text_only_size or fx_key in size_hidden_layer_names or fx_key in buried_in_template:
+                        continue
+                    if visible_in_template and fx_key not in visible_in_template:
+                        continue
+                    layer_rgba = export_layer_patches.get(fx_key)
+                    if layer_rgba is None and psd_path_for_size is not None:
+                        own = get_psd_layer_rgba(psd_path_for_size, fx_key)
+                        layer_rgba = _fit_rgba_like_final_image(own) if own is not None else None
+                    if layer_rgba is None:
+                        continue
+                    fx_scale = _template_scale(psd_canvas_size, (width, height), fit_mode)
+                    scaled = {}
+                    for fx_name, fx_values in fx_spec.items():
+                        scaled[fx_name] = dict(fx_values)
+                        for measure in ("size", "distance"):
+                            if measure in scaled[fx_name]:
+                                scaled[fx_name][measure] = float(scaled[fx_name][measure]) * fx_scale
+                    final_image = draw_layer_effects(final_image, layer_rgba, scaled)
+                    export_layer_patches[fx_key] = draw_layer_effects(
+                        Image.new("RGBA", final_image.size, (0, 0, 0, 0)), layer_rgba, scaled, keep_alpha=True
+                    )
+                    applied_layers.append(f"{fx_key} (" + " + ".join(sorted(fx_spec)) + ")")
+                    picture_fx_applied[fx_key] = fx_spec
+
                 # Say so when a template has a layer switched off. A
                 # designer's eye-icon in Photoshop silently removes that
                 # layer from this size and nothing else on the page
@@ -5318,7 +5760,21 @@ def generate():
                     # has been replaced, the other layers restored from
                     # the original through a mask that leaves this one
                     # out). Its neighbours keep every pixel they had.
-                    _clean_layer_box(hidden_box, layer_name)
+                    # ...widened by the layer's own effect reach, and
+                    # with every other layer put back in that ring: a
+                    # drop shadow Photoshop drew around a header reaches
+                    # past the header's box, and hiding the header
+                    # left its shadow behind -- "a shadow on a box".
+                    reach = get_psd_layer_effect_reach(psd_path_for_size, layer_name) if psd_path_for_size else 0
+                    if reach > 0:
+                        pad = int(math.ceil(reach * _template_scale(psd_canvas_size, (width, height), fit_mode))) + 2
+                        wide = (
+                            max(0, hidden_box[0] - pad), max(0, hidden_box[1] - pad),
+                            min(final_image.width, hidden_box[2] + pad), min(final_image.height, hidden_box[3] + pad),
+                        )
+                        _clean_layer_box(wide, layer_name, full_box=True, restore_others=True)
+                    else:
+                        _clean_layer_box(hidden_box, layer_name)
                     applied_layers.append(f"{layer_name} (hidden)")
 
                 def _apply_text_layer_override(
@@ -5341,6 +5797,7 @@ def generate():
                     stroke_color=(0, 0, 0),
                     box_override=None,
                     clean=True,
+                    shadow=None,
                 ):
                     # Shared by every text-layer override (description,
                     # header, ...) -- reads that named layer's own PSD
@@ -5363,6 +5820,31 @@ def generate():
                     # it.
                     box = box_override or draw_boxes.get(layer_key)
                     if box is None:
+                        return
+                    # A layer with this name that is NOT live type -- a
+                    # description rasterised in Photoshop, say -- is a
+                    # picture, and is treated like one: shown exactly as
+                    # it is, never wiped, never drawn into. Typed copy
+                    # and styling for it are noted and left alone.
+                    # (Only in a file that has live type at all -- a
+                    # Photoshop file. A template built from pixel layers
+                    # alone still takes its header and description as
+                    # text boxes, as it always has.)
+                    if (
+                        box_override is None
+                        and psd_path_for_size is not None
+                        and type_layers_in_template
+                        and layer_key not in type_layers_in_template
+                        and layer_key in pixel_layers_in_template
+                    ):
+                        if (layer_key, "picture") not in pictures_noted:
+                            pictures_noted.add((layer_key, "picture"))
+                            background_notes.append(
+                                f"{size_label(width, height)}: {layer_key} is a picture in this size's template "
+                                "(rasterised, not live type), so it is used as it is -- copy or styling typed for "
+                                "it on the form was not applied. Keep it as a type layer in Photoshop to retype "
+                                "or restyle it here."
+                            )
                         return
                     if layer_key in buried_in_template:
                         # Sitting under this size's background in the
@@ -5506,9 +5988,10 @@ def generate():
                     text_lines = [line.strip() for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
                     text_lines = [line for line in text_lines if line]
                     styled_lines = psd_text_style.get("lines") or []
-                    restyled = bool(
-                        font_family or font_size or use_custom_color or glow or show_background or stroke_size
-                    )
+                    # A glow, an outline or a colour from the form is
+                    # drawn line by line too; only a font, a size or a
+                    # background box means one style for the whole box.
+                    restyled = bool(font_family or font_size or show_background)
                     if (
                         len(text_lines) >= 2
                         and len(styled_lines) == len(text_lines)
@@ -5529,18 +6012,48 @@ def generate():
                             for style, words in zip(styled_lines, text_lines)
                         ]
                         line_shadow = None
-                        if (psd_text_style.get("effects") or {}).get("shadow"):
+                        if shadow:
+                            # The form's drop shadow, in this size's pixels.
+                            line_shadow = dict(shadow)
+                            line_shadow["distance"] = line_shadow["distance"] * template_scale
+                            line_shadow["size"] = line_shadow["size"] * template_scale
+                        elif (psd_text_style.get("effects") or {}).get("shadow"):
                             line_shadow = dict(psd_text_style["effects"]["shadow"])
                             line_shadow["distance"] = line_shadow["distance"] * template_scale
                             line_shadow["size"] = line_shadow["size"] * template_scale
+                        line_glow = (
+                            {"color": glow_color, "size": glow_size, "opacity": glow_opacity} if glow else None
+                        )
+                        line_stroke = {"color": stroke_color, "size": stroke_size} if stroke_size else None
+                        # The layer's own glow and outline stay when the
+                        # form doesn't restate them -- the same rule the
+                        # shadow above follows. A yellow glow given to the
+                        # header in Photoshop was lost the moment the
+                        # form ticked a shadow or a colour, since either
+                        # of those redraws the words.
+                        design_px = psd_text_style.get("font_size") or 0
+                        template_fx_lines = psd_text_style.get("effects") or {}
+                        if line_glow is None and template_fx_lines.get("glow") and design_px:
+                            line_glow = {
+                                "color": tuple(template_fx_lines["glow"]["color"]),
+                                "size": _template_glow_percent(template_fx_lines["glow"], template_scale, design_px),
+                                "opacity": int(round(template_fx_lines["glow"]["opacity"])),
+                            }
+                        if line_stroke is None and template_fx_lines.get("stroke") and design_px:
+                            line_stroke = {
+                                "color": tuple(template_fx_lines["stroke"]["color"]),
+                                "size": template_fx_lines["stroke"]["size"] * template_scale,
+                            }
+                        line_color = text_color if use_custom_color else None
                         text_debug = {}
                         final_image = apply_layer_styled_lines(
                             final_image, box, lines_to_draw, align=align, scale=template_scale, debug=text_debug,
-                            shadow=line_shadow,
+                            shadow=line_shadow, glow=line_glow, stroke=line_stroke, color=line_color,
                         )
                         export_layer_patches[layer_key] = apply_layer_styled_lines(
                             Image.new("RGBA", final_image.size, (0, 0, 0, 0)), box, lines_to_draw,
                             align=align, scale=template_scale, keep_alpha=True, shadow=line_shadow,
+                            glow=line_glow, stroke=line_stroke, color=line_color,
                         )
                         words_only_patches[layer_key] = export_layer_patches[layer_key]
                         applied_layers.append(layer_key)
@@ -5578,17 +6091,21 @@ def generate():
                     template_fx = psd_text_style.get("effects") or {}
                     fx_scale = template_scale
                     design_shadow = None
-                    if template_fx.get("shadow") and not restyled:
+                    if shadow:
+                        design_shadow = dict(shadow)
+                        design_shadow["distance"] = design_shadow["distance"] * fx_scale
+                        design_shadow["size"] = design_shadow["size"] * fx_scale
+                    elif template_fx.get("shadow"):
                         design_shadow = dict(template_fx["shadow"])
                         design_shadow["distance"] = design_shadow["distance"] * fx_scale
                         design_shadow["size"] = design_shadow["size"] * fx_scale
                     design_size = psd_text_style.get("font_size") or 1
-                    if template_fx.get("glow") and not restyled and not glow and design_size:
+                    if template_fx.get("glow") and not glow and design_size:
                         glow = True
                         glow_color = tuple(template_fx["glow"]["color"])
-                        glow_size = max(1, int(round(template_fx["glow"]["size"] * fx_scale / design_size * 100)))
+                        glow_size = _template_glow_percent(template_fx["glow"], fx_scale, design_size)
                         glow_opacity = int(round(template_fx["glow"]["opacity"]))
-                    if template_fx.get("stroke") and not restyled and not stroke_size and design_size:
+                    if template_fx.get("stroke") and not stroke_size and design_size:
                         stroke_size = max(1, int(round(template_fx["stroke"]["size"] * fx_scale / design_size * 100)))
                         stroke_color = tuple(template_fx["stroke"]["color"])
                     # The design's own size and box, as Photoshop shows
@@ -5717,6 +6234,7 @@ def generate():
                     or layer_header_font_family
                     or layer_header_font_size
                     or layer_header_stroke_size
+                    or layer_header_shadow
                 ):
                     _apply_text_layer_override(
                         "header",
@@ -5736,6 +6254,7 @@ def generate():
                         background_blur=layer_header_background_blur,
                         stroke_size=layer_header_stroke_size,
                         stroke_color=layer_header_stroke_color,
+                        shadow=layer_header_shadow,
                     )
                 if text_only_size:
                     if size_text["description"]:
@@ -5748,6 +6267,7 @@ def generate():
                     or layer_description_font_family
                     or layer_description_font_size
                     or layer_description_stroke_size
+                    or layer_description_shadow
                 ):
                     _apply_text_layer_override(
                         "description",
@@ -5767,6 +6287,7 @@ def generate():
                         background_blur=layer_description_background_blur,
                         stroke_size=layer_description_stroke_size,
                         stroke_color=layer_description_stroke_color,
+                        shadow=layer_description_shadow,
                     )
                 if text_only_size:
                     if size_text["legal"]:
@@ -6040,6 +6561,17 @@ def generate():
                             )
                             shutil.copy(psd_path_for_size, job_dir / source_candidate_filename)
                             source_psd_filename = source_candidate_filename
+                            # Downloaded under the template's own name
+                            # (tester-720x480.psd), so the file that
+                            # comes out is visibly the file that goes
+                            # back in -- a drop of it replaces that
+                            # template. Only a saved template's name;
+                            # a per-run upload keeps the campaign name.
+                            source_psd_download_name = (
+                                psd_path_for_size.name
+                                if psd_path_for_size.parent == DEFAULT_TEMPLATES_DIR
+                                else None
+                            )
                             # The artwork, in the template's own
                             # coordinate space. This file was a straight
                             # copy of the template, which meant the one
@@ -6059,6 +6591,15 @@ def generate():
                                 source_size = get_psd_canvas_size(psd_path_for_size) or (width, height)
                                 for name, override_image in size_image_overrides.items():
                                     box = source_boxes.get(name)
+                                    if name == "background" and (
+                                        box is None
+                                        or (box[2] - box[0]) * (box[3] - box[1]) < 0.01 * source_size[0] * source_size[1]
+                                    ):
+                                        # An emptied background layer: the
+                                        # hero fills the canvas here just
+                                        # as it does in the preview, so
+                                        # the live-text file carries it.
+                                        box = (0, 0, source_size[0], source_size[1])
                                     if box is None:
                                         continue
                                     blank = Image.new("RGBA", source_size, (0, 0, 0, 0))
@@ -6204,9 +6745,20 @@ def generate():
                                 if not laid_out_at:
                                     continue
                                 if on and size and opacity:
+                                    # The renderer's halo (see
+                                    # apply_layer_styled_lines) thickens
+                                    # the glyphs by 0.8r, blurs by r and
+                                    # boosts the result. Photoshop's Outer
+                                    # Glow is Size + Spread; fitting the
+                                    # two on real type puts the same halo
+                                    # at Size 2.7r, Spread 45%, opacity
+                                    # as set. Size alone at r was a faint
+                                    # haze next to the preview.
+                                    halo = max(1.0, laid_out_at * (size / 100.0))
                                     spec["glow"] = {
                                         "color": colour,
-                                        "radius": max(1.0, laid_out_at * (size / 100.0)),
+                                        "radius": max(1.0, 2.7 * halo),
+                                        "spread": 45,
                                         "opacity": opacity,
                                     }
                                 if s_size:
@@ -6214,8 +6766,34 @@ def generate():
                                         "color": s_colour,
                                         "size": max(1.0, laid_out_at * (s_size / 100.0)),
                                     }
+                                form_shadow = {"header": layer_header_shadow, "description": layer_description_shadow}.get(key)
+                                if form_shadow:
+                                    # In the PSD's own pixels, as the
+                                    # form's numbers are (see fx_scale).
+                                    spec["shadow"] = dict(form_shadow)
                                 if spec:
                                     live_text_effects[key] = spec
+                            # ...and the picture layers' glow and shadow,
+                            # already in the PSD's pixels.
+                            for fx_key, fx_spec in picture_fx_applied.items():
+                                spec = {}
+                                if fx_spec.get("glow"):
+                                    # _layer_effect_images grows the
+                                    # picture by size/2 and blurs by
+                                    # size/2: in Photoshop's terms, Size
+                                    # 1.5x with a third of it solid.
+                                    spec["glow"] = {
+                                        "color": fx_spec["glow"]["color"],
+                                        "radius": max(1.0, 1.5 * float(fx_spec["glow"]["size"])),
+                                        "spread": 33,
+                                        "opacity": fx_spec["glow"]["opacity"],
+                                    }
+                                if fx_spec.get("shadow"):
+                                    spec["shadow"] = dict(fx_spec["shadow"])
+                                if fx_spec.get("stroke"):
+                                    spec["stroke"] = dict(fx_spec["stroke"])
+                                if spec:
+                                    live_text_effects[fx_key] = spec
                             if live_text_effects:
                                 fx = set_type_layer_effects(
                                     job_dir / source_candidate_filename, live_text_effects
@@ -6234,6 +6812,29 @@ def generate():
                                     background_notes.append(
                                         f"{size_label(width, height)}: source PSD's live text recoloured -- "
                                         + ", ".join(recoloured)
+                                        + "."
+                                    )
+                            # A typed font size becomes the type layer's
+                            # own size -- live text, not pixels. In the
+                            # PSD's pixels: the run drew at
+                            # rendered_font_sizes (this size's pixels),
+                            # and the template's canvas may be another.
+                            live_text_sizes = {}
+                            size_to_psd = 1.0 / (_template_scale(psd_canvas_size, (width, height), fit_mode) or 1.0)
+                            for key, typed in (
+                                ("header", layer_header_font_size), ("description", layer_description_font_size),
+                                ("legal", layer_legal_font_size), ("cta", layer_cta_font_size),
+                            ):
+                                if typed and rendered_font_sizes.get(key):
+                                    live_text_sizes[key] = rendered_font_sizes[key] * size_to_psd
+                            if live_text_sizes:
+                                resized = set_type_layer_font_size(
+                                    job_dir / source_candidate_filename, live_text_sizes
+                                )
+                                if resized:
+                                    background_notes.append(
+                                        f"{size_label(width, height)}: source PSD's live text resized -- "
+                                        + ", ".join(resized)
                                         + "."
                                     )
                             # Last, after every layer edit above: the
@@ -6361,6 +6962,7 @@ def generate():
                                 if (
                                     any(template_updates.values())
                                     or live_text_colors
+                                    or live_text_sizes
                                     or live_text_effects
                                     or cta_shape_style
                                 ):
@@ -6390,6 +6992,10 @@ def generate():
                                         if live_text_colors:
                                             set_type_layer_colors(
                                                 psd_path_for_size, live_text_colors
+                                            )
+                                        if live_text_sizes:
+                                            set_type_layer_font_size(
+                                                psd_path_for_size, live_text_sizes
                                             )
                                         if live_text_effects:
                                             set_type_layer_effects(
@@ -6591,6 +7197,7 @@ def generate():
                 "name": size_name(width, height),
                 "psd_filename": psd_filename,
                 "source_psd_filename": source_psd_filename,
+                "source_psd_download_name": source_psd_download_name,
                 "whole_ad": bool(upload_ai_full_ad and (width, height) in full_ad_templates),
             }
         )
@@ -6683,7 +7290,7 @@ def generate():
             if creative.get("source_psd_filename"):
                 zf.write(
                     job_dir / creative["source_psd_filename"],
-                    arcname=f"{zip_entry_prefix}{creative['source_psd_filename']}",
+                    arcname=f"{zip_entry_prefix}{creative.get('source_psd_download_name') or creative['source_psd_filename']}",
                 )
 
     # A copy of the zip somewhere a person can actually find it, without
@@ -7143,6 +7750,13 @@ def download_psd(job_id, filename):
     # job id make two downloads impossible to confuse, and match the
     # run shown on the results page.
     stamped = f"{file_path.stem}_{job_id[:6]}{file_path.suffix}"
+    # A live-text file goes out under its template's own name when the
+    # results page asks (?as=tester-720x480.psd): the file that comes
+    # out is the file that goes back in. No run stamp on it -- the
+    # name IS the point.
+    wanted = secure_filename(request.args.get("as") or "")
+    if wanted and wanted.lower().endswith(".psd") and SIZE_IN_NAME_RE_LOOSE.search(wanted):
+        stamped = wanted
     return send_file(file_path, as_attachment=True, download_name=stamped)
 
 

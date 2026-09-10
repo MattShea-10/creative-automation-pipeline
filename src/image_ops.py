@@ -112,6 +112,18 @@ def open_as_rgb(path: Union[str, Path], frame_seconds: Optional[float] = None) -
         raise ValueError(f"Could not open asset '{path}': {exc}.") from exc
 
 
+def flatten_transparency_white(image: Image.Image) -> Image.Image:
+    """RGB, with anything transparent shown as white -- the way
+    Photoshop's own flattened picture shows a document with no
+    background layer. Pillow's plain convert() shows it as black, which
+    is what put a black slab behind a redrawn header the moment the
+    background layer was taken out of the file."""
+    if image.mode in ("RGBA", "LA"):
+        white = Image.new("RGBA", image.size, (255, 255, 255, 255))
+        return Image.alpha_composite(white, image.convert("RGBA")).convert("RGB")
+    return image.convert("RGB")
+
+
 def open_psd_flat(path: Union[str, Path]) -> Optional[Image.Image]:
     """A PSD's merged picture as RGB, read with psd-tools rather than
     Pillow.
@@ -144,14 +156,14 @@ def open_psd_flat(path: Union[str, Path]) -> Optional[Image.Image]:
     except Exception:  # noqa: BLE001
         preview = None
     if preview is not None and getattr(psd, "has_preview", lambda: True)():
-        return preview.convert("RGB")
+        return flatten_transparency_white(preview)
     try:
         drawn = psd.composite(force=True)
     except Exception:  # noqa: BLE001
         drawn = None
     if drawn is not None:
-        return drawn.convert("RGB")
-    return preview.convert("RGB") if preview is not None else None
+        return flatten_transparency_white(drawn)
+    return flatten_transparency_white(preview) if preview is not None else None
 
 
 # Default render targets, as explicit pixel dimensions. Kept as a list (not
@@ -1618,6 +1630,25 @@ def get_psd_group_text_box(psd_path: Union[str, Path], group_name: str):
     return None
 
 
+def get_psd_pixel_layer_names(psd_path: Union[str, Path]) -> set:
+    """Lowercased names of the top-level PIXEL layers -- pictures, as
+    opposed to live type, shapes and groups. A header rasterised in
+    Photoshop is one of these, and is treated as a picture from then on."""
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return set()
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return set()
+    return {
+        (layer.name or "").strip().lower()
+        for layer in psd
+        if layer.kind == "pixel" and (layer.name or "").strip()
+    }
+
+
 def get_psd_layer_names(psd_path: Union[str, Path]) -> set:
     """Lowercased names of every top-level layer in a PSD, drawn or not.
 
@@ -2105,7 +2136,15 @@ def _layer_effect_images(layer_rgba: Image.Image, effects: dict) -> list:
         moved.paste(alpha, (int(round(dx)), int(round(dy))))
         size = float(shadow.get("size", 0) or 0)
         if size > 0:
-            moved = moved.filter(ImageFilter.GaussianBlur(radius=max(size / 2.0, 0.5)))
+            # Photoshop's Spread: the solid share of the size, then the
+            # soft rest (see _draw_text_shadow).
+            spread = max(0.0, min(100.0, float(shadow.get("spread", 0) or 0)))
+            solid = int(round(size * spread / 100.0))
+            if solid > 0:
+                moved = moved.filter(ImageFilter.MaxFilter(2 * solid + 1))
+            soft = size - solid
+            if soft > 0:
+                moved = moved.filter(ImageFilter.GaussianBlur(radius=max(soft / 2.0, 0.5)))
         opacity = max(0.0, min(100.0, float(shadow.get("opacity", 75) or 0))) / 100.0
         moved = moved.point(lambda a: int(a * opacity))
         img = Image.new("RGBA", alpha.size, tuple(shadow.get("color") or (0, 0, 0)) + (0,))
@@ -2114,10 +2153,24 @@ def _layer_effect_images(layer_rgba: Image.Image, effects: dict) -> list:
     glow = effects.get("glow")
     if glow and glow.get("size"):
         size = float(glow["size"])
-        grown = alpha.filter(ImageFilter.MaxFilter(max(3, int(size) // 2 * 2 + 1)))
-        grown = grown.filter(ImageFilter.GaussianBlur(radius=max(size / 2.0, 0.5)))
+        spread = max(0.0, min(100.0, float(glow.get("spread", 0) or 0)))
         opacity = max(0.0, min(100.0, float(glow.get("opacity", 75) or 0))) / 100.0
-        grown = grown.point(lambda a: int(min(255, a * 1.4) * opacity))
+        if spread > 0:
+            # A glow with a Spread is drawn Photoshop's way, like the
+            # shadow above: the solid share first, then the soft rest.
+            # This is what the app itself writes into a template (the
+            # form's halo becomes Size 1.5x, Spread 33%), so the next
+            # run's preview of that template matches the file.
+            solid = int(round(size * spread / 100.0))
+            grown = alpha.filter(ImageFilter.MaxFilter(2 * solid + 1)) if solid > 0 else alpha
+            soft = size - solid
+            if soft > 0:
+                grown = grown.filter(ImageFilter.GaussianBlur(radius=max(soft / 2.0, 0.5)))
+            grown = grown.point(lambda a: int(a * opacity))
+        else:
+            grown = alpha.filter(ImageFilter.MaxFilter(max(3, int(size) // 2 * 2 + 1)))
+            grown = grown.filter(ImageFilter.GaussianBlur(radius=max(size / 2.0, 0.5)))
+            grown = grown.point(lambda a: int(min(255, a * 1.4) * opacity))
         img = Image.new("RGBA", alpha.size, tuple(glow.get("color") or (255, 255, 255)) + (0,))
         img.putalpha(grown)
         out.append(img)
@@ -2129,6 +2182,52 @@ def _layer_effect_images(layer_rgba: Image.Image, effects: dict) -> list:
         img.putalpha(grown)
         out.append(img)
     return out
+
+
+def get_psd_layer_rgba(psd_path: Union[str, Path], layer_name: str) -> Optional[Image.Image]:
+    """The named top-level layer's own pixels, alone, on a transparent
+    canvas the PSD's size -- what a glow or a shadow is drawn from."""
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return None
+    try:
+        psd = PSDImage.open(psd_path)
+    except Exception:  # noqa: BLE001
+        return None
+    wanted = layer_name.strip().lower()
+    for layer in psd:
+        if (layer.name or "").strip().lower() != wanted:
+            continue
+        try:
+            pixels = layer.composite()
+        except Exception:  # noqa: BLE001
+            return None
+        if pixels is None:
+            return None
+        canvas = Image.new("RGBA", (psd.width, psd.height), (0, 0, 0, 0))
+        left, top = int(layer.bbox[0]), int(layer.bbox[1])
+        canvas.paste(pixels.convert("RGBA"), (left, top))
+        return canvas
+    return None
+
+
+def draw_layer_effects(
+    base_image: Image.Image, layer_rgba: Image.Image, effects: dict, keep_alpha: bool = False
+) -> Image.Image:
+    """`base_image` with the layer's drop shadow / outer glow / stroke
+    drawn under the layer, and the layer's own pixels put back on top --
+    the form's effects for a picture layer (the logo, the product), in
+    this image's pixels. `effects` is {"shadow": {...}, "glow": {...}}
+    as _layer_effect_images() reads it."""
+    canvas = base_image.convert("RGBA")
+    if layer_rgba.size != canvas.size:
+        layer_rgba = layer_rgba.resize(canvas.size, Image.LANCZOS)
+    layer_rgba = layer_rgba.convert("RGBA")
+    for under in _layer_effect_images(layer_rgba, effects):
+        canvas = Image.alpha_composite(canvas, under)
+    canvas = Image.alpha_composite(canvas, layer_rgba)
+    return canvas if keep_alpha else canvas.convert("RGB")
 
 
 def _add_layer_effects(psd, composite: Image.Image, hidden_layers) -> Image.Image:
@@ -2222,14 +2321,14 @@ def get_psd_backdrop(
     if not hide:
         # Nothing to hide -- the document is already just its backdrop.
         try:
-            return psd.composite().convert("RGB")
+            return flatten_transparency_white(psd.composite())
         except Exception:
             return None
 
     composite = _psd_composite_with_layers_hidden(psd_path, hide)
     if composite is None:
         return None
-    return composite.convert("RGB")
+    return flatten_transparency_white(composite)
 
 
 def carry_flattened_effects(
@@ -2300,7 +2399,7 @@ def get_psd_layer_background(psd_path: Union[str, Path], layer_name: str) -> Opt
     composite = _psd_composite_with_layers_hidden(psd_path, layer_name)
     if composite is None:
         return None
-    return composite.convert("RGB")
+    return flatten_transparency_white(composite)
 
 
 def get_psd_layer_effect_reach(psd_path: Union[str, Path], layer_name: str) -> int:
@@ -2448,6 +2547,28 @@ def get_psd_untrusted_type_layers(psd_path: Union[str, Path]) -> set:
         )):
             untrusted.add(name)
     return untrusted
+
+
+def get_psd_composite_rgba(psd_path: Union[str, Path]) -> Optional[Image.Image]:
+    """The PSD drawn from its layers, as RGBA with real alpha -- every
+    visible layer, nothing hidden. What the foreground IS when the file
+    has no background layer to hide."""
+    try:
+        from psd_tools import PSDImage
+    except ImportError:
+        return None
+    try:
+        psd = PSDImage.open(psd_path)
+        composite = psd.composite(force=True)
+    except Exception:  # noqa: BLE001
+        return None
+    if composite is None:
+        return None
+    try:
+        composite = _add_layer_effects(psd, composite, set())
+    except Exception:  # noqa: BLE001
+        pass
+    return composite if composite.mode == "RGBA" else composite.convert("RGBA")
 
 
 def get_psd_layer_foreground(
@@ -2692,12 +2813,16 @@ def _psd_layer_effects(layer) -> dict:
                     "angle": float(getattr(effect, "angle", 120) or 0),
                     "distance": float(getattr(effect, "distance", 0) or 0),
                     "size": float(getattr(effect, "size", 0) or 0),
+                    # Photoshop's Spread: the share of the size that is
+                    # solid before the blur starts.
+                    "spread": float(getattr(effect, "choke", 0) or 0),
                 }
             elif kind == "outerglow" and "glow" not in out:
                 out["glow"] = {
                     "color": _effect_color(effect) or (255, 255, 255),
                     "opacity": float(getattr(effect, "opacity", 75) or 0),
                     "size": float(getattr(effect, "size", 0) or 0),
+                    "spread": float(getattr(effect, "choke", 0) or 0),
                 }
             elif kind == "stroke" and "stroke" not in out:
                 out["stroke"] = {
@@ -2730,7 +2855,17 @@ def _draw_text_shadow(canvas, lines_xy, font, shadow, keep_alpha):
         draw.text((x + dx, y + dy), text, font=line_font or font, fill=(255, 255, 255, 255))
     alpha = layer.split()[3]
     if size > 0:
-        alpha = alpha.filter(ImageFilter.GaussianBlur(radius=max(size / 2.0, 0.5)))
+        # Photoshop: Spread is the part of Size that stays solid (the
+        # shadow grows outward that far), and the rest is the soft
+        # edge. A 100% black, 8px, 13%-spread shadow is a hard dark
+        # shape with a short falloff -- not an 8px haze.
+        spread = max(0.0, min(100.0, float(shadow.get("spread", 0) or 0)))
+        solid = int(round(size * spread / 100.0))
+        if solid > 0:
+            alpha = alpha.filter(ImageFilter.MaxFilter(2 * solid + 1))
+        soft = size - solid
+        if soft > 0:
+            alpha = alpha.filter(ImageFilter.GaussianBlur(radius=max(soft / 2.0, 0.5)))
     alpha = alpha.point(lambda a: int(a * opacity / 100.0))
     shadow_layer = Image.new("RGBA", canvas.size, color + (0,))
     shadow_layer.putalpha(alpha)
@@ -2816,9 +2951,17 @@ def apply_layer_styled_lines(
     keep_alpha: bool = False,
     debug: Optional[dict] = None,
     shadow: Optional[dict] = None,
+    glow: Optional[dict] = None,
+    stroke: Optional[dict] = None,
+    color: Optional[Tuple[int, int, int]] = None,
 ) -> Image.Image:
     """Paint `lines` -- [{text, font_size, font_name, family, bold,
     color}] -- into `bbox`, each line at its own size, stacked from the
+    top. `glow` ({color, size (% of the line's font size), opacity}),
+    `stroke` ({color, size px}) and `color` (one colour for every line)
+    are the form's restyling, drawn line by line so restyling a header
+    keeps the designer's two-size layout instead of collapsing it to
+    one size that no longer fits the box.
     top of the box, the whole block shrunk uniformly only if it would
     not fit. This is how a translated header keeps the layout it had in
     English: the big word stays big, the small line stays small.
@@ -2868,9 +3011,32 @@ def apply_layer_styled_lines(
         y += height
     if shadow:
         canvas = _draw_text_shadow(canvas, [(x, y_, line["text"], font) for x, y_, line, font in placed], None, shadow, True)
+    if glow and float(glow.get("size", 0) or 0) > 0 and float(glow.get("opacity", 100) or 0) > 0:
+        # The same halo apply_layer_text_override() draws, per line at
+        # that line's own size.
+        glow_layer = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow_layer)
+        radii = []
+        for x, y_, line, font in placed:
+            blur_radius = max(round(font.size * (float(glow["size"]) / 100.0)), 1)
+            radii.append(blur_radius)
+            thick = max(1, round(blur_radius * 0.8))
+            glow_draw.text((x, y_), line["text"], font=font, fill=(255, 255, 255, 255), stroke_width=thick, stroke_fill=(255, 255, 255, 255))
+        alpha = glow_layer.split()[3].filter(ImageFilter.GaussianBlur(radius=max(radii)))
+        boost = 1.6 * (max(0.0, min(100.0, float(glow.get("opacity", 100) or 0))) / 100.0)
+        alpha = alpha.point(lambda a: min(255, int(a * boost)))
+        gc = tuple(glow.get("color") or (255, 255, 255))
+        colored = Image.new("RGBA", canvas.size, (gc[0], gc[1], gc[2], 0))
+        colored.putalpha(alpha)
+        canvas = Image.alpha_composite(canvas, colored)
+    stroke_px = int(round(float((stroke or {}).get("size", 0) or 0)))
+    stroke_fill = tuple((stroke or {}).get("color") or (0, 0, 0)) + (255,)
     for x, y_, line, font in placed:
-        color = tuple(line.get("color") or (26, 26, 26))
-        draw.text((x, y_), line["text"], font=font, fill=color + (255,))
+        fill = tuple(color or line.get("color") or (26, 26, 26))
+        if stroke_px > 0:
+            draw.text((x, y_), line["text"], font=font, fill=fill + (255,), stroke_width=stroke_px, stroke_fill=stroke_fill)
+        else:
+            draw.text((x, y_), line["text"], font=font, fill=fill + (255,))
     if debug is not None:
         faces = []
         for _x, _y, _line, font in placed:

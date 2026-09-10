@@ -420,6 +420,21 @@ per-request upload for the same size (via the form's upload rows) always
 overrides the saved default; a bad/corrupt file in that folder is simply
 skipped rather than breaking generation. See `default_templates/README.txt`.
 
+To start the templates over, keep a zip of the known-good set in
+`default_templates/` -- `template-backup.zip` or `default_templates.zip`,
+or failing those the only zip in the folder (the `tester-WxH.psd` files at
+its top level; Finder's `__MACOSX` entries are ignored). The **Reset form**
+button at the top of the page unpacks it over `default_templates/` --
+each size in the zip replaces the current file, which is moved to
+`_template_backups/` with a timestamp first, and a size the zip doesn't
+carry is left as it is. The form itself comes back blank at the same time:
+every remembered field (campaign brief, brand colours, languages, layer
+text and styling) and every file kept from the last run (hero, logo,
+product, CTA, references, the size-specific PSD rows) is forgotten, so
+the next Generate can't re-attach the drops the reset just undid. The
+Ideogram key in `.env` is untouched. The page then says which files were
+restored.
+
 Any size resolved from a PSD template -- whether uploaded this request or
 picked up from `default_templates/` -- is used exactly as-is: fit to the
 frame (no cropping, matching `resize_to_contain`) but with **no**
@@ -438,6 +453,13 @@ you've uploaded at least one PSD yourself (a per-request row, or the
 content PSD field) -- upload no PSD at all and they're skipped entirely,
 so a plain hero-image request never silently gains extra sizes or has one
 swapped out for a saved template.
+
+A PSD dropped on a run is the design for that run: the form's own layer
+styling (glow, shadow, outline, colour, font and size for the text layers;
+glow and shadow for logo and product) is switched off for that run and
+saved as off, so the file's styling shows -- which is what makes the round
+trip app -> Photoshop -> app work. Tick a control again to override the
+file from then on.
 
 The PSD section also has an **"Update layers across all template
 sizes"** block: a description-text field and logo/CTA-image/product-image
