@@ -1878,8 +1878,7 @@
       // switches that ask for it are hidden rather than shown and
       // disappointed -- and unticked on the way out, or a run would
       // carry a request the provider can't honour. Choosing Ideogram
-      // turns the whole-ad switch on, since that is the reason to pay
-      // for it; it can be turned straight back off.
+      // leaves the whole-ad switch alone -- see below.
       //
       // The two are mutually exclusive by construction: "lay out the
       // entire ad" and "put type in the backdrop the template draws
@@ -1893,11 +1892,13 @@
         var syncProvider = function (userChanged) {
           var isIdeogram = providerSelect.value === "ideogram";
           ideogramOnly.forEach(function (el) { el.hidden = !isIdeogram; });
+          // Pollinations can't do either, so both go off with it. Picking
+          // Ideogram no longer ticks "whole ad" by itself: that tick is
+          // nine paid images instead of one, and it was going on unseen
+          // when the provider changed -- a $0.27 run for a backdrop.
           if (!isIdeogram) {
             if (fullAdBox) fullAdBox.checked = false;
             if (allowTextBox) allowTextBox.checked = false;
-          } else if (userChanged && fullAdBox && !allowTextBox.checked) {
-            fullAdBox.checked = true;
           }
         };
         providerSelect.addEventListener("change", function () { syncProvider(true); });
