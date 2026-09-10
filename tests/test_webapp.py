@@ -481,21 +481,53 @@ class WebAppSmokeTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         job_dir = webapp.JOBS_DIR / job_id
 
-        product_folder = "HydroBoost_Sports_Drink"
-        expected_prefix = f"{product_folder}_campaign1"
+        expected_prefix = "HydroBoost_Sports_Drink_campaign1"
         zip_path = job_dir / f"{expected_prefix}_creatives.zip"
         self.assertTrue(zip_path.is_file())
         with zipfile.ZipFile(zip_path) as zf:
             names = set(zf.namelist())
+        # <Campaign>/<Product>/ -- the product folder is the name as
+        # typed (minus what a filesystem refuses), the campaign is the
+        # card's slot when the card has no campaign name.
+        product_folder = "HydroBoost Sports Drink!!"
         self.assertEqual(
             names,
             {
-                f"{product_folder}/campaign1/{expected_prefix}_300x250.png",
-                f"{product_folder}/campaign1/{expected_prefix}_300x250.psd",
-                f"{product_folder}/campaign1/{expected_prefix}_320x50.png",
-                f"{product_folder}/campaign1/{expected_prefix}_320x50.psd",
+                f"campaign1/{product_folder}/{expected_prefix}_300x250.png",
+                f"campaign1/{product_folder}/{expected_prefix}_300x250.psd",
+                f"campaign1/{product_folder}/{expected_prefix}_320x50.png",
+                f"campaign1/{product_folder}/{expected_prefix}_320x50.psd",
             },
         )
+
+    def test_a_named_campaign_names_the_files_and_folders(self):
+        # HydroBoost Sports Drink in Winter Glow 2026: the zip unpacks to
+        # Winter Glow 2026/HydroBoost Sports Drink/, each file named
+        # product_campaign_size, and downloads/ gets the same tree with
+        # the files laid out in it -- the finished ads for a campaign are
+        # one folder on disk.
+        data = {
+            "hero_image": (self._sample_image_bytes(), "hero.png"),
+            "product_name": "HydroBoost Sports Drink", "campaign_name": "Winter Glow 2026",
+            "custom_sizes": "300x250", "header": "", "description": "",
+        }
+        r = self.client.post("/generate", data=data, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
+        zip_path = webapp.JOBS_DIR / job_id / "HydroBoost_Sports_Drink_Winter_Glow_2026_creatives.zip"
+        self.assertTrue(zip_path.is_file())
+        with zipfile.ZipFile(zip_path) as zf:
+            names = set(zf.namelist())
+        self.assertEqual(names, {
+            "Winter Glow 2026/HydroBoost Sports Drink/HydroBoost_Sports_Drink_Winter_Glow_2026_300x250.png",
+            "Winter Glow 2026/HydroBoost Sports Drink/HydroBoost_Sports_Drink_Winter_Glow_2026_300x250.psd",
+        })
+        folder = webapp.DOWNLOADS_DIR / "Winter Glow 2026" / "HydroBoost Sports Drink"
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), [
+            "HydroBoost_Sports_Drink_Winter_Glow_2026_300x250.png",
+            "HydroBoost_Sports_Drink_Winter_Glow_2026_300x250.psd",
+            "HydroBoost_Sports_Drink_Winter_Glow_2026_creatives.zip",
+        ])
 
     def test_generate_without_a_product_name_zips_under_the_campaign_folder(self):
         # No product name, so there's no product folder to nest under --
@@ -4585,7 +4617,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
             inner_bytes = outer.read("campaigns/OffScrpt_campaign2_creatives.zip")
         with zipfile.ZipFile(io.BytesIO(inner_bytes)) as inner:
             self.assertTrue(
-                any(n.startswith("OffScrpt/campaign2/") for n in inner.namelist()),
+                any(n.startswith("campaign2/OffScrpt/") for n in inner.namelist()),
                 inner.namelist(),
             )
 
@@ -4599,14 +4631,15 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self._generate_campaign(session_id, 1, (10, 10, 200))
         self._generate_campaign(session_id, 2, (200, 10, 10))
 
-        saved = sorted(p.name for p in webapp.DOWNLOADS_DIR.glob("*.zip"))
+        saved = sorted(p.relative_to(webapp.DOWNLOADS_DIR).as_posix() for p in webapp.DOWNLOADS_DIR.rglob("*.zip"))
         self.assertEqual(
             saved,
-            ["OffScrpt_campaign1_creatives.zip", "OffScrpt_campaign2_creatives.zip"],
+            ["campaign1/OffScrpt/OffScrpt_campaign1_creatives.zip", "campaign2/OffScrpt/OffScrpt_campaign2_creatives.zip"],
         )
-        # A real archive, not a placeholder.
+        # A real archive, not a placeholder -- and the files beside it.
         with zipfile.ZipFile(webapp.DOWNLOADS_DIR / saved[0]) as zf:
             self.assertTrue(zf.namelist())
+        self.assertTrue((webapp.DOWNLOADS_DIR / "campaign1" / "OffScrpt" / "OffScrpt_campaign1_970x90.png").is_file())
 
     def test_rerunning_a_campaign_overwrites_its_own_download(self):
         # Same product, same campaign -- one file, refreshed. Otherwise a
@@ -4615,11 +4648,11 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         session_id = "sess_downloads_rerun"
         self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
         self._generate_campaign(session_id, 1, (10, 10, 200))
-        first = (webapp.DOWNLOADS_DIR / "OffScrpt_campaign1_creatives.zip").read_bytes()
+        first = (webapp.DOWNLOADS_DIR / "campaign1" / "OffScrpt" / "OffScrpt_campaign1_creatives.zip").read_bytes()
         self._generate_campaign(session_id, 1, (200, 10, 10))
 
-        self.assertEqual(len(list(webapp.DOWNLOADS_DIR.glob("*.zip"))), 1)
-        second = (webapp.DOWNLOADS_DIR / "OffScrpt_campaign1_creatives.zip").read_bytes()
+        self.assertEqual(len(list(webapp.DOWNLOADS_DIR.rglob("*.zip"))), 1)
+        second = (webapp.DOWNLOADS_DIR / "campaign1" / "OffScrpt" / "OffScrpt_campaign1_creatives.zip").read_bytes()
         self.assertNotEqual(first, second)
 
     def test_download_campaigns_404s_for_an_unknown_session(self):

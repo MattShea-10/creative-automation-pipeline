@@ -1865,6 +1865,19 @@ def _slugify_for_filename(text: str, *, max_length: int = 40) -> str:
     return collapsed[:max_length]
 
 
+def _download_folder_parts(product_name, campaign_name, campaign_label: str) -> tuple:
+    """Where a run's files go, in the zip and under downloads/:
+    ("<Campaign Name>", "<Product Name>") as typed, minus characters a
+    filesystem refuses. A card with no campaign name uses its slot
+    ("campaign1"); one with no product name has just the campaign."""
+    campaign = _product_folder_name(campaign_name) if campaign_name else ""
+    product = _product_folder_name(product_name) if product_name else ""
+    parts = (campaign or campaign_label,)
+    if product:
+        parts += (product,)
+    return parts
+
+
 GLOW_SIZE_MIN, GLOW_SIZE_MAX, GLOW_SIZE_DEFAULT = 1, 100, 12
 
 
@@ -3707,7 +3720,13 @@ def generate():
         campaign_slot = int((request.form.get("campaign_slot") or "1").strip())
     except ValueError:
         campaign_slot = 1
-    campaign_label = f"campaign{campaign_slot}"
+    # Named for the campaign when the card has one ("Winter Glow 2026"
+    # -> Winter_Glow_2026), so a file says what it is wherever it ends
+    # up: HydroBoost_Sports_Drink_Winter_Glow_2026_1080x1080.png. The
+    # card's slot number is the fallback for a card with no campaign
+    # name -- still unique per card on the page.
+    campaign_label = _slugify_for_filename(campaign_name) if campaign_name else ""
+    campaign_label = campaign_label or f"campaign{campaign_slot}"
     file_name_prefix = f"{product_name_slug}_{campaign_label}" if product_name_slug else f"creative_{campaign_label}"
     market = (request.form.get("market") or "").strip() or None
     audience = (request.form.get("audience") or "").strip() or None
@@ -7808,9 +7827,10 @@ def generate():
     # extracts to. Several campaigns from the same session can then be
     # unzipped side by side without their same-named sizes colliding,
     # which is the whole reason the campaign is in the path.
-    zip_entry_prefix = (
-        f"{product_name_slug}/{campaign_label}/" if product_name_slug else f"{campaign_label}/"
-    )
+    # <Campaign Name>/<Product Name>/ -- the folder names as typed (the
+    # same names the templates folders use), the campaign outermost so
+    # every product of one campaign unzips into the same folder.
+    zip_entry_prefix = "/".join(_download_folder_parts(product_name, campaign_name, campaign_label)) + "/"
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for creative in creatives:
             zf.write(
@@ -7843,9 +7863,22 @@ def generate():
     # Best-effort: a failure here (a read-only checkout, say) must never
     # sink a render that already succeeded -- the download button still
     # works either way.
+    # The files themselves as well, laid out the way the zip is:
+    # downloads/<Campaign Name>/<Product Name>/<product>_<campaign>_<size>.png
+    # (and the PSDs beside them), so the finished ads for a campaign are
+    # one folder on disk without unzipping anything.
     try:
         DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(zip_path, DOWNLOADS_DIR / zip_path.name)
+        download_dir = DOWNLOADS_DIR.joinpath(*_download_folder_parts(product_name, campaign_name, campaign_label))
+        download_dir.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(zip_path, download_dir / zip_path.name)
+        for creative in creatives:
+            for key in ("filename", "psd_filename", "source_psd_filename"):
+                name = creative.get(key)
+                if not name or not (job_dir / name).is_file():
+                    continue
+                out_name = creative.get("source_psd_download_name") or name if key == "source_psd_filename" else name
+                shutil.copy2(job_dir / name, download_dir / out_name)
     except OSError:
         pass
 

@@ -336,7 +336,14 @@ header and description, optionally expand "Advanced options" to pick sizes
 color and background toggle for the header and, separately, for the
 description, and an optional logo upload. Click "Generate creatives" and
 every size renders as a thumbnail on the results page, downloadable
-individually or all together as a zip.
+individually or all together as a zip. Files are named for the product,
+the campaign and the size -- `HydroBoost_Sports_Drink_Winter_Glow_2026_1080x1080.png`,
+with the layered and live-text PSDs beside it -- and the zip unpacks to
+`<Campaign Name>/<Product Name>/`. Every run also lays the same tree out
+under `downloads/` (`downloads/Winter Glow 2026/HydroBoost Sports Drink/`,
+files and zip), so a campaign's finished ads are one folder on disk with
+nothing to unzip; re-running the same product refreshes that folder. A
+card with no campaign name uses its slot number (`campaign1`) instead.
 
 Each of the two text overlays -- "Header text style" and "Description text
 style" -- has its own color picker and its own "No background
