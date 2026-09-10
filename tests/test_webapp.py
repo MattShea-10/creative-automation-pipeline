@@ -4621,6 +4621,38 @@ class ContentPsdQuickModeTest(unittest.TestCase):
                 inner.namelist(),
             )
 
+    def test_the_busy_overlay_can_poll_the_runs_percentage(self):
+        # The page makes up a token per Generate and polls
+        # /progress/<token>; the run reports its milestones under it.
+        # Unknown token: percent null (not an error -- the first poll can
+        # beat the first milestone). Bad token: 404.
+        self.assertEqual(self.client.get("/progress/0123456789abcdef").get_json(), {"percent": None, "stage": ""})
+        self.assertEqual(self.client.get("/progress/not-a-token!").status_code, 404)
+        self._write_default_template("970x90.psd", self._sample_psd_bytes(color=(30, 180, 30)))
+        seen = []
+        real = webapp._report_progress
+
+        def spy(token, percent, stage):
+            seen.append((token, int(percent), stage))
+            real(token, percent, stage)
+
+        with mock.patch.object(webapp, "_report_progress", side_effect=spy):
+            r = self.client.post("/generate", data={
+                "hero_image": (self._sample_image_bytes(), "hero.png"), "product_name": "Pct",
+                "custom_sizes": "970x90", "header": "", "description": "", "progress_token": "0123456789abcdef",
+            }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200)
+        self.assertTrue(all(t == "0123456789abcdef" for t, _p, _s in seen), seen)
+        percents = [p for _t, p, _s in seen]
+        self.assertEqual(percents, sorted(percents), "the percentage never goes backwards")
+        self.assertIn("Rendering 970x90 (1 of 1)", [s for _t, _p, s in seen])
+        self.assertEqual(percents[-1], 100)
+        self.assertEqual(self.client.get("/progress/0123456789abcdef").get_json(), {"percent": 100, "stage": "Done"})
+        # The token field is on every card's form, blank until Generate.
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('name="progress_token" value=""', page)
+        self.assertIn('data-role="busy-percent"', page)
+
     def test_every_run_leaves_a_named_zip_in_the_downloads_folder(self):
         # A job folder is a random id under outputs/web/, which is fine
         # for serving a page and useless for finding last Tuesday's
@@ -4800,15 +4832,16 @@ class ContentPsdQuickModeTest(unittest.TestCase):
     def test_fields_stay_enabled_when_the_layer_is_switched_on(self):
         import webapp as _webapp
 
-        original = _webapp.get_psd_text_layers
-        _webapp.get_psd_text_layers = lambda path, visible_only=False: {
-            "header": "on", "description": "on"
+        original = _webapp._scan_template_layers
+        _webapp._scan_template_layers = lambda path: {
+            "editable": ["header", "description"], "present": ["header", "description"],
+            "seen": ["header", "description", "background"], "visible": ["header", "description", "background"],
         }
         try:
             self._write_template_with_a_background_layer("on-300x250.psd", (300, 250))
             page = self.client.get("/")
         finally:
-            _webapp.get_psd_text_layers = original
+            _webapp._scan_template_layers = original
         self.assertEqual(page.status_code, 200)
         self.assertNotIn(b"switched off in your saved", page.data)
 
@@ -4828,15 +4861,18 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         own = webapp.DEFAULT_TEMPLATES_DIR / "Winter Glow 2026" / "HydroBoost Sports Drink"
         own.mkdir(parents=True)
         shutil.copy(webapp.DEFAULT_TEMPLATES_DIR / "off-300x250.psd", own / "on-300x250.psd")
-        original = _webapp.get_psd_text_layers
+        original = _webapp._scan_template_layers
         # Only the product's own copy has header and description on.
-        _webapp.get_psd_text_layers = lambda path, visible_only=False: (
-            {"header": "on", "description": "on"} if Path(path).parent == own else {}
+        _webapp._scan_template_layers = lambda path: (
+            {"editable": ["header", "description"], "present": ["header", "description"],
+             "seen": ["header", "description", "background"], "visible": ["header", "description", "background"]}
+            if Path(path).parent == own else
+            {"editable": [], "present": [], "seen": ["background"], "visible": ["background"]}
         )
         try:
             page = self.client.get("/")
         finally:
-            _webapp.get_psd_text_layers = original
+            _webapp._scan_template_layers = original
         self.assertEqual(page.status_code, 200)
         markup = page.data.decode().replace("'", '"').split('id="blank-campaign-card"')[0]
         cards = markup.split('class="campaign-card"')[1:]

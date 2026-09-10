@@ -336,7 +336,12 @@ header and description, optionally expand "Advanced options" to pick sizes
 color and background toggle for the header and, separately, for the
 description, and an optional logo upload. Click "Generate creatives" and
 every size renders as a thumbnail on the results page, downloadable
-individually or all together as a zip. Files are named for the product,
+individually or all together as a zip. While a run is going the page
+shows a spinner with the run's percentage in the middle and what it is
+doing under it (generating the artwork, rendering each size, packaging
+the download) -- the run reports its milestones under a token the page
+makes up per Generate, so the number is this run's, never a leftover
+from an earlier one. Files are named for the product,
 the campaign and the size -- `HydroBoost_Sports_Drink_Winter_Glow_2026_1080x1080.png`,
 with the layered and live-text PSDs beside it -- and the zip unpacks to
 `<Campaign Name>/<Product Name>/`. Every run also lays the same tree out

@@ -212,18 +212,29 @@
       background: rgba(2, 6, 23, 0.93);
     }
     .busy-overlay[hidden] { display: none; }
+    /* The ring spins; the number in the middle does not (it is the
+       ring's border that rotates -- the percentage is a separate,
+       counter-rotated child so it reads upright). */
     .busy-spinner {
-      @apply rounded-full;
-      width: 46px; height: 46px;
-      border: 4px solid #1e293b;
+      @apply rounded-full relative flex items-center justify-center;
+      width: 84px; height: 84px;
+      border: 5px solid #1e293b;
       border-top-color: var(--brand-blue);
       animation: busy-spin 0.9s linear infinite;
     }
+    .busy-percent {
+      @apply text-slate-100 font-semibold;
+      font-size: 1.15rem; font-variant-numeric: tabular-nums;
+      animation: busy-unspin 0.9s linear infinite;
+    }
+    .busy-stage { @apply text-blue-300 text-[0.95rem]; min-height: 1.4em; }
     @keyframes busy-spin { to { transform: rotate(360deg); } }
+    @keyframes busy-unspin { to { transform: rotate(-360deg); } }
     /* Respect a system setting that exists because motion makes some
        people ill -- the overlay still communicates, it just holds still. */
     @media (prefers-reduced-motion: reduce) {
-      .busy-spinner { animation: none; border-top-color: var(--brand-blue); }
+      .busy-spinner, .busy-percent { animation: none; }
+      .busy-spinner { border-top-color: var(--brand-blue); }
     }
     .busy-title { @apply text-slate-100 text-lg font-semibold; }
     .busy-detail { @apply text-slate-400 text-[0.9rem] max-w-[30rem] leading-relaxed; }
@@ -339,8 +350,9 @@
     {% endif %}
 
     <div class="busy-overlay" data-role="busy" hidden>
-      <div class="busy-spinner" role="status" aria-live="polite" aria-label="Generating"></div>
+      <div class="busy-spinner" role="status" aria-live="polite" aria-label="Generating"><span class="busy-percent" data-role="busy-percent"></span></div>
       <div class="busy-title" data-role="busy-title">Generating your creatives&hellip;</div>
+      <div class="busy-stage" data-role="busy-stage"></div>
       <div class="busy-detail" data-role="busy-detail"></div>
     </div>
 
@@ -370,6 +382,9 @@
         <form class="creative-form" action="{{ url_for('generate') }}" method="post" enctype="multipart/form-data">
         <input type="hidden" name="session_id" value="{{ session_id }}">
         <input type="hidden" name="campaign_slot" value="{{ index }}">
+        {# Set by the page when Generate is pressed: the busy overlay
+           polls /progress/<token> for this run's percentage. #}
+        <input type="hidden" name="progress_token" value="">
       {% if not edit_job_id and carry_job_id %}
         <input type="hidden" name="carry_files_job_id" value="{{ carry_job_id }}">
       {% endif %}
@@ -2677,6 +2692,50 @@
           detail.textContent = parts.join(" ");
         }
 
+        // The percentage in the middle of the spinner. The run reports
+        // its milestones (artwork generated, each size rendered, zip
+        // written) under a token this page makes up per Generate, and
+        // the overlay polls for that token -- so it can never show a
+        // number left behind by an earlier run of the same card.
+        var percentEl = overlay.querySelector('[data-role="busy-percent"]');
+        var stageEl = overlay.querySelector('[data-role="busy-stage"]');
+        var pollTimer = null;
+        function stopPolling() {
+          if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+        }
+        function startPolling(token) {
+          stopPolling();
+          if (percentEl) percentEl.textContent = "0%";
+          if (stageEl) stageEl.textContent = "Starting\u2026";
+          var shown = 0;
+          var tick = function () {
+            fetch("/progress/" + token, { cache: "no-store" })
+              .then(function (r) { return r.ok ? r.json() : null; })
+              .then(function (data) {
+                if (!data || data.percent === null || data.percent === undefined) return;
+                var pct = Math.max(shown, Math.min(100, Math.round(data.percent)));
+                shown = pct;
+                if (percentEl) percentEl.textContent = pct + "%";
+                if (stageEl && data.stage) stageEl.textContent = data.stage;
+                if (pct >= 100) stopPolling();
+              })
+              .catch(function () {});
+          };
+          tick();
+          pollTimer = setInterval(tick, 700);
+        }
+        function newToken() {
+          var hex = "";
+          try {
+            var bytes = new Uint8Array(12);
+            (window.crypto || window.msCrypto).getRandomValues(bytes);
+            bytes.forEach(function (b) { hex += ("0" + b.toString(16)).slice(-2); });
+          } catch (e) {
+            hex = String(Date.now().toString(16)) + Math.random().toString(16).slice(2, 10);
+          }
+          return hex.replace(/[^0-9a-f]/g, "").slice(0, 24);
+        }
+
         document.addEventListener("submit", function (event) {
           var form = event.target;
           if (!form.classList || !form.classList.contains("creative-form")) return;
@@ -2684,6 +2743,10 @@
           // required field never fires this event, so the overlay can't
           // strand someone behind a validation error they can't see.
           describe(form);
+          var tokenField = form.querySelector('[name="progress_token"]');
+          var token = newToken();
+          if (tokenField) tokenField.value = token;
+          startPolling(token);
           overlay.hidden = false;
           var button = form.querySelector('button[type="submit"]');
           if (button) {
@@ -2700,6 +2763,7 @@
         window.addEventListener("pageshow", function (event) {
           if (!event.persisted) return;
           overlay.hidden = true;
+          stopPolling();
           document.querySelectorAll('.creative-form button[type="submit"]').forEach(function (b) {
             b.disabled = false;
             b.textContent = "Generate creatives";

@@ -57,7 +57,7 @@ import tempfile
 import uuid
 import zipfile
 
-from flask import Flask, abort, flash, redirect, render_template, request, send_file, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_file, url_for
 from PIL import Image
 from werkzeug.utils import secure_filename
 
@@ -2404,12 +2404,7 @@ def _editable_text_layers(folder=None) -> set:
     quietly do nothing. Judged across all saved templates together, since
     one enabled somewhere is enough for the field to be worth offering.
     """
-    editable = set()
-    template_paths = _template_paths_in(folder)
-    for path in template_paths.values():
-        for name in get_psd_text_layers(path, visible_only=True):
-            editable.add(name)
-    return editable
+    return _scan_layer_sets(folder if folder is not None else templates_dir())["editable"]
 
 
 def _switched_off_layers(folder=None) -> set:
@@ -2426,19 +2421,7 @@ def _switched_off_layers(folder=None) -> set:
     Every layer kind, not just text: logo, cta and product get a hide
     checkbox too, and a designer can switch any of them off.
     """
-    seen, visible = set(), set()
-    template_paths = _template_paths_in(folder)
-    for path in template_paths.values():
-        try:
-            psd = PSDImage.open(path)
-        except Exception:
-            continue
-        for layer in psd.descendants():
-            name = layer.name.strip().lower()
-            seen.add(name)
-            if layer.visible:
-                visible.add(name)
-    return seen - visible
+    return _scan_layer_sets(folder if folder is not None else templates_dir())["switched_off"]
 
 
 def _present_text_layers(folder=None) -> set:
@@ -2452,12 +2435,123 @@ def _present_text_layers(folder=None) -> set:
     nothing to explain and no path to enabling it, so its controls aren't
     shown at all rather than sitting there permanently dead.
     """
-    present = set()
-    template_paths = _template_paths_in(folder)
-    for path in template_paths.values():
-        for name in get_psd_text_layers(path):
-            present.add(name)
-    return present
+    return _scan_layer_sets(folder if folder is not None else templates_dir())["present"]
+
+
+# One scan per templates folder, reused until a file in it changes:
+# the three layer sets below each opened every PSD in the folder, for
+# every card on the page -- seven cards of nine templates was a
+# sixteen-second form. Keyed by the folder and its files' sizes and
+# mtimes, so a template re-saved in Photoshop is re-read.
+_layer_sets_cache: dict = {}
+
+
+def _folder_signature(folder: Path) -> tuple:
+    try:
+        return tuple(sorted(
+            (p.name, p.stat().st_size, p.stat().st_mtime_ns)
+            for p in folder.iterdir()
+            if p.is_file() and p.suffix.lower() in ALLOWED_PSD_TEMPLATE_EXTENSIONS
+        ))
+    except OSError:
+        return ()
+
+
+def _layer_scan_cache_path() -> Path:
+    return JOBS_DIR / "layer_scan_cache.json"
+
+
+_template_scan_cache: dict | None = None
+
+
+def _scan_template_layers(path: Path) -> dict | None:
+    """One template's named layers -- present/editable text layers and
+    every layer seen/visible -- read once and kept on disk keyed by the
+    file's size and mtime. Opening a PSD is a quarter of a second, and
+    the form asks about every template of every card on every load;
+    with the answers kept, a fresh start reads only files that changed
+    since the last run (a template re-saved in Photoshop, say)."""
+    global _template_scan_cache
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    key = str(path.resolve())
+    if _template_scan_cache is None:
+        try:
+            _template_scan_cache = json.loads(_layer_scan_cache_path().read_text(encoding="utf-8"))
+            if not isinstance(_template_scan_cache, dict):
+                _template_scan_cache = {}
+        except (OSError, ValueError):
+            _template_scan_cache = {}
+    entry = _template_scan_cache.get(key)
+    if entry and entry.get("size") == stat.st_size and entry.get("mtime_ns") == stat.st_mtime_ns:
+        return entry
+    from src.image_ops import layers_under_background
+    try:
+        psd = PSDImage.open(path)
+    except Exception:
+        return None
+    editable, present, seen, visible = set(), set(), set(), set()
+    # The same judgement get_psd_text_layers() makes: a top-level type
+    # layer with words is present; on, and not buried under the
+    # background, it is editable.
+    buried = layers_under_background(psd)
+    for layer in psd:
+        name = (layer.name or "").strip()
+        if not name or getattr(layer, "kind", None) != "type":
+            continue
+        try:
+            text = layer.text
+        except Exception:
+            continue
+        if not text:
+            continue
+        present.add(name.lower())
+        if layer.visible and name.lower() not in buried:
+            editable.add(name.lower())
+    for layer in psd.descendants():
+        name = layer.name.strip().lower()
+        seen.add(name)
+        if layer.visible:
+            visible.add(name)
+    entry = {
+        "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
+        "editable": sorted(editable), "present": sorted(present), "seen": sorted(seen), "visible": sorted(visible),
+    }
+    _template_scan_cache[key] = entry
+    try:
+        _layer_scan_cache_path().parent.mkdir(parents=True, exist_ok=True)
+        _layer_scan_cache_path().write_text(json.dumps(_template_scan_cache), encoding="utf-8")
+    except OSError:
+        pass
+    return entry
+
+
+def _scan_layer_sets(folder: Path) -> dict:
+    """{"editable", "present", "switched_off"} for one folder, opening
+    each template once. editable: named text layers switched on (and
+    not buried under the background) in at least one template; present:
+    every named text layer, on or off; switched_off: named layers of
+    any kind the templates have but that are off in every one."""
+    key = (str(folder), _folder_signature(folder))
+    cached = _layer_sets_cache.get(key)
+    if cached is not None:
+        return {k: set(v) for k, v in cached.items()}
+    editable, present, seen, visible = set(), set(), set(), set()
+    for path in _template_paths_in(folder).values():
+        scan = _scan_template_layers(path)
+        if scan is None:
+            continue
+        editable |= set(scan["editable"])
+        present |= set(scan["present"])
+        seen |= set(scan["seen"])
+        visible |= set(scan["visible"])
+    result = {"editable": editable, "present": present, "switched_off": seen - visible}
+    for stale in [k for k in _layer_sets_cache if k[0] == key[0]]:
+        del _layer_sets_cache[stale]
+    _layer_sets_cache[key] = {k: set(v) for k, v in result.items()}
+    return result
 
 
 def card_layer_sets(product_name=None, campaign_name=None) -> dict:
@@ -2469,12 +2563,7 @@ def card_layer_sets(product_name=None, campaign_name=None) -> dict:
     out fields on a card whose own templates have it on. A campaign whose
     folder does not exist yet (nothing generated for it) is judged on the
     shared folder, the set its folder will be seeded from."""
-    folder = _layer_judging_dir(product_name, campaign_name)
-    return {
-        "editable": _editable_text_layers(folder),
-        "present": _present_text_layers(folder),
-        "switched_off": _switched_off_layers(folder),
-    }
+    return _scan_layer_sets(_layer_judging_dir(product_name, campaign_name))
 
 
 def _page_layer_sets() -> dict:
@@ -3370,6 +3459,65 @@ def edit(job_id):
     )
 
 
+PROGRESS_TOKEN_RE = re.compile(r"[0-9a-f]{8,64}")
+
+
+def _progress_path(token: str) -> Path:
+    return JOBS_DIR / "progress" / f"{token}.json"
+
+
+def _progress_token_from(form) -> str | None:
+    """The form's own run token (set by the page when Generate is
+    pressed), so the overlay polls for THIS run and never reads the
+    file an earlier run of the same card left behind."""
+    token = (form.get("progress_token") or "").strip().lower()
+    return token if PROGRESS_TOKEN_RE.fullmatch(token) else None
+
+
+def _report_progress(token, percent, stage: str) -> None:
+    """How far this run has got, for the busy overlay's percentage.
+    Best-effort and monotonic: a milestone never moves the number
+    back, and a failure to write never touches the run itself."""
+    if not token:
+        return
+    try:
+        path = _progress_path(token)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        previous = 0
+        try:
+            previous = int(json.loads(path.read_text(encoding="utf-8")).get("percent") or 0)
+        except (OSError, ValueError, TypeError):
+            previous = 0
+        percent = max(previous, min(100, int(percent)))
+        path.write_text(json.dumps({"percent": percent, "stage": stage, "at": time.time()}), encoding="utf-8")
+        if percent >= 100:
+            # A finished run's file is only read for the second or two
+            # until the page moves on; older ones are litter.
+            for old in path.parent.glob("*.json"):
+                try:
+                    if old != path and time.time() - old.stat().st_mtime > 3600:
+                        old.unlink()
+                except OSError:
+                    continue
+    except OSError:
+        pass
+
+
+@app.route("/progress/<token>")
+def progress(token):
+    """Polled by the busy overlay while a Generate is running:
+    {"percent": 0-100, "stage": "..."} for the run with this token, or
+    percent null before its first milestone."""
+    token = (token or "").strip().lower()
+    if not PROGRESS_TOKEN_RE.fullmatch(token):
+        return jsonify({"percent": None, "stage": ""}), 404
+    try:
+        data = json.loads(_progress_path(token).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return jsonify({"percent": None, "stage": ""})
+    return jsonify({"percent": data.get("percent"), "stage": data.get("stage") or ""})
+
+
 @app.route("/generate", methods=["GET"])
 def generate_reload():
     """A GET on /generate means the results page was reloaded.
@@ -3403,6 +3551,8 @@ def _keep_submission(message: str):
     costs one click, not a retyped campaign brief. Drafts live under
     outputs/web/draft_*, hold no creatives, and are never listed as runs.
     """
+    # The overlay's percentage: this run is over, however it ended.
+    _report_progress(_progress_token_from(request.form), 100, "Stopped")
     draft_id = f"draft_{uuid.uuid4().hex[:12]}"
     draft_dir = JOBS_DIR / draft_id
     uploads_dir = draft_dir / "uploads"
@@ -3480,6 +3630,8 @@ def generate():
         prune_job_folders()
     except Exception:  # noqa: BLE001
         pass
+    progress_token = _progress_token_from(request.form)
+    _report_progress(progress_token, 3, "Reading the form")
     # Editing a prior job (see /edit/<job_id>) carries a hidden
     # edit_job_id field -- load that job's saved form_state.json so file
     # fields the user didn't re-upload this time can be carried forward
@@ -4331,6 +4483,7 @@ def generate():
             upload_ai_width, upload_ai_height = _generation_size(
                 _default_template_sizes(), CONTENT_PSD_SIZE
             )
+            _report_progress(progress_token, 8, f"Generating the artwork with {upload_ai_provider}")
             (
                 upload_ai_image,
                 upload_ai_prompt_used,
@@ -4351,6 +4504,7 @@ def generate():
                 ) or None,
                 style_reference=upload_ai_reference_bytes,
             )
+            _report_progress(progress_token, 30, "Artwork ready")
             background_notes_pending = (
                 f"Campaign artwork generated with AI ({upload_ai_provider}) at "
                 f"{upload_ai_image.width}x{upload_ai_image.height} -- prompt: "
@@ -5232,6 +5386,7 @@ def generate():
             # THIS RUN wants lettering, and a run that wants it in the
             # campaign artwork does not want it stripped out of the hero
             # image standing in the same creative.
+            _report_progress(progress_token, 8, f"Generating the hero image with {ai_hero_provider}")
             generated_image, prompt, hero_attempts, hero_text = _generate_text_free(
                 _provider(ai_hero_provider),
                 prompt,
@@ -5448,7 +5603,11 @@ def generate():
             if getattr(provider_for_ads, "supports_render_mode", False) and not upload_ai_reference_bytes
             else {}
         )
-        for width, height in sizes:
+        for ad_index, (width, height) in enumerate(sizes):
+            _report_progress(
+                progress_token, 10 + 25 * ad_index / max(len(sizes), 1),
+                f"Generating the whole ad {size_label(width, height)} ({ad_index + 1} of {len(sizes)})",
+            )
             try:
                 ad_image = provider_for_ads.generate(
                     full_ad_prompt,
@@ -5483,7 +5642,11 @@ def generate():
             full_ad_templates[(width, height)] = size_template_paths.pop((width, height), None)
 
     creatives = []
-    for width, height in sizes:
+    for size_index, (width, height) in enumerate(sizes):
+        _report_progress(
+            progress_token, 35 + 57 * size_index / max(len(sizes), 1),
+            f"Rendering {size_label(width, height)} ({size_index + 1} of {len(sizes)})",
+        )
         # Only the sizes that genuinely enlarge past what came back. A
         # 160x600 cut from a 1024x1024 source loses nothing; a 1920x1080
         # is stretched to nearly twice the width it was drawn at, and
@@ -7821,6 +7984,7 @@ def generate():
         else f"{campaign_label}_creatives"
     )
     zip_path = job_dir / f"{zip_stem}.zip"
+    _report_progress(progress_token, 94, "Packaging the download")
     # Everything inside the zip is nested under its campaign, and under
     # the product name too when there is one -- so unzipping drops a
     # self-contained "<Product Name>/campaign1/" tree wherever the user
@@ -8020,6 +8184,7 @@ def generate():
         entry = videos.get(creative["label"])
         creative["video_filename"] = entry["filename"] if entry and (job_dir / entry["filename"]).is_file() else None
 
+    _report_progress(progress_token, 100, "Done")
     return render_template(
         "result.html",
         job_id=job_id,
