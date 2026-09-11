@@ -23,7 +23,7 @@ function Die($m)  { Write-Host "error $m" -ForegroundColor Red; exit 1 }
 #         stub that opens a shop window.
 Say "Looking for Python 3.10 or newer"
 $py = $null
-foreach ($cand in @("py -3.13", "py -3.12", "py -3.11", "py -3.10", "py -3", "python3", "python")) {
+foreach ($cand in @("py -3.12", "py -3.11", "py -3.10", "py -3.13", "py -3.14", "py -3", "python3", "python")) {
   $parts = $cand.Split(" ")
   try {
     & $parts[0] @($parts[1..($parts.Length-1)] + @("-c", "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)")) 2>$null

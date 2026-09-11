@@ -19,10 +19,13 @@ warn() { printf '\033[1;33mwarn\033[0m %s\n' "$*"; }
 die()  { printf '\033[1;31merror\033[0m %s\n' "$*" >&2; exit 1; }
 
 # ---- 1. A Python new enough (3.10+; the code uses match-free but
-#         3.10-era typing, and psd-tools 1.10+ needs it).
+#         3.10-era typing, and psd-tools 1.10+ needs it). 3.12 first:
+#         the text-detector wheels (rapidocr-onnxruntime) stop there, so
+#         on 3.13+ that check is skipped. An existing .venv keeps its
+#         Python either way.
 say "Looking for Python 3.10 or newer"
 PY=""
-for candidate in python3.13 python3.12 python3.11 python3.10 python3 python; do
+for candidate in python3.12 python3.11 python3.10 python3.13 python3.14 python3 python; do
   if command -v "$candidate" >/dev/null 2>&1; then
     if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)' 2>/dev/null; then
       PY="$(command -v "$candidate")"
