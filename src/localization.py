@@ -12,6 +12,8 @@ rather than silently failing.
 
 from __future__ import annotations
 
+import sys
+
 REGION_TO_LANGUAGE = {
     "mexico": "es",
     "spain": "es",
@@ -46,10 +48,23 @@ def localize_message(message: str, language: str) -> tuple[str, bool]:
     try:
         from deep_translator import GoogleTranslator
 
-        translated = GoogleTranslator(source="en", target=language).translate(message)
+        # source="auto" rather than "en": what arrives here is not always
+        # English. A PSD exported from an earlier Spanish run carries
+        # Spanish in its type layers, and asking Google to read Spanish as
+        # though it were English hands back something barely touched --
+        # "BEBIDA REFRESCANTE" came back "REFRESCANTE BEBIDA" -- which the
+        # caller cannot tell from a real translation, so it gets drawn onto
+        # the creative and cached as the French for that phrase. Letting
+        # Google detect the language actually translates it.
+        translated = GoogleTranslator(source="auto", target=language).translate(message)
         if translated:
             return translated, True
-    except Exception:
-        pass
+    except Exception as exc:
+        # Still swallowed -- the caller falls back to English and warns on
+        # the results page -- but no longer without trace: the reason a run
+        # came out in English (no network, rate limit, the endpoint moving)
+        # used to be lost entirely. This lands in the console window the
+        # packaged app runs in, and in the CI smoke test's exe.log.
+        print("[localization] %s: %s: %s" % (language, type(exc).__name__, exc), file=sys.stderr)
 
     return message, False
