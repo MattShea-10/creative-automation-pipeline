@@ -4,6 +4,24 @@
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 if (-not (Test-Path ".venv\Scripts\python.exe")) { Write-Host "No .venv\ yet -- run .\install.ps1 first." -ForegroundColor Red; exit 1 }
+# The stylesheet is compiled ahead of time (styles\*.css -> static\*.css,
+# `npm run css`). Editing the source and forgetting to rebuild is silent
+# otherwise: the app keeps serving the old CSS. Compared by hash, not by
+# date -- the Tailwind CLI leaves the output file alone when a rebuild
+# changes nothing, so its timestamp would accuse the source forever.
+if (Test-Path "static\styles.sha256") {
+  foreach ($line in Get-Content "static\styles.sha256") {
+    if ($line -match '^(\w+)\s+(.+)$') {
+      $recorded = $Matches[1]; $src = $Matches[2] -replace '/', '\'
+      if (Test-Path $src) {
+        $now = (Get-FileHash -Algorithm SHA256 -Path $src).Hash
+        if ($now -ne $recorded.ToUpper()) {
+          Write-Host "warn  $src changed since the stylesheet was built -- run 'npm run css' to rebuild it." -ForegroundColor Yellow
+        }
+      }
+    }
+  }
+}
 $port = if ($env:PORT) { $env:PORT } else { "5000" }
 # Move off a busy port rather than opening the browser on something
 # that isn't this app.

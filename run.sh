@@ -5,6 +5,30 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 [ -x .venv/bin/python ] || { echo "No .venv/ yet -- run ./install.sh first." >&2; exit 1; }
+
+# The stylesheet is compiled ahead of time (styles/*.css -> static/*.css,
+# `npm run css`). Editing the source and forgetting to rebuild is silent
+# otherwise: the app keeps serving the old CSS. Compared by hash, not by
+# date -- the Tailwind CLI leaves the output file alone when a rebuild
+# changes nothing, so its timestamp would accuse the source forever.
+.venv/bin/python - <<'PYCSS' || true
+import hashlib, sys
+try:
+    recorded = dict(
+        (line.split("  ", 1)[1].strip(), line.split("  ", 1)[0])
+        for line in open("static/styles.sha256") if line.strip()
+    )
+except OSError:
+    sys.exit(0)   # no stamp (an older checkout) -- nothing to say
+for src, sha in sorted(recorded.items()):
+    try:
+        now = hashlib.sha256(open(src, "rb").read()).hexdigest()
+    except OSError:
+        continue
+    if now != sha:
+        sys.stderr.write("\033[1;33mwarn\033[0m %s changed since the stylesheet was "
+                         "built -- run `npm run css` to rebuild it.\n" % src)
+PYCSS
 # 5000 unless taken. On macOS Monterey and later, AirPlay Receiver sits
 # on 5000 and answers with a 403 that looks like the app failing -- so
 # a busy port moves to the next free one and says so, rather than the

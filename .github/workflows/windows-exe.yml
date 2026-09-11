@@ -30,6 +30,34 @@ jobs:
           python -m pip install --upgrade pip wheel
           python -m pip install -r requirements.txt pyinstaller
 
+      # static/tailwind-*.css is committed, so the app runs from source
+      # without Node. Rebuilding it here anyway means a release can never
+      # ship a stale stylesheet because someone edited styles/*.css and
+      # forgot `npm run css`.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Rebuild the stylesheet
+        run: |
+          npm ci
+          npm run css
+
+      # Say so loudly rather than quietly shipping the rebuilt file: the
+      # committed copy is what a source run and the .dmg use, so if it
+      # differs here it is stale in those too.
+      - name: Warn if the committed stylesheet was stale
+        shell: pwsh
+        run: |
+          $changed = git status --porcelain static
+          if ($changed) {
+            Write-Host "::warning::static/tailwind-*.css was out of date with styles/*.css -- this build used a freshly compiled copy. Run 'npm run css' and commit the result so source runs and the .dmg match."
+            Write-Host $changed
+          } else {
+            Write-Host "committed stylesheet is up to date"
+          }
+
       - name: Build
         shell: pwsh
         run: .\windows\build_exe.ps1
