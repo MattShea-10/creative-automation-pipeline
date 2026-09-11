@@ -1,0 +1,11 @@
+{
+  "name": "creative-automation-pipeline",
+  "private": true,
+  "description": "Build tooling for the app's stylesheet. The app itself is Python; Node is only needed to recompile static/tailwind-*.css after editing styles/*.css.",
+  "scripts": {
+    "css": "tailwindcss -i styles/index.css -o static/tailwind-index.css --minify && tailwindcss -i styles/result.css -o static/tailwind-result.css --minify"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.19"
+  }
+}

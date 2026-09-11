@@ -1764,7 +1764,15 @@ SIZE_PRESET_CHOICES = [
     ("broadcast", "Broadcast/video frame sizes (3) -- 1080p, 720p, 4K UHD"),
 ]
 
-app = Flask(__name__, template_folder=str(BUNDLE_DIR / "templates"))
+# static/ holds the compiled Tailwind stylesheet (see styles/*.css). It is
+# read-only and ships inside the bundle, so it is resolved off BUNDLE_DIR
+# alongside templates/ -- not off Flask's default, which is derived from
+# __name__ and points somewhere unhelpful in a frozen build.
+app = Flask(
+    __name__,
+    template_folder=str(BUNDLE_DIR / "templates"),
+    static_folder=str(BUNDLE_DIR / "static"),
+)
 app.secret_key = os.environ.get("WEBAPP_SECRET_KEY", secrets.token_hex(16))
 app.config["MAX_CONTENT_LENGTH"] = 200 * 1024 * 1024  # 200MB -- generous enough for a short product video
 # Jinja compiles a template once and caches it for the life of the

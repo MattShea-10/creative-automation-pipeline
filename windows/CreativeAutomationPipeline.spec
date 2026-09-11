@@ -23,6 +23,12 @@ ROOT = Path(SPECPATH).resolve().parent
 datas = [
     (str(ROOT / "templates"), "templates"),
     (str(ROOT / "fonts"), "fonts"),
+    # The compiled stylesheet. Tailwind used to be fetched from its CDN at
+    # page load, so a machine with no network (or a firewall in the way)
+    # rendered the app as unstyled HTML. Built ahead of time from
+    # styles/*.css and shipped, so the packaged app never needs the network
+    # to look right.
+    (str(ROOT / "static"), "static"),
 ]
 # Wordlist shipped inside the package, not importable code.
 datas += collect_data_files("better_profanity")

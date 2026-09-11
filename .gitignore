@@ -28,3 +28,6 @@ default_templates/*/
 
 # Per-campaign template folders -- unpacked from default_templates/*.zip at start-up
 default_templates/*/
+
+# Node -- only used to rebuild static/tailwind-*.css from styles/*.css
+node_modules/
