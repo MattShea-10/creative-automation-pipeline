@@ -2383,15 +2383,18 @@ def _session_campaign_jobs(session_id):
 def _template_paths_in(folder=None) -> dict:
     """_default_template_paths() for one folder -- a campaign's own
     (see card_layer_sets()) rather than the request's."""
-    if folder is None:
-        return _default_template_paths()
-    from flask import g
-    before = getattr(g, "templates_dir", None)
-    g.templates_dir = folder
-    try:
-        return _default_template_paths()
-    finally:
-        g.templates_dir = before
+    folder = templates_dir() if folder is None else Path(folder)
+    template_paths: dict = {}
+    if not folder.is_dir():
+        return template_paths
+    for path in sorted(folder.iterdir()):
+        if not path.is_file() or path.suffix.lower() not in ALLOWED_PSD_TEMPLATE_EXTENSIONS:
+            continue
+        match = _SIZE_IN_FILENAME_RE.search(path.name)
+        if not match:
+            continue
+        template_paths[(int(match.group(1)), int(match.group(2)))] = path
+    return template_paths
 
 
 def _editable_text_layers(folder=None) -> set:
@@ -3097,9 +3100,14 @@ def _same_words(a, b) -> bool:
     lines are broken and spaced (a type layer breaks lines with \\r, the
     form with \\n, and either may carry a trailing space)."""
     def norm(text):
+        # Curly and straight quotes are the same words: a translator
+        # hands back l'hiver, Photoshop typesets l’hiver.
+        text = (text or "")
+        for curly, plain in (("\u2019", "'"), ("\u2018", "'"), ("\u201c", '"'), ("\u201d", '"'), ("\u2013", "-"), ("\u2014", "-"), ("\u00a0", " ")):
+            text = text.replace(curly, plain)
         lines = [
             " ".join(line.split())
-            for line in (text or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+            for line in text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
         ]
         return "\n".join(line for line in lines if line)
     return norm(a) == norm(b)
@@ -6348,8 +6356,18 @@ def generate():
                         if layers_alpha_source is not None and old_backdrop is not None:
                             layers_alpha_source = _fit_rgba_like_final_image(layers_alpha_source)
                             old_backdrop = _fit_rgba_like_final_image(old_backdrop.convert("RGBA"))
+                            # How far any layer's style reaches in this
+                            # size's pixels: the band round the layers
+                            # inside which the preview's differences from
+                            # the old backdrop are styles worth carrying.
+                            styles_reach = max(
+                                [get_psd_layer_effect_reach(psd_path_for_size, name) for name in get_psd_layer_names(psd_path_for_size)]
+                                or [0]
+                            )
+                            styles_reach = int(math.ceil(styles_reach * _template_scale(psd_canvas_size, (width, height), fit_mode))) + 6
                             final_image = carry_flattened_effects(
-                                pristine_final_image, old_backdrop, final_image, layers_alpha_source.split()[3]
+                                pristine_final_image, old_backdrop, final_image, layers_alpha_source.split()[3],
+                                reach=styles_reach,
                             )
                         elif layers_alpha_source is not None:
                             layers_alpha_source = _fit_rgba_like_final_image(layers_alpha_source)
@@ -6362,7 +6380,24 @@ def generate():
                             fit=background_fit,
                         )
                     else:
-                        _clean_layer_box(box, layer_name)
+                        # The old picture's own layer style reaches past
+                        # its pixels -- the glow Photoshop drew round the
+                        # template's logo -- and the background step put
+                        # that halo back over the new backdrop. Wiping
+                        # just the pixel box left the halo standing round
+                        # the new logo as a faint ring: the box is widened
+                        # by the effect's reach, wiped, and every other
+                        # layer put back in the ring.
+                        reach = get_psd_layer_effect_reach(psd_path_for_size, layer_name) if psd_path_for_size else 0
+                        if reach > 0:
+                            pad = int(math.ceil(reach * _template_scale(psd_canvas_size, (width, height), fit_mode))) + 2
+                            wide = (
+                                max(0, box[0] - pad), max(0, box[1] - pad),
+                                min(final_image.width, box[2] + pad), min(final_image.height, box[3] + pad),
+                            )
+                            _clean_layer_box(wide, layer_name, full_box=True, restore_others=True)
+                        else:
+                            _clean_layer_box(box, layer_name)
                         final_image = apply_layer_image_override(final_image, box, override_image)
                         export_layer_patches[layer_name] = apply_layer_image_override(
                             Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
@@ -6598,6 +6633,33 @@ def generate():
                         )
                         if not text:
                             return
+                    # The rule every size is held to: a text layer is
+                    # redrawn only when its WORDS change. The same words
+                    # with nothing restyled -- the message typed on the
+                    # form when the template already says it, a French
+                    # run on a template saved from the last French run --
+                    # is left exactly as Photoshop drew it. Redrawing
+                    # was not free: the app's rendering of the same line
+                    # ran wider than Photoshop's and lost its last word
+                    # to the box.
+                    restyled = bool(
+                        font_family or font_size or use_custom_color or glow or show_background
+                        or stroke_size or shadow
+                    )
+                    if (
+                        box_override is None
+                        and not restyled
+                        and psd_path_for_size is not None
+                        and _same_words(own_text_layers.get(layer_key) or "", text)
+                        and (own_text_layers.get(layer_key) or "").strip()
+                    ):
+                        if (layer_key, "unchanged") not in pictures_noted:
+                            pictures_noted.add((layer_key, "unchanged"))
+                            background_notes.append(
+                                f"{size_label(width, height)}: the {layer_key} already says this in the template, "
+                                "so it was left exactly as Photoshop drew it."
+                            )
+                        return
                     # full_box: a text override replaces what was in the
                     # box rather than printing over it -- see
                     # _clean_layer_box() for why a text layer needs this

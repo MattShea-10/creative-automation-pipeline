@@ -10645,6 +10645,58 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         self.assertTrue(all(abs(c - int(n * 0.4)) <= 2 for c, n in zip(shadowed, (20, 120, 220))), shadowed)
         self.assertEqual(out.getpixel((30, 5)), (255, 255, 255), "the layer's own pixels are Photoshop's")
 
+    def test_resampling_noise_in_the_old_backdrop_is_not_carried_as_a_style(self):
+        # The preview and the backdrop are two renderings of the same
+        # pixels and disagree by a few levels along every sharp edge --
+        # carried as "styles", that put a speckled ghost of the old
+        # backdrop's bright edges over the new hero. A difference counts
+        # only near a layer, and only past the noise floor.
+        from src.image_ops import carry_flattened_effects
+        old = Image.new("RGB", (80, 40), (200, 100, 50))
+        new = Image.new("RGB", (80, 40), (20, 120, 220))
+        preview = old.copy()
+        # Far from any layer: a bright speck a few levels off (noise)...
+        preview.putpixel((5, 5), (206, 106, 56))
+        # ...and a strong one (an edge that only the preview has).
+        preview.putpixel((5, 30), (255, 255, 255))
+        # The layer sits on the right; a real glow next to it.
+        alpha = Image.new("L", (80, 40), 0)
+        for x in range(60, 80):
+            for y in range(40):
+                alpha.putpixel((x, y), 255)
+        for x in range(56, 60):
+            for y in range(40):
+                preview.putpixel((x, y), (255, 200, 150))
+        out = carry_flattened_effects(preview, old, new, alpha, reach=8, tolerance=10)
+        self.assertEqual(out.getpixel((5, 5)), (20, 120, 220), "a few levels of difference is noise, not a style")
+        self.assertEqual(out.getpixel((5, 30)), (20, 120, 220), "a difference far from every layer is not a style")
+        glow = out.getpixel((57, 5))
+        self.assertTrue(glow[0] > 20 + 40, f"the glow beside the layer is carried: {glow}")
+
+    def test_the_same_words_are_not_redrawn(self):
+        # A text layer is redrawn only when its words change: the
+        # message typed on the form when the template already says it
+        # is left as Photoshop drew it. Curly and straight apostrophes
+        # are the same words.
+        self.assertTrue(webapp._same_words("Brille pendant l\u2019hiver.", "Brille pendant l'hiver."))
+        self.assertTrue(webapp._same_words("A\rB", "A\nB"))
+        self.assertFalse(webapp._same_words("Brille pendant l'hiver.", "Brille pendant l'ete."))
+        shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        from src.image_ops import get_psd_text_layers
+        own = get_psd_text_layers(webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd", visible_only=True)
+        if not own.get("header"):
+            self.skipTest("template has no visible header type layer")
+        r = self.client.post(
+            "/generate",
+            data={"upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+                  "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+                  "layer_header_text": own["header"].replace("\r", "\n")},
+            content_type="multipart/form-data",
+        )
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertIn(b"the header already says this in the template, so it was left exactly as Photoshop drew it", r.data)
+        self.assertNotIn(b"updated layer(s) -- background, header", r.data)
+
     def test_hide_boxes_are_not_remembered_on_a_fresh_form(self):
         # Ticked once, they stayed ticked run after run, and a later
         # run came back as nine blank canvases. A hide is for one run.

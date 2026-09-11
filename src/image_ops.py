@@ -2344,6 +2344,8 @@ def carry_flattened_effects(
     old_backdrop: Image.Image,
     new_backdrop: Image.Image,
     foreground_alpha: Image.Image,
+    reach: int = 48,
+    tolerance: int = 10,
 ) -> Image.Image:
     """Photoshop's own rendering of the layers -- effects and all --
     moved onto a new backdrop.
@@ -2365,6 +2367,16 @@ def carry_flattened_effects(
     ratio preview/old, which for a black shadow is exactly its own
     coverage whatever the backdrop was, so the new backdrop takes the
     same ratio; a brightening (a glow) is the difference, added on.
+
+    Only the styles, though. The preview and the backdrop are two
+    renderings of the same pixels -- Photoshop's and psd-tools', each
+    resized -- and they disagree by a few levels along every sharp
+    edge of the old backdrop. Carried as "styles", those disagreements
+    put a speckled ghost of the old backdrop's bright edges over the
+    new one. So a difference counts only within `reach` pixels of a
+    layer (a style sits round its layer; nothing else does) and only
+    past `tolerance` levels (a shadow or glow is far stronger than
+    resampling noise near its source, and fades to nothing anyway).
     """
     try:
         import numpy as np
@@ -2383,10 +2395,27 @@ def carry_flattened_effects(
     # smaller than the canvas) there is nothing to compare against: the
     # new backdrop stands as it is there.
     known = (np.asarray(old_rgba.getchannel("A"), dtype=np.float32) > 0)[..., None]
-    ratio = np.where(known, ratio, 1.0)
-    bright = np.where(known, bright, 0.0)
+    alpha_l = foreground_alpha.convert("L").resize(size)
+    # Where a style can be at all: within `reach` of a layer's pixels.
+    # The alpha is dilated at a quarter size (a box filter that wide
+    # at full size is slow), then brought back up.
+    band = np.ones(size[::-1], dtype=np.float32)
+    if reach is not None and reach >= 0:
+        from PIL import ImageFilter
+        small = alpha_l.resize((max(1, size[0] // 4), max(1, size[1] // 4)))
+        k = 2 * int(math.ceil(max(reach, 0) / 4.0)) + 1
+        if k > 1:
+            small = small.filter(ImageFilter.MaxFilter(min(k, 61)))
+        band = (np.asarray(small.resize(size), dtype=np.float32) > 0).astype(np.float32)
+    # ...and only a difference bigger than the two renderings' own
+    # disagreement, fading in from `tolerance` levels.
+    amplitude = np.max(np.abs(P - B), axis=2)
+    strength = np.clip((amplitude - tolerance) / max(float(tolerance), 1.0), 0.0, 1.0) * band
+    strength = strength[..., None]
+    ratio = np.where(known, 1.0 + (ratio - 1.0) * strength, 1.0)
+    bright = np.where(known, bright * strength, 0.0)
     out = np.clip(N * ratio + bright, 0.0, 255.0)
-    a = np.asarray(foreground_alpha.convert("L").resize(size), dtype=np.float32)[..., None] / 255.0
+    a = np.asarray(alpha_l, dtype=np.float32)[..., None] / 255.0
     out = out * (1.0 - a) + P * a
     return Image.fromarray(out.astype(np.uint8), "RGB")
 
