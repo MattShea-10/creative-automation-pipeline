@@ -18,23 +18,26 @@ fail() {
   exit 1
 }
 
-if [ ! -d "$DEST" ]; then
-  [ -d "$SOURCE" ] || fail "Couldn't find the project folder next to this app. Open the disk image and run it from there."
-  # Everything except the bits that are made by an install anyway.
-  mkdir -p "$DEST"
-  rsync -a --exclude '.venv' --exclude 'outputs' --exclude 'downloads' --exclude '__pycache__' \
-        --exclude '.git' --exclude '_to_delete' --exclude '_template_backups' \
-        "$SOURCE/" "$DEST/" || fail "Copying the project to '$DEST' failed."
-  chmod +x "$DEST/install.sh" "$DEST/run.sh" 2>/dev/null
-fi
+# Every launch from the disk image brings the installed copy up to the
+# image's code. The first launch copied the project and later ones
+# only started it, so a newer dmg opened over an older install kept
+# running the old app. The code is copied over; what the user made --
+# the key in .env, their runs in outputs/ and downloads/, the
+# templates edited per campaign under default_templates/<campaign>/,
+# the .venv -- is left alone.
+[ -d "$SOURCE" ] || fail "Couldn't find the project folder next to this app. Open the disk image and run it from there."
+mkdir -p "$DEST"
+rsync -a --exclude '.venv' --exclude 'outputs' --exclude 'downloads' --exclude '__pycache__' \
+      --exclude '.git' --exclude '_to_delete' --exclude '_template_backups' --exclude '.env' \
+      --exclude 'default_templates/*/' \
+      "$SOURCE/" "$DEST/" || fail "Copying the project to '$DEST' failed."
+chmod +x "$DEST/install.sh" "$DEST/run.sh" 2>/dev/null
 
-# First launch: install, then run. Later launches: just run. Both in a
-# Terminal window that stays open, so progress and any error are visible.
-if [ -x "$DEST/.venv/bin/python" ]; then
-  CMD="cd \"$DEST\" && ./run.sh"
-else
-  CMD="cd \"$DEST\" && ./install.sh && ./run.sh"
-fi
+# Install (a few minutes the first time; seconds when everything is
+# already there -- and it picks up a requirement the new code added),
+# then run. In a Terminal window that stays open, so progress and any
+# error are visible.
+CMD="cd \"$DEST\" && ./install.sh && ./run.sh"
 
 # The command goes inside an AppleScript string, so its own double
 # quotes (the folder name has spaces) are escaped for AppleScript.

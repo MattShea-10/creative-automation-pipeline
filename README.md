@@ -52,9 +52,15 @@ Pollinations provider needs no key.
 ### Option A -- from the disk image (Mac only)
 
 1. Open `CreativeAutomationPipeline.dmg`.
-2. **Right-click** `Creative Automation Pipeline.app` and choose **Open**,
-   then **Open** again in the warning. The app isn't Apple-signed, so this
-   is needed once; afterwards it's a normal double-click.
+2. Double-click `Creative Automation Pipeline.app`. The app isn't
+   Apple-signed, so macOS refuses it the first time ("Apple could not
+   verify ... is free of malware"). Click **Done**, open **System Settings
+   > Privacy & Security**, scroll down to the line saying the app was
+   blocked, click **Open Anyway**, enter your password, then **Open**.
+   That's once; afterwards it's a normal double-click. (Before macOS 15,
+   right-clicking the app and choosing **Open** was enough.) A terminal
+   alternative, before opening the image: `xattr -d com.apple.quarantine
+   ~/Downloads/CreativeAutomationPipeline.dmg`.
 3. A Terminal window opens and installs everything into
    `~/Creative Automation Pipeline`. This takes a few minutes. When the
    browser opens, you're running.
@@ -63,7 +69,9 @@ Pollinations provider needs no key.
    in `~/Creative Automation Pipeline/.env` and remembered from then on.
 
 To start it any later time: double-click the app. To stop it: Ctrl-C in
-the Terminal window.
+the Terminal window. Opening a newer disk image's app updates the
+installed copy's code in place (your key, runs and edited templates are
+kept), so there is nothing to uninstall between versions.
 
 ### Option A2 -- the Windows exe (no Python needed)
 
@@ -247,9 +255,10 @@ Python, nothing needs sudo, and it is safe to re-run. `PORT=8080 ./run.sh`
 (or `$env:PORT = 8080; .\run.ps1`) picks another port.
 
 **Building the disk image** (maintainers, on a Mac): `./macos/make_dmg.sh`
-packages a clean copy of the project -- tracked files plus whatever is in
+packages a clean copy of the project as it is on disk -- the working tree
+as git sees it, committed or not, plus whatever is loose in
 `default_templates/`, never `.env` -- with the double-clickable launcher
-described in Option A.
+described in Option A. Needs `hdiutil`, so it only runs on macOS.
 
 ## How to run it
 

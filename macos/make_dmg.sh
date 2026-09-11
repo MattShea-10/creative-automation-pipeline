@@ -4,9 +4,9 @@
 #
 #     ./macos/make_dmg.sh
 #
-# The image holds a clean copy of the project (what git tracks, plus the
-# templates in default_templates/ even if uncommitted, minus .env and
-# anything generated) and a double-clickable "Creative Automation
+# The image holds a clean copy of the project (the working tree as git
+# sees it -- committed or not -- plus the templates in default_templates/,
+# minus .env and anything generated) and a double-clickable "Creative Automation
 # Pipeline.app" that copies the project into the user's home folder on
 # first launch, runs install.sh, and starts the web app in a Terminal
 # window. Needs hdiutil, which every Mac has; nothing to install.
@@ -22,13 +22,20 @@ trap 'rm -rf "$STAGE"' EXIT
 
 echo "==> Staging a clean copy of the project"
 mkdir -p "$STAGE/creative-automation-pipeline"
-# What git tracks, without the repository itself...
-git archive HEAD | tar -x -C "$STAGE/creative-automation-pipeline"
-# ...plus the templates as they are on disk right now, since the ones
-# in use are often edited or added without being committed yet.
+# The project as it is on disk -- every file git tracks or would track
+# (untracked but not ignored), in its working-tree state, so the image
+# carries the code you are running, committed or not. .gitignore keeps
+# out .venv, outputs, downloads, the per-campaign template folders
+# (the app unpacks them from the zip) and the rest of the generated
+# clutter. Not the repository itself.
+git ls-files -z --cached --others --exclude-standard \
+  | tar --null -T - -cf - \
+  | tar -xf - -C "$STAGE/creative-automation-pipeline"
+# ...plus any loose templates on disk, since the ones in use are often
+# edited or added without being committed yet.
 if [ -d default_templates ]; then
   mkdir -p "$STAGE/creative-automation-pipeline/default_templates"
-  cp default_templates/*.psd "$STAGE/creative-automation-pipeline/default_templates/" 2>/dev/null || true
+  cp default_templates/*.psd default_templates/*.zip "$STAGE/creative-automation-pipeline/default_templates/" 2>/dev/null || true
 fi
 # Never the secrets file. The launcher's install step makes a blank one.
 rm -f "$STAGE/creative-automation-pipeline/.env"
@@ -42,8 +49,11 @@ cat > "$STAGE/READ ME FIRST.txt" <<'TXT'
 Creative Automation Pipeline
 
 1. Double-click "Creative Automation Pipeline.app".
-   The first time, macOS may say it can't verify the developer:
-   right-click (or Control-click) the app and choose Open, then Open again.
+   The first time, macOS says it can't verify the app is free of malware
+   (it isn't Apple-signed). Click Done, open System Settings > Privacy &
+   Security, scroll down to the line saying the app was blocked, click
+   "Open Anyway", enter your password, then Open. Once is enough.
+   (On macOS 14 and earlier: right-click the app, Open, then Open again.)
 
 2. A Terminal window opens and installs everything into a folder called
    "Creative Automation Pipeline" in your home folder. This takes a few
