@@ -20,6 +20,12 @@ VOL="Creative Automation Pipeline"
 STAGE="$(mktemp -d)"
 trap 'rm -rf "$STAGE"' EXIT
 
+# The image carries the compiled stylesheet, so make sure it is current
+# before anything is staged -- otherwise a dmg can ship CSS older than
+# the styles/ it also ships.
+# (guarded: a checkout without the helper must not stop the script)
+if [ -f scripts/ensure_css.sh ]; then . scripts/ensure_css.sh; ensure_css; fi
+
 echo "==> Staging a clean copy of the project"
 mkdir -p "$STAGE/creative-automation-pipeline"
 # The project as it is on disk -- every file git tracks or would track

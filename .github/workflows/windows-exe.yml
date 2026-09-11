@@ -58,6 +58,21 @@ jobs:
             Write-Host "committed stylesheet is up to date"
           }
 
+      # run.ps1 and install.ps1 are edited from a Mac, where nothing can
+      # parse them. The Windows runner can, so a syntax error surfaces here
+      # rather than on a user's machine.
+      - name: Check the PowerShell scripts parse
+        shell: pwsh
+        run: |
+          $bad = $false
+          foreach ($f in @("run.ps1", "install.ps1", "windows/build_exe.ps1")) {
+            $errs = $null
+            [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $f), [ref]$null, [ref]$errs) | Out-Null
+            if ($errs) { Write-Host "::error::$f does not parse"; $errs | ForEach-Object { Write-Host "  $_" }; $bad = $true }
+          }
+          if ($bad) { exit 1 }
+          Write-Host "PowerShell scripts parse"
+
       - name: Build
         shell: pwsh
         run: .\windows\build_exe.ps1

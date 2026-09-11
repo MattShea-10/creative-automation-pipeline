@@ -4,22 +4,44 @@
 $ErrorActionPreference = "Stop"
 Set-Location -Path $PSScriptRoot
 if (-not (Test-Path ".venv\Scripts\python.exe")) { Write-Host "No .venv\ yet -- run .\install.ps1 first." -ForegroundColor Red; exit 1 }
-# The stylesheet is compiled ahead of time (styles\*.css -> static\*.css,
-# `npm run css`). Editing the source and forgetting to rebuild is silent
-# otherwise: the app keeps serving the old CSS. Compared by hash, not by
-# date -- the Tailwind CLI leaves the output file alone when a rebuild
-# changes nothing, so its timestamp would accuse the source forever.
+# Keep the compiled stylesheet in step with styles\*.css, so `npm run css`
+# is not something anyone has to remember. Hashes rather than dates: the
+# Tailwind CLI leaves an output file untouched when a rebuild changes
+# nothing, so a date comparison would accuse the source forever. Nothing
+# here stops the app starting -- at worst it warns and serves the
+# stylesheet that is already built.
+$cssStale = $false
 if (Test-Path "static\styles.sha256") {
   foreach ($line in Get-Content "static\styles.sha256") {
     if ($line -match '^(\w+)\s+(.+)$') {
       $recorded = $Matches[1]; $src = $Matches[2] -replace '/', '\'
-      if (Test-Path $src) {
-        $now = (Get-FileHash -Algorithm SHA256 -Path $src).Hash
-        if ($now -ne $recorded.ToUpper()) {
-          Write-Host "warn  $src changed since the stylesheet was built -- run 'npm run css' to rebuild it." -ForegroundColor Yellow
-        }
+      if ((Test-Path $src) -and ((Get-FileHash -Algorithm SHA256 -Path $src).Hash -ne $recorded.ToUpper())) {
+        $cssStale = $true
       }
     }
+  }
+}
+if ($cssStale) {
+  Write-Host "==> styles\ changed -- rebuilding the stylesheet" -ForegroundColor Cyan
+  if (Get-Command npm -ErrorAction SilentlyContinue) {
+    # try/catch as well as the exit code: a native command writing to
+    # stderr can itself throw under $ErrorActionPreference = "Stop".
+    $rebuilt = $false
+    try {
+      if (-not (Test-Path "node_modules")) {
+        Write-Host "    (first time: installing the build tool with npm install)"
+        & npm install --no-audit --no-fund --silent *> $null
+      }
+      & npm run css --silent *> $null
+      $rebuilt = ($LASTEXITCODE -eq 0)
+    } catch { $rebuilt = $false }
+    if ($rebuilt) {
+      Write-Host "ok   stylesheet rebuilt" -ForegroundColor Green
+    } else {
+      Write-Host "warn the rebuild failed -- run 'npm run css' to see why. Serving the stylesheet that is already built." -ForegroundColor Yellow
+    }
+  } else {
+    Write-Host "warn Node is not installed, so the stylesheet cannot be rebuilt here. Serving the one that is already built." -ForegroundColor Yellow
   }
 }
 $port = if ($env:PORT) { $env:PORT } else { "5000" }
