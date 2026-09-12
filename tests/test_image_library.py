@@ -46,7 +46,7 @@ class ImageLibraryTest(unittest.TestCase):
             "market": "France",
             "provider": "pollinations",
             "prompt": "Professional studio photo of a chilled blue sports drink bottle",
-            "prompt_typed": "chilled blue sports drink",
+            "prompt_typed": "Professional studio photo of a chilled blue sports drink bottle, winter theme",
             "copy_language": "fr",
         }
 
@@ -82,6 +82,7 @@ class ImageLibraryTest(unittest.TestCase):
         caption = (webapp.IMAGE_LIBRARY_DIR / "backdrops" / "20260912-041530_hydroboost_backdrop_abcdef01.txt").read_text()
         self.assertIn("chilled blue sports drink bottle", caption)
         self.assertNotIn("advertising creative", caption, "a bare backdrop is not a creative")
+        self.assertIn("Winter Glow 2026", caption)
         creative_caption = (webapp.IMAGE_LIBRARY_DIR / "creatives" / "20260912-041530_hydroboost_1200x1200_abcdef01.txt").read_text()
         self.assertIn("1:1 advertising creative", creative_caption)
 
@@ -123,3 +124,46 @@ class ImageLibraryTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CaptionTest(unittest.TestCase):
+    """A caption says what is in the picture. The prompt the app sends is
+    mostly instructions to the generator -- negations and colour-chart
+    boilerplate -- and training on those teaches a model to paint them."""
+
+    SENT = (
+        "Professional studio photo of a chilled blue, winter theme, clean bright background, "
+        "sharp focus, no faces, no logos, no product shot, no text, no words, "
+        "color swatches, colour chips, palette strip, hex codes, style guide, color reference chart"
+    )
+
+    def test_the_instructions_are_not_part_of_the_description(self):
+        described = webapp._describing_clauses(self.SENT)
+        for junk in ("no faces", "no logos", "no text", "color swatches", "hex codes", "style guide"):
+            self.assertNotIn(junk, described, f"{junk!r} describes nothing in the image")
+        self.assertIn("chilled blue", described)
+        self.assertIn("sharp focus", described)
+
+    def test_what_the_person_typed_wins(self):
+        caption = webapp._library_caption({
+            "product": "HydroBoost Sports Drink", "campaign": "Winter Glow 2026", "market": "France",
+            "kind": "backdrop", "prompt": self.SENT,
+            "prompt_typed": "Professional studio product photo of a chilled blue sports drink bottle",
+        })
+        self.assertIn("chilled blue sports drink bottle", caption)
+        self.assertNotIn("no logos", caption)
+        self.assertNotIn("palette strip", caption)
+        self.assertIn("market: France", caption)
+
+    def test_it_falls_back_to_the_sent_prompt_cleaned_up(self):
+        caption = webapp._library_caption({
+            "product": "HydroBoost Sports Drink", "kind": "backdrop", "prompt": self.SENT,
+        })
+        self.assertIn("chilled blue", caption)
+        self.assertNotIn("no faces", caption)
+
+    def test_a_backdrop_is_not_called_a_creative(self):
+        record = {"product": "P", "kind": "backdrop", "prompt_typed": "a bottle", "ratio": "1:1"}
+        self.assertNotIn("advertising creative", webapp._library_caption(record))
+        record["kind"] = "creative"
+        self.assertIn("1:1 advertising creative", webapp._library_caption(record))

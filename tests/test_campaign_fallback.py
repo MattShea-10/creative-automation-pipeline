@@ -144,3 +144,51 @@ class CardPrefillTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NewCardDefaultsTest(unittest.TestCase):
+    """A card created by "Create Campaign" must not open with Campaign
+    blank -- that is where a stray campaign-less template folder comes
+    from, and it is invisible until a restore appears to do nothing."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._orig_templates = webapp.DEFAULT_TEMPLATES_DIR
+        self._orig_jobs = webapp.JOBS_DIR
+        webapp.DEFAULT_TEMPLATES_DIR = self.tmp / "default_templates"
+        webapp.DEFAULT_TEMPLATES_DIR.mkdir(parents=True)
+        webapp.JOBS_DIR = self.tmp / "jobs"
+        webapp.JOBS_DIR.mkdir()
+        webapp._brief_campaign_cache.clear()
+        self.choices = [
+            {"product_name": "HydroBoost Sports Drink", "campaign": "Winter Glow 2026"},
+            {"product_name": "Sunburst Lemonade", "campaign": "Summer Refresh 2026"},
+        ]
+
+    def tearDown(self):
+        webapp.DEFAULT_TEMPLATES_DIR = self._orig_templates
+        webapp.JOBS_DIR = self._orig_jobs
+        webapp._brief_campaign_cache.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_new_card_opens_on_the_campaign_last_used(self):
+        webapp._save_preferences({"campaign_name": "Winter Glow 2026"})
+        with mock.patch.object(webapp, "_brief_choices", return_value=self.choices):
+            self.assertEqual(webapp.default_campaign_name(), "Winter Glow 2026")
+
+    def test_with_nothing_remembered_it_takes_the_first_brief(self):
+        webapp._save_preferences({})
+        with mock.patch.object(webapp, "_brief_choices", return_value=self.choices):
+            self.assertEqual(webapp.default_campaign_name(), "Winter Glow 2026")
+
+    def test_no_briefs_and_nothing_remembered_is_empty_not_a_guess(self):
+        webapp._save_preferences({})
+        with mock.patch.object(webapp, "_brief_choices", return_value=[]):
+            self.assertEqual(webapp.default_campaign_name(), "")
+
+    def test_the_page_gets_a_product_to_campaign_map(self):
+        with mock.patch.object(webapp, "_brief_choices", return_value=self.choices):
+            table = webapp.brief_campaign_by_product()
+        self.assertEqual(table["hydroboost sports drink"], "Winter Glow 2026")
+        self.assertEqual(table["sunburst lemonade"], "Summer Refresh 2026")
+        self.assertNotIn("", table, "a brief with no campaign contributes nothing")

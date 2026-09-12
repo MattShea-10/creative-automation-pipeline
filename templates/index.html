@@ -1345,8 +1345,12 @@
       {% endfor %}
     </div>
     {# The blank card new cards are cloned from (never shown itself). #}
+    {# Not an empty prefill: "Create Campaign" used to open a card with a
+       blank Campaign field, and a blank Campaign files that product's
+       templates under a folder of its own -- the split that made a restore
+       look like it had done nothing. It opens on the campaign last used. #}
     <template id="blank-campaign-card">
-      {{ campaign_card(0, {}, {}, none, none) }}
+      {{ campaign_card(0, {"campaign_name": default_campaign_name}, {}, none, none) }}
     </template>
 
     <footer>Creative Automation Pipeline -- quick-generate UI{% if build_stamp %} &middot; code build: {{ build_stamp }}{% endif %}</footer>
@@ -1788,6 +1792,23 @@
         };
         marketField.addEventListener("change", syncLanguageToMarket);
         marketField.addEventListener("blur", syncLanguageToMarket);
+      }
+
+      // Product -> Campaign, the same way Market -> Copy language above.
+      // Only fills an empty field: a campaign typed by hand is never
+      // overwritten. Leaving it empty is what sent a product's templates
+      // to a second folder nobody knew about.
+      var briefCampaigns = {{ brief_campaign_by_product | tojson }};
+      var productField = root.querySelector('[name="product_name"]');
+      var campaignField = root.querySelector('[name="campaign_name"]');
+      if (productField && campaignField) {
+        var syncCampaignToProduct = function () {
+          if (campaignField.value.trim()) return;
+          var known = briefCampaigns[productField.value.trim().toLowerCase()];
+          if (known) campaignField.value = known;
+        };
+        productField.addEventListener("change", syncCampaignToProduct);
+        productField.addEventListener("blur", syncCampaignToProduct);
       }
 
       // Filling a card from a brief (the page-level picker calls this

@@ -196,6 +196,38 @@ def _product_folder_name(product_name) -> str:
 _brief_campaign_cache: dict = {}
 
 
+def brief_campaign_by_product() -> dict:
+    """{product name, lowercased: the campaign its brief files it under}.
+
+    Handed to the page so typing a product the briefs know fills Campaign
+    in, the way typing a Market fills Copy language. A blank Campaign is
+    not a harmless empty field: it sends that product's templates to a
+    folder of their own, which is invisible until a restore appears to do
+    nothing.
+    """
+    table = {}
+    for choice in _brief_choices():
+        name = (choice.get("product_name") or "").strip()
+        campaign = (choice.get("campaign") or "").strip()
+        if name and campaign:
+            table.setdefault(name.lower(), campaign)
+    return table
+
+
+def default_campaign_name() -> str:
+    """What a brand new card opens with: the campaign last used, else the
+    first one the briefs offer. A card created by "Create Campaign" used
+    to open blank, which is where a stray campaign-less folder came from."""
+    remembered = (_load_preferences().get("campaign_name") or "").strip()
+    if remembered:
+        return remembered
+    for choice in _brief_choices():
+        campaign = (choice.get("campaign") or "").strip()
+        if campaign:
+            return campaign
+    return ""
+
+
 def campaign_for_product(product_name) -> str:
     """The campaign a brief files this product under, or "".
 
@@ -2309,22 +2341,53 @@ IMAGE_LIBRARY_CREATIVES = "creatives"
 IMAGE_LIBRARY_SIZES = ((1200, 1200), (1200, 627))
 
 
+# Clauses the app appends to every prompt -- instructions to the
+# generator, not descriptions of the picture. A caption is supposed to say
+# what IS in the image; leave these in and a fine-tune learns to associate
+# "colour swatches, hex codes, style guide" with your backdrops, and paints
+# them in. Anything starting "no " goes for the same reason: a caption
+# saying "no logos" teaches the model the word logo belongs here.
+LIBRARY_CAPTION_DROP = (
+    "color swatches", "colour swatches", "color chips", "colour chips",
+    "palette strip", "hex codes", "color codes", "colour codes",
+    "style guide", "color reference chart", "colour reference chart",
+    "no watermarks", "no signage",
+)
+
+
+def _describing_clauses(prompt: str) -> str:
+    """`prompt` with the instructions to the generator taken out."""
+    kept = []
+    for clause in (prompt or "").split(","):
+        text = clause.strip()
+        low = text.lower()
+        if not text or low.startswith("no ") or low in LIBRARY_CAPTION_DROP:
+            continue
+        kept.append(text)
+    return ", ".join(kept)
+
+
 def _library_caption(record: dict) -> str:
     """What the image shows, in the order a caption wants it: the subject
-    first, then the framing. The prompt is the honest description -- it is
-    what the generator was actually asked for.
+    first, then the framing, then the description.
 
-    Deliberately says nothing about the style. A LoRA learns the look from
-    what every image has in common; naming it in the caption teaches the
-    model to treat it as optional instead.
+    The description is what the person typed, not the prompt the app sent.
+    The sent one carries a tail of negative instructions -- "no faces, no
+    logos, no text" and a run of colour-chart boilerplate -- which describe
+    nothing in the picture and would be learned as if they did.
+
+    Deliberately says nothing about the style either. A LoRA learns the
+    look from what every image has in common; naming it in the caption
+    teaches the model to treat it as optional instead.
     """
     bits = [b for b in (record.get("product"), record.get("campaign")) if b]
     subject = " -- ".join(bits) if bits else "advertising artwork"
     parts = [subject]
     if record.get("kind") == "creative":
         parts.append(f"{record.get('ratio') or record.get('size')} advertising creative")
-    if record.get("prompt"):
-        parts.append(record["prompt"])
+    described = (record.get("prompt_typed") or "").strip() or _describing_clauses(record.get("prompt"))
+    if described:
+        parts.append(described)
     if record.get("market"):
         parts.append(f"market: {record['market']}")
     return ", ".join(parts)
@@ -2956,6 +3019,8 @@ def _inject_settings():
         "brief_choices": _brief_choices(),
         "backup_zip_sizes": backup_zip_sizes(),
         "template_sizes_status": template_sizes_status,
+        "brief_campaign_by_product": brief_campaign_by_product(),
+        "default_campaign_name": default_campaign_name(),
         "market_copy_languages": market_copy_languages(),
         "ideogram_key": _ideogram_key_status(),
         "env_file": str(ENV_FILE),
