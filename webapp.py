@@ -2992,11 +2992,21 @@ def reset_one_size():
         where = "default_templates/" + (
             f"{dest_dir.relative_to(DEFAULT_TEMPLATES_DIR).as_posix()}/" if dest_dir != DEFAULT_TEMPLATES_DIR else ""
         )
+        # A row still set to this size would override the template that
+        # was just put back, so the restore would appear to do nothing.
+        rows = forget_psd_row_for_size(_product_memory_key(product_name, campaign_name), size)
+        note = ""
+        if rows:
+            note = (
+                f" The size-specific PSD {'row' if len(rows) == 1 else 'rows'} "
+                f"{', '.join(str(r) for r in rows)} held an upload for {size}; "
+                "that is let go, so the restored template is what renders."
+            )
         flash(
             (f"{product_name}: " if product_name else "")
             + f"{', '.join(restored)} restored into {where} from "
             + f"{(template_reset_zip() or Path(TEMPLATE_RESET_ZIP_NAME)).name}. "
-            + "The file it replaced is in _template_backups/. Nothing else was touched.",
+            + "The file it replaced is in _template_backups/." + note,
             "ok",
         )
     return redirect(url_for("index"))
@@ -3316,6 +3326,52 @@ def _preferences_path() -> Path:
     return JOBS_DIR / "preferences.json"
 
 
+def forget_psd_row_for_size(product_key: str, size: str) -> list:
+    """Let go of any remembered PSD row set to `size`, and return the row
+    numbers dropped.
+
+    Putting a size back to the backup zip only changes the saved template.
+    A row still holding an uploaded PSD for that same size would win over
+    it on the next run, so the restore would look like it did nothing --
+    which is exactly what it looked like. The row's size is cleared and its
+    kept file is marked dropped; the file itself stays in the job folder,
+    untouched, like every other file from a past run.
+    """
+    prefs = _load_preferences()
+    products = _product_memories(prefs)
+    dropped_rows = []
+
+    def forget_in(memory: dict) -> bool:
+        job_id = (memory.get("last_job_id") or "").strip()
+        changed = False
+        for i in range(1, MAX_PSD_TEMPLATES + 1):
+            if (memory.get(f"psd_size_{i}") or "").strip().lower() != size:
+                continue
+            memory[f"psd_size_{i}"] = ""
+            changed = True
+            if i not in dropped_rows:
+                dropped_rows.append(i)
+            if job_id:
+                marker = f"{job_id}:psd_file_{i}"
+                dropped = [d for d in (memory.get("dropped_files") or []) if isinstance(d, str)]
+                if marker not in dropped:
+                    dropped.append(marker)
+                memory["dropped_files"] = dropped
+        return changed
+
+    touched = False
+    if product_key and product_key in products:
+        touched = forget_in(products[product_key]) or touched
+    # The top level mirrors the product last used, so it gets the same
+    # treatment -- otherwise the row would come back on the next page load.
+    touched = forget_in(prefs) or touched
+    if touched:
+        if products:
+            prefs["products"] = products
+        _save_preferences(prefs)
+    return dropped_rows
+
+
 def _load_preferences() -> dict:
     try:
         data = json.loads(_preferences_path().read_text(encoding="utf-8"))
@@ -3401,10 +3457,16 @@ def _remembered_files(product_key: str | None = None):
         state = json.loads(state_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return None, {}
+    # Files the per-size restore has let go of. Recorded as
+    # "<job id>:<field>" so the entry dies with the run it refers to: the
+    # next run writes a new job id, and a stale marker can never hide a
+    # file the person has just uploaded.
+    dropped = {d for d in (source.get("dropped_files") or []) if isinstance(d, str)}
     files = {
         name: filename
         for name, filename in (state.get("files") or {}).items()
         if name.startswith(REMEMBERED_FILE_PREFIXES) and filename
+        and f"{job_id}:{name}" not in dropped
         and (JOBS_DIR / job_id / "uploads" / filename).is_file()
     }
     return (job_id if files else None), files

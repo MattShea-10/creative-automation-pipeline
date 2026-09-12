@@ -86,3 +86,72 @@ class PerSizeResetTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ForgetPsdRowTest(unittest.TestCase):
+    """Putting a size back has to let go of a row still holding an upload
+    for that size -- otherwise the row wins on the next run and the
+    restore looks like it did nothing, which is how the bug was found.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._orig_jobs = webapp.JOBS_DIR
+        webapp.JOBS_DIR = self.tmp / "jobs"
+        self.job = "e9b1c91c81a6408ea574c4ce15159543"
+        uploads = webapp.JOBS_DIR / self.job / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "tester-720x1280_1.psd").write_text("an uploaded template")
+        (webapp.JOBS_DIR / self.job / "form_state.json").write_text(
+            '{"files": {"psd_file_1": "tester-720x1280_1.psd"}}'
+        )
+        self.key = "Winter Glow 2026/HydroBoost Sports Drink"
+        self.prefs = {
+            "last_job_id": self.job,
+            "psd_size_1": "1080x1920",
+            "products": {
+                self.key: {"last_job_id": self.job, "psd_size_1": "1080x1920"},
+                "Other Campaign/Another Product": {"last_job_id": self.job, "psd_size_1": "1080x1920"},
+            },
+        }
+        webapp._save_preferences(self.prefs)
+
+    def tearDown(self):
+        webapp.JOBS_DIR = self._orig_jobs
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_a_row_set_to_that_size_is_let_go(self):
+        rows = webapp.forget_psd_row_for_size(self.key, "1080x1920")
+        self.assertEqual(rows, [1])
+        _job, files = webapp._remembered_files(self.key)
+        self.assertEqual(files, {}, "the kept upload should no longer be offered")
+        saved = webapp._load_preferences()
+        self.assertEqual(saved["products"][self.key]["psd_size_1"], "")
+
+    def test_another_products_row_is_untouched(self):
+        webapp.forget_psd_row_for_size(self.key, "1080x1920")
+        other = webapp._load_preferences()["products"]["Other Campaign/Another Product"]
+        self.assertEqual(other["psd_size_1"], "1080x1920")
+        _job, files = webapp._remembered_files("Other Campaign/Another Product")
+        self.assertEqual(files, {"psd_file_1": "tester-720x1280_1.psd"})
+
+    def test_a_row_set_to_a_different_size_stays(self):
+        rows = webapp.forget_psd_row_for_size(self.key, "720x480")
+        self.assertEqual(rows, [])
+        _job, files = webapp._remembered_files(self.key)
+        self.assertEqual(files, {"psd_file_1": "tester-720x1280_1.psd"})
+
+    def test_the_marker_dies_with_the_run_it_names(self):
+        # A later run writes a new job id; the old marker must not hide
+        # a file uploaded since.
+        webapp.forget_psd_row_for_size(self.key, "1080x1920")
+        newer = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        uploads = webapp.JOBS_DIR / newer / "uploads"
+        uploads.mkdir(parents=True)
+        (uploads / "fresh.psd").write_text("uploaded after the restore")
+        (webapp.JOBS_DIR / newer / "form_state.json").write_text('{"files": {"psd_file_1": "fresh.psd"}}')
+        prefs = webapp._load_preferences()
+        prefs["products"][self.key]["last_job_id"] = newer
+        webapp._save_preferences(prefs)
+        _job, files = webapp._remembered_files(self.key)
+        self.assertEqual(files, {"psd_file_1": "fresh.psd"})
