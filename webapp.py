@@ -24,6 +24,7 @@ from __future__ import annotations
 import io
 import math
 import json
+from fractions import Fraction
 import os
 import random
 import sys
@@ -192,6 +193,42 @@ def _product_folder_name(product_name) -> str:
     return name
 
 
+_brief_campaign_cache: dict = {}
+
+
+def campaign_for_product(product_name) -> str:
+    """The campaign a brief files this product under, or "".
+
+    A blank Campaign field is not a different product -- it is the same
+    product with a field nobody filled in. Left alone it sends that
+    product's templates to default_templates/<product>/ while everything
+    chosen from a brief goes to default_templates/<campaign>/<product>/,
+    so a person can edit one set and restore the other and never see why.
+    Looked up from briefs/, cached against the folder's timestamps.
+    """
+    product = (product_name or "").strip().lower()
+    if not product:
+        return ""
+    try:
+        stamp = tuple(sorted(
+            (p.name, p.stat().st_mtime_ns) for p in BRIEFS_DIR.iterdir()
+            if p.suffix.lower() in (".json", ".yaml", ".yml")
+        ))
+    except OSError:
+        return ""
+    table = _brief_campaign_cache.get(stamp)
+    if table is None:
+        table = {}
+        for choice in _brief_choices():
+            name = (choice.get("product_name") or "").strip().lower()
+            campaign = (choice.get("campaign") or "").strip()
+            if name and campaign and name not in table:
+                table[name] = campaign
+        _brief_campaign_cache.clear()
+        _brief_campaign_cache[stamp] = table
+    return table.get(product, "")
+
+
 def _campaign_folder_parts(product_name, campaign_name=None) -> tuple:
     """The path under default_templates/ for a campaign's product:
     ("Winter Glow 2026", "HydroBoost Sports Drink") when the brief names a
@@ -202,6 +239,12 @@ def _campaign_folder_parts(product_name, campaign_name=None) -> tuple:
     if not product:
         return ()
     campaign = _product_folder_name(campaign_name)
+    if not campaign:
+        # Nobody filled the Campaign field in. Ask the briefs where this
+        # product belongs rather than quietly opening a second, parallel
+        # set of templates for it -- one choke point, so the folder, the
+        # remembered form and the per-size restore all agree.
+        campaign = _product_folder_name(campaign_for_product(product_name))
     return (campaign, product) if campaign else (product,)
 
 
@@ -2181,6 +2224,11 @@ def _carry_forward_upload(field_name, uploads_dir: Path, prior_job_dir, prior_fo
     prior_rel = (prior_form_state.get("files") or {}).get(field_name)
     if not prior_rel:
         return None
+    # Let go of by a per-size restore: carrying it forward here is what
+    # put the old template back on the very next submit.
+    prior_job_id = Path(prior_job_dir).name
+    if f"{prior_job_id}:{field_name}" in dropped_file_markers():
+        return None
     prior_path = prior_job_dir / "uploads" / prior_rel
     if not prior_path.is_file():
         return None
@@ -2239,6 +2287,111 @@ def _protected_job_ids() -> set:
             if isinstance(index, dict):
                 keep.update(str(v) for v in index.values() if isinstance(v, str))
     return keep
+
+
+# Every AI-generated run leaves something behind in image_library/, as
+# image + caption pairs with an index -- the layout a LoRA or similar
+# fine-tune wants, so the set can be trained on later without going back
+# through a thousand job folders (which are pruned on a timer anyway).
+#
+# Two folders, because they are for different things. backdrops/ holds
+# what the provider actually returned: bare artwork, nothing composited,
+# which is what a style fine-tune must be trained on. creatives/ holds
+# the finished ad built from it, for looking at.
+#
+# Training on the finished ad instead is the classic way to ruin a run:
+# the headline, logo and CTA teach the model to paint lettering, and it
+# comes back as convincing-looking gibberish in every image afterwards.
+# Pointing a trainer at backdrops/ can't make that mistake by accident.
+IMAGE_LIBRARY_DIR = BASE_DIR / "image_library"
+IMAGE_LIBRARY_BACKDROPS = "backdrops"
+IMAGE_LIBRARY_CREATIVES = "creatives"
+IMAGE_LIBRARY_SIZES = ((1200, 1200), (1200, 627))
+
+
+def _library_caption(record: dict) -> str:
+    """What the image shows, in the order a caption wants it: the subject
+    first, then the framing. The prompt is the honest description -- it is
+    what the generator was actually asked for.
+
+    Deliberately says nothing about the style. A LoRA learns the look from
+    what every image has in common; naming it in the caption teaches the
+    model to treat it as optional instead.
+    """
+    bits = [b for b in (record.get("product"), record.get("campaign")) if b]
+    subject = " -- ".join(bits) if bits else "advertising artwork"
+    parts = [subject]
+    if record.get("kind") == "creative":
+        parts.append(f"{record.get('ratio') or record.get('size')} advertising creative")
+    if record.get("prompt"):
+        parts.append(record["prompt"])
+    if record.get("market"):
+        parts.append(f"market: {record['market']}")
+    return ", ".join(parts)
+
+
+def _library_write(folder: Path, stem: str, source: Path, entry: dict) -> bool:
+    """One image, its caption and its index line. False if anything failed."""
+    image_path = folder / f"{stem}.png"
+    if image_path.exists():
+        return False              # same run, same image: already kept
+    caption = _library_caption(entry)
+    entry["caption"] = caption
+    entry["file"] = f"{folder.name}/{image_path.name}"
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, image_path)
+        # The caption beside the image: what every fine-tune tool reads.
+        (folder / f"{stem}.txt").write_text(caption, encoding="utf-8")
+        with open(IMAGE_LIBRARY_DIR / "index.jsonl", "a", encoding="utf-8") as index:
+            index.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        return False
+    return True
+
+
+def save_to_image_library(job_dir: Path, creatives: list, record: dict, backdrop: Path = None) -> list:
+    """Keep this run: the generated backdrop, and the library sizes built
+    from it. Returns the paths written, relative to image_library/.
+
+    Never raises. A library that cannot be written must not fail somebody's
+    run -- the creatives are already saved by the time this is called.
+    """
+    written = []
+    try:
+        IMAGE_LIBRARY_DIR.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return written
+
+    base = dict(record)
+    stamp = base.pop("stamp", "")
+    slug = base.pop("slug", None) or "creative"
+    short_job = (base.get("job_id") or "")[:8]
+
+    # The training image: bare artwork, as the provider returned it.
+    if backdrop is not None and Path(backdrop).is_file():
+        entry = dict(base, kind="backdrop", size=None, ratio=None)
+        stem = f"{stamp}_{slug}_backdrop_{short_job}"
+        if _library_write(IMAGE_LIBRARY_DIR / IMAGE_LIBRARY_BACKDROPS, stem, Path(backdrop), entry):
+            written.append(f"{IMAGE_LIBRARY_BACKDROPS}/{stem}.png")
+
+    # What was built from it -- reference, not training material.
+    wanted = {f"{w}x{h}" for w, h in IMAGE_LIBRARY_SIZES}
+    for creative in creatives:
+        label = creative.get("label")
+        if label not in wanted:
+            continue
+        source = job_dir / creative.get("filename", "")
+        if not source.is_file():
+            continue
+        entry = dict(
+            base, kind="creative", size=label,
+            ratio=creative.get("ratio") or label, name=creative.get("name"),
+        )
+        stem = f"{stamp}_{slug}_{label}_{short_job}"
+        if _library_write(IMAGE_LIBRARY_DIR / IMAGE_LIBRARY_CREATIVES, stem, source, entry):
+            written.append(f"{IMAGE_LIBRARY_CREATIVES}/{stem}.png")
+    return written
 
 
 def prune_job_folders(force: bool = False) -> list:
@@ -2305,6 +2458,61 @@ def _session_index_path(session_id: str) -> Path:
     return JOBS_DIR / "_sessions" / f"{secure_filename(session_id)}.json"
 
 
+def drop_row_files_for_job(job_id: str, rows, product_key: str = "") -> None:
+    """Let go of psd_file_<n> from one job, for the rows given.
+
+    Put back pressed on an Edit page is about the job being edited, not
+    the last run the preferences point at -- and the Edit page loads that
+    job's files directly. Without this the row came back filled the moment
+    the page reloaded, and put the template back on the next submit.
+    """
+    job_id = (job_id or "").strip()
+    if not job_id or not rows:
+        return
+    prefs = _load_preferences()
+    products = _product_memories(prefs)
+    targets = [prefs]
+    if product_key and product_key in products:
+        targets.append(products[product_key])
+    for memory in targets:
+        dropped = [d for d in (memory.get("dropped_files") or []) if isinstance(d, str)]
+        for i in rows:
+            marker = f"{job_id}:psd_file_{i}"
+            if marker not in dropped:
+                dropped.append(marker)
+        memory["dropped_files"] = dropped
+    if products:
+        prefs["products"] = products
+    _save_preferences(prefs)
+
+
+def dropped_file_markers() -> set:
+    """Every "<job id>:<field>" a per-size restore has let go of, across
+    the top-level memory and every product's.
+
+    Put back records these; the remembered form, the Edit page and the
+    carry-forward on submit all have to honour them. They did not, which
+    is why putting a size back looked like it worked and then the same
+    template came straight back on the next run: Edit reads a job's files
+    directly, so the row still held the upload and re-promoted it.
+    """
+    prefs = _load_preferences()
+    markers = set()
+    for memory in [prefs] + list(_product_memories(prefs).values()):
+        for marker in (memory.get("dropped_files") or []):
+            if isinstance(marker, str):
+                markers.add(marker)
+    return markers
+
+
+def _files_minus_dropped(job_id, files: dict) -> dict:
+    """`files` without anything let go of for that job."""
+    if not job_id or not files:
+        return files or {}
+    dropped = dropped_file_markers()
+    return {name: value for name, value in files.items() if f"{job_id}:{name}" not in dropped}
+
+
 def _load_session_campaigns(session_id, fallback_job_id):
     """Build the list of {"prefill", "prefill_files", "edit_job_id"} dicts
     for every campaign card that belongs to `session_id` -- i.e. every
@@ -2333,7 +2541,7 @@ def _load_session_campaigns(session_id, fallback_job_id):
     try:
         own = json.loads((JOBS_DIR / fallback_job_id / "form_state.json").read_text())
         fallback[0]["prefill"] = own.get("fields") or {}
-        fallback[0]["prefill_files"] = own.get("files") or {}
+        fallback[0]["prefill_files"] = _files_minus_dropped(fallback_job_id, own.get("files") or {})
     except (OSError, ValueError, TypeError):
         pass
     if not session_id:
@@ -2357,7 +2565,7 @@ def _load_session_campaigns(session_id, fallback_job_id):
             continue
         campaigns.append({
             "prefill": slot_state.get("fields") or {},
-            "prefill_files": slot_state.get("files") or {},
+            "prefill_files": _files_minus_dropped(slot_job_id, slot_state.get("files") or {}),
             "edit_job_id": slot_job_id,
         })
     campaigns = campaigns or fallback
@@ -2747,6 +2955,7 @@ def _inject_settings():
     return {
         "brief_choices": _brief_choices(),
         "backup_zip_sizes": backup_zip_sizes(),
+        "template_sizes_status": template_sizes_status,
         "market_copy_languages": market_copy_languages(),
         "ideogram_key": _ideogram_key_status(),
         "env_file": str(ENV_FILE),
@@ -2828,6 +3037,114 @@ def template_reset_zip() -> Path | None:
             return candidate
     zips = sorted(p for p in DEFAULT_TEMPLATES_DIR.glob("*.zip") if p.is_file())
     return zips[0] if len(zips) == 1 else None
+
+
+_template_status_cache: dict = {}
+
+
+def template_sizes_status(product_name=None, campaign_name=None) -> list:
+    """Each size the backup zip carries, and whether this product's saved
+    template for it still matches the zip's copy:
+
+        [{"size": "720x1280", "state": "changed"}, ...]
+
+    state is "same", "changed" (edited, or replaced by an upload the run
+    promoted) or "missing" (no file for that size). It is what turns the
+    restore picker from nine identical labels into a list that says which
+    one you actually meant -- the size showing artwork you did not expect
+    is the changed one.
+
+    Compared on CRC32, which the zip already stores per entry, so nothing
+    has to be decompressed. Cached against the zip's timestamp and each
+    file's size and timestamp, since this runs on every page load.
+    """
+    zip_path = template_reset_zip()
+    if zip_path is None:
+        return []
+    folder = product_templates_dir(product_name, campaign_name=campaign_name)
+    try:
+        files = sorted(folder.glob("*.psd"))
+        stamp = (
+            str(zip_path), zip_path.stat().st_mtime_ns, str(folder),
+            tuple((f.name, f.stat().st_size, f.stat().st_mtime_ns) for f in files),
+        )
+    except OSError:
+        return []
+    cached = _template_status_cache.get(stamp)
+    if cached is not None:
+        return cached
+
+    import zlib
+    by_name = {f.name: f for f in files}
+    out = []
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                name = Path(info.filename).name
+                if info.is_dir() or info.filename.startswith("__MACOSX/") or name.startswith("._"):
+                    continue
+                if name.lower().rsplit(".", 1)[-1] != "psd":
+                    continue
+                found = SIZE_IN_NAME_RE_LOOSE.search(name)
+                if not found:
+                    continue
+                here = by_name.get(name)
+                if here is None:
+                    state = "missing"
+                else:
+                    try:
+                        state = "same" if zlib.crc32(here.read_bytes()) == info.CRC else "changed"
+                    except OSError:
+                        state = "same"   # unreadable: don't cry wolf
+                out.append({"size": found.group(0).lower(), "state": state})
+    except (OSError, zipfile.BadZipFile):
+        return []
+
+    # Sizes that go back together, so the picker can say so before the
+    # click rather than the flash message saying it afterwards.
+    for entry in out:
+        entry["with"] = [x for x in sizes_sharing_shape(entry["size"]) if x != entry["size"]]
+
+    def area(entry):
+        w, h = entry["size"].split("x")
+        return int(w) * int(h)
+
+    out.sort(key=area, reverse=True)
+    # A folder that holds nothing yet has not been seeded -- a card whose
+    # product is still blank, or a product about to have its first run.
+    # Nothing there has been changed, so marking every size "missing"
+    # would be alarming and wrong; the list goes out unlabelled.
+    if out and all(entry["state"] == "missing" for entry in out):
+        for entry in out:
+            entry["state"] = "same"
+    _template_status_cache.clear()   # one product's page at a time; keep it small
+    _template_status_cache[stamp] = out
+    return out
+
+
+def sizes_sharing_shape(size: str) -> list:
+    """Every size in the backup zip with the same proportions as `size`,
+    largest first -- 1080x1920 and 720x1280 are both 9:16.
+
+    An uploaded template already spreads this way: it "carries onto any
+    other size in the batch with exactly the same proportions that has no
+    file of its own". Putting one back has to spread the same way, or a
+    9:16 upload is removed from one size and left standing on the other,
+    which reads as the restore not working.
+    """
+    try:
+        w, h = (int(part) for part in size.lower().split("x"))
+    except (AttributeError, ValueError):
+        return []
+    if not w or not h:
+        return []
+    shape = Fraction(w, h)
+    out = []
+    for label in backup_zip_sizes():
+        lw, lh = (int(part) for part in label.split("x"))
+        if lh and Fraction(lw, lh) == shape:
+            out.append(label)
+    return out or [size]
 
 
 def backup_zip_sizes() -> list:
@@ -2983,7 +3300,12 @@ def reset_one_size():
         return redirect(url_for("index"))
 
     dest_dir = product_templates_dir(product_name, campaign_name=campaign_name)
-    restored, _untouched, error = restore_templates_from_backup(dest_dir=dest_dir, only_sizes={size})
+    # Same shape, same fate: an upload for one 9:16 size is the template
+    # for every 9:16 size that has no file of its own, so putting one back
+    # puts the whole shape back. Leaving the twin behind is what made a
+    # restore look like it had not taken.
+    group = sizes_sharing_shape(size)
+    restored, _untouched, error = restore_templates_from_backup(dest_dir=dest_dir, only_sizes=set(group))
     if error:
         flash(error)
     elif not restored:
@@ -2994,7 +3316,25 @@ def reset_one_size():
         )
         # A row still set to this size would override the template that
         # was just put back, so the restore would appear to do nothing.
-        rows = forget_psd_row_for_size(_product_memory_key(product_name, campaign_name), size)
+        product_key = _product_memory_key(product_name, campaign_name)
+        rows = []
+        for label in group:
+            for row in forget_psd_row_for_size(product_key, label):
+                if row not in rows:
+                    rows.append(row)
+        # The rows the form in hand has set to this size -- which is what
+        # matters when Put back is pressed on an Edit page, where the
+        # files come from the job being edited rather than from what the
+        # preferences remember.
+        posted_rows = [
+            i for i in range(1, MAX_PSD_TEMPLATES + 1)
+            if (request.form.get(f"psd_size_{i}") or "").strip().lower() in group
+        ]
+        drop_row_files_for_job(request.form.get("edit_job_id") or "", posted_rows or rows, product_key)
+        for i in posted_rows:
+            if i not in rows:
+                rows.append(i)
+        rows.sort()
         note = ""
         if rows:
             note = (
@@ -3006,7 +3346,12 @@ def reset_one_size():
             (f"{product_name}: " if product_name else "")
             + f"{', '.join(restored)} restored into {where} from "
             + f"{(template_reset_zip() or Path(TEMPLATE_RESET_ZIP_NAME)).name}. "
-            + "The file it replaced is in _template_backups/." + note,
+            + "The file it replaced is in _template_backups/." + note
+            + (
+                f" {size} and {', '.join(x for x in group if x != size)} are the same shape, so they went back together."
+                if len(group) > 1 else ""
+            )
+            + " They render exactly like every other size from now on, from the templates just put back.",
             "ok",
         )
     return redirect(url_for("index"))
@@ -3365,10 +3710,9 @@ def forget_psd_row_for_size(product_key: str, size: str) -> list:
     # The top level mirrors the product last used, so it gets the same
     # treatment -- otherwise the row would come back on the next page load.
     touched = forget_in(prefs) or touched
-    if touched:
-        if products:
-            prefs["products"] = products
-        _save_preferences(prefs)
+    if products:
+        prefs["products"] = products
+    _save_preferences(prefs)
     return dropped_rows
 
 
@@ -3530,7 +3874,17 @@ def _remembered_campaign_cards() -> list:
         seen.add(key)
         prefill = _brief_prefill(choice)
         if key in products:
-            prefill.update(_remembered_prefill(key))
+            remembered = _remembered_prefill(key)
+            # A run made before the Campaign field was required remembers
+            # it as "", and that empty value would wipe out the campaign
+            # the brief just supplied -- which is how a card came up blank,
+            # sent its templates to a folder of their own, and made every
+            # restore look like it did nothing. Identity only: a field the
+            # person deliberately cleared still stays cleared.
+            for identity in ("campaign_name", "product_name"):
+                if not (remembered.get(identity) or "").strip() and prefill.get(identity):
+                    remembered.pop(identity, None)
+            prefill.update(remembered)
         job_id, files = _remembered_files(key) if key in products else (None, {})
         cards.append({
             "prefill": prefill,
@@ -3545,6 +3899,12 @@ def _remembered_campaign_cards() -> list:
         seen.add(key)
         job_id, files = _remembered_files(key)
         prefill = _remembered_prefill(key)
+        # Remembered from before the field was required: fill it from the
+        # briefs so the card opens naming the campaign it actually uses.
+        if not (prefill.get("campaign_name") or "").strip():
+            from_brief = campaign_for_product(prefill.get("product_name"))
+            if from_brief:
+                prefill["campaign_name"] = from_brief
         cards.append({
             "prefill": prefill,
             "prefill_files": files,
@@ -3935,6 +4295,10 @@ def generate():
                 "Nothing else was in the prompt, so the scene came from the campaign brief."
             )
     upload_ai_provider = request.form.get("upload_ai_provider", "pollinations")
+    # Bound only where a generation actually happens; the reuse path
+    # ("Keep this image") and a provider failure both skip it, and the
+    # library hook below reads it on every AI run.
+    upload_ai_prompt_used = None
     upload_ai_speed = (request.form.get("upload_ai_speed") or DEFAULT_IDEOGRAM_SPEED).upper()
     if upload_ai_speed not in dict(IDEOGRAM_SPEED_CHOICES):
         upload_ai_speed = DEFAULT_IDEOGRAM_SPEED
@@ -8370,6 +8734,38 @@ def generate():
     spend_note = _spend_note(spend)
     if spend_note:
         background_notes.append(spend_note)
+
+    # Keep the AI runs. Job folders are pruned on a timer, so without this
+    # every generated creative is temporary -- and a set of them, captioned
+    # with the prompt that made them, is the thing worth having later.
+    if upload_ai_enabled and upload_ai_keep:
+        background_notes.append(
+            "Kept image reused, so nothing new was added to image_library/ -- the picture from the run "
+            "it came from is already there."
+        )
+    elif upload_ai_enabled:
+        kept = save_to_image_library(
+            job_dir,
+            creatives,
+            {
+                "stamp": _datetime.datetime.now().strftime("%Y%m%d-%H%M%S"),
+                "slug": product_name_slug or "creative",
+                "job_id": job_id,
+                "generated_at": _datetime.datetime.now().isoformat(timespec="seconds"),
+                "product": product_name,
+                "campaign": campaign_name,
+                "market": market,
+                "provider": upload_ai_provider,
+                "prompt": upload_ai_prompt_used,
+                "prompt_typed": upload_ai_prompt,
+                "copy_language": copy_language,
+            },
+            backdrop=upload_ai_path,
+        )
+        if kept:
+            background_notes.append(
+                f"Kept in image_library/ for later training: {', '.join(kept)}."
+            )
     try:
         (job_dir / "run_report.json").write_text(
             json.dumps(

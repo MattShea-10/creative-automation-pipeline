@@ -155,3 +155,123 @@ class ForgetPsdRowTest(unittest.TestCase):
         webapp._save_preferences(prefs)
         _job, files = webapp._remembered_files(self.key)
         self.assertEqual(files, {"psd_file_1": "fresh.psd"})
+
+
+class TemplateSizesStatusTest(unittest.TestCase):
+    """Which of a product's templates still match the backup zip. Nine
+    identical labels in the picker is how the wrong size got put back."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._orig_templates = webapp.DEFAULT_TEMPLATES_DIR
+        webapp.DEFAULT_TEMPLATES_DIR = self.tmp / "default_templates"
+        webapp.DEFAULT_TEMPLATES_DIR.mkdir(parents=True)
+        webapp._template_status_cache.clear()
+        with zipfile.ZipFile(webapp.DEFAULT_TEMPLATES_DIR / "template-backup.zip", "w") as zf:
+            zf.writestr("tester-1080x1080.psd", "ORIGINAL 1080x1080")
+            zf.writestr("tester-720x1280.psd", "ORIGINAL 720x1280")
+            zf.writestr("tester-160x600.psd", "ORIGINAL 160x600")
+        self.folder = webapp.DEFAULT_TEMPLATES_DIR / "Winter Glow 2026" / "HydroBoost Sports Drink"
+        self.folder.mkdir(parents=True)
+        (self.folder / "tester-1080x1080.psd").write_text("ORIGINAL 1080x1080")
+        (self.folder / "tester-720x1280.psd").write_text("EDITED -- a photo baked in")
+        # 160x600 left absent on purpose.
+
+    def tearDown(self):
+        webapp.DEFAULT_TEMPLATES_DIR = self._orig_templates
+        webapp._template_status_cache.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_it_says_which_size_is_yours(self):
+        status = webapp.template_sizes_status("HydroBoost Sports Drink", "Winter Glow 2026")
+        self.assertEqual(
+            {e["size"]: e["state"] for e in status},
+            {"1080x1080": "same", "720x1280": "changed", "160x600": "missing"},
+        )
+
+    def test_largest_first(self):
+        status = webapp.template_sizes_status("HydroBoost Sports Drink", "Winter Glow 2026")
+        self.assertEqual([e["size"] for e in status], ["1080x1080", "720x1280", "160x600"])
+
+    def test_it_notices_an_edit_after_the_first_look(self):
+        webapp.template_sizes_status("HydroBoost Sports Drink", "Winter Glow 2026")
+        (self.folder / "tester-1080x1080.psd").write_text("EDITED SINCE")
+        status = webapp.template_sizes_status("HydroBoost Sports Drink", "Winter Glow 2026")
+        self.assertEqual({e["size"]: e["state"] for e in status}["1080x1080"], "changed")
+
+    def test_no_zip_means_no_list(self):
+        (webapp.DEFAULT_TEMPLATES_DIR / "template-backup.zip").unlink()
+        webapp._template_status_cache.clear()
+        self.assertEqual(webapp.template_sizes_status("HydroBoost Sports Drink", "Winter Glow 2026"), [])
+
+    def test_an_unseeded_folder_is_not_all_missing(self):
+        # A card with no product yet points at a folder with no templates.
+        # Nothing has been changed there, so nothing should be marked.
+        webapp._template_status_cache.clear()
+        status = webapp.template_sizes_status("A Product That Has Never Run")
+        self.assertTrue(status)
+        self.assertEqual({e["state"] for e in status}, {"same"})
+
+
+class SameShapeGroupTest(unittest.TestCase):
+    """Sizes with the same proportions share a template -- an upload for
+    one is the template for the others. Putting one back therefore has to
+    put the whole shape back, or the twin keeps rendering the old art and
+    the restore reads as broken."""
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._orig_templates = webapp.DEFAULT_TEMPLATES_DIR
+        self._orig_backups = webapp.TEMPLATE_BACKUPS_DIR
+        webapp.DEFAULT_TEMPLATES_DIR = self.tmp / "default_templates"
+        webapp.TEMPLATE_BACKUPS_DIR = self.tmp / "_template_backups"
+        webapp.DEFAULT_TEMPLATES_DIR.mkdir(parents=True)
+        webapp._template_status_cache.clear()
+        with zipfile.ZipFile(webapp.DEFAULT_TEMPLATES_DIR / "template-backup.zip", "w") as zf:
+            zf.writestr("tester-1080x1920.psd", "ORIGINAL 9:16 tall")
+            zf.writestr("tester-720x1280.psd", "ORIGINAL 9:16 small")
+            zf.writestr("tester-1080x1080.psd", "ORIGINAL square")
+            zf.writestr("tester-720x480.psd", "ORIGINAL 3:2")
+        self.folder = webapp.DEFAULT_TEMPLATES_DIR / "Winter Glow 2026" / "HydroBoost Sports Drink"
+        self.folder.mkdir(parents=True)
+        for name in ("tester-1080x1920.psd", "tester-720x1280.psd"):
+            (self.folder / name).write_text("EDITED -- the bottle photo")
+        (self.folder / "tester-1080x1080.psd").write_text("ORIGINAL square")
+        (self.folder / "tester-720x480.psd").write_text("ORIGINAL 3:2")
+
+    def tearDown(self):
+        webapp.DEFAULT_TEMPLATES_DIR = self._orig_templates
+        webapp.TEMPLATE_BACKUPS_DIR = self._orig_backups
+        webapp._template_status_cache.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_the_group_is_every_size_of_that_shape(self):
+        self.assertEqual(sorted(webapp.sizes_sharing_shape("1080x1920")), ["1080x1920", "720x1280"])
+        self.assertEqual(webapp.sizes_sharing_shape("1080x1080"), ["1080x1080"])
+        self.assertEqual(webapp.sizes_sharing_shape("720x480"), ["720x480"])
+
+    def test_putting_one_back_puts_its_twin_back_too(self):
+        restored, _untouched, error = webapp.restore_templates_from_backup(
+            dest_dir=self.folder, only_sizes=set(webapp.sizes_sharing_shape("1080x1920"))
+        )
+        self.assertIsNone(error)
+        self.assertEqual(sorted(restored), ["tester-1080x1920.psd", "tester-720x1280.psd"])
+        self.assertEqual((self.folder / "tester-720x1280.psd").read_text(), "ORIGINAL 9:16 small")
+        self.assertEqual((self.folder / "tester-1080x1920.psd").read_text(), "ORIGINAL 9:16 tall")
+
+    def test_other_shapes_are_left_alone(self):
+        (self.folder / "tester-1080x1080.psd").write_text("EDITED square")
+        webapp.restore_templates_from_backup(
+            dest_dir=self.folder, only_sizes=set(webapp.sizes_sharing_shape("1080x1920"))
+        )
+        self.assertEqual((self.folder / "tester-1080x1080.psd").read_text(), "EDITED square",
+                         "a square template is nobody's 9:16 twin")
+
+    def test_the_picker_names_the_twin(self):
+        status = {e["size"]: e for e in webapp.template_sizes_status("HydroBoost Sports Drink", "Winter Glow 2026")}
+        self.assertEqual(status["1080x1920"]["with"], ["720x1280"])
+        self.assertEqual(status["720x1280"]["with"], ["1080x1920"])
+        self.assertEqual(status["1080x1080"]["with"], [])
+
+    def test_a_size_the_zip_never_heard_of_is_just_itself(self):
+        self.assertEqual(webapp.sizes_sharing_shape("999x333"), ["999x333"])

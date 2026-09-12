@@ -2332,7 +2332,13 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         """Two products, two runs: the next form opens with a card per
         product, each carrying only its own fields and kept files. The
         hero dropped on HydroBoost is not on FreshGlow's card; a reset
-        of one product leaves the other's memory alone."""
+        of one product leaves the other's memory alone.
+
+        Both products are named in briefs/, so a run that leaves Campaign
+        blank is filed under the campaign the brief gives it -- there is
+        one card per product, not a brief card and a campaign-less twin.
+        Two folders for one product is what made a per-size restore look
+        like it had done nothing."""
         def run(product, hero_name, header_text):
             r = self.client.post("/generate", data={
                 "product_name": product, "market": "France", "audience": "a", "campaign_message": "m",
@@ -2346,10 +2352,10 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
 
         html = self.client.get("/").get_data(as_text=True).split('id="blank-campaign-card"')[0]
         cards = html.split('class="campaign-card"')[1:]
-        # These two ran with no campaign name, so they are their own
-        # cards, apart from the brief files' entries.
-        hydro = next(c for c in cards if 'value="HydroBoost Sports Drink"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
-        fresh = next(c for c in cards if 'value="FreshGlow Body Wash"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
+        # These two ran with no campaign name, so they were filed under
+        # the campaign their brief gives them -- one card each.
+        hydro = next(c for c in cards if 'value="HydroBoost Sports Drink"' in c)
+        fresh = next(c for c in cards if 'value="FreshGlow Body Wash"' in c)
         self.assertIn("hydro-hero.png", hydro)
         self.assertNotIn("fresh-hero.png", hydro)
         self.assertIn('value="Hydro words"', hydro)
@@ -2367,8 +2373,8 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.client.post("/reset", data={"product_name": "HydroBoost Sports Drink", "market": "France"}, follow_redirects=True)
         html = self.client.get("/").get_data(as_text=True).split('id="blank-campaign-card"')[0]
         cards = html.split('class="campaign-card"')[1:]
-        hydro = next(c for c in cards if 'value="HydroBoost Sports Drink"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
-        fresh = next(c for c in cards if 'value="FreshGlow Body Wash"' in c and 'name="campaign_name" placeholder="e.g. Winter Glow 2026" value=""' in c)
+        hydro = next(c for c in cards if 'value="HydroBoost Sports Drink"' in c)
+        fresh = next(c for c in cards if 'value="FreshGlow Body Wash"' in c)
         self.assertNotIn("hydro-hero.png", hydro)
         self.assertNotIn("Hydro words", hydro)
         self.assertIn("fresh-hero.png", fresh)

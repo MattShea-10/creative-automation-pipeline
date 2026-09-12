@@ -164,7 +164,10 @@
         <div class="inline-controls" style="margin-top: 0.6rem; align-items: flex-start;">
           <label for="campaign_name" style="font-weight: 400; flex: 1 1 200px;" title="The campaign this product belongs to (a brief file's name). Its templates live in default_templates/<campaign>/<product>/.">
             <span style="white-space: nowrap;">Campaign</span>
-            <input type="text" id="campaign_name" name="campaign_name" placeholder="e.g. Winter Glow 2026" value="{{ prefill.get('campaign_name', '') }}">
+            {# Required, like the product name: a blank campaign used to send
+               this product's templates to a second folder of their own, which
+               is invisible until you restore one set and edit the other. #}
+            <input type="text" id="campaign_name" name="campaign_name" placeholder="e.g. Winter Glow 2026" value="{{ prefill.get('campaign_name', '') }}" required>
           </label>
           <label for="product_name" style="font-weight: 400; flex: 1 1 200px;">
             <span style="white-space: nowrap;">Product name</span>
@@ -1267,18 +1270,22 @@
           <div class="inline-controls" style="margin-top: 0.7rem;">
             <label style="font-weight: 400;">
               <span style="white-space: nowrap;">Put a size back</span>
-              <select name="reset_size" aria-label="Size to restore from the backup zip" style="width: 10rem;">
+              {# Marked against the backup zip: nine identical labels made it
+                 far too easy to put back a size that was never touched. #}
+              {% set size_states = template_sizes_status(prefill.get('product_name'), prefill.get('campaign_name')) %}
+              <select name="reset_size" aria-label="Size to restore from the backup zip" style="width: 13rem;">
                 <option value="">choose a size...</option>
-                {% for size in backup_zip_sizes %}
-                  <option value="{{ size }}">{{ size }}</option>
+                {% for entry in size_states %}
+                  {# Same-shape sizes share a template, so they go back together. #}
+                  <option value="{{ entry.size }}" data-with="{{ entry['with'] | join(', ') }}">{{ entry.size }}{% if entry['with'] %} + {{ entry['with'] | join(', ') }}{% endif %}{% if entry.state == 'changed' %} -- changed{% elif entry.state == 'missing' %} -- missing{% endif %}</option>
                 {% endfor %}
               </select>
             </label>
             <button type="submit" class="reset-link" formaction="{{ url_for('reset_one_size') }}" formmethod="post" formnovalidate
                     data-role="reset-size"
                     style="background: none; cursor: pointer; font-family: inherit; margin: 0; padding: 0.2rem 0.6rem; font-size: 0.78rem;"
-                    onclick="var s = this.closest('.inline-controls').querySelector('[name=reset_size]'); if (!s.value) { alert('Choose the size to put back first.'); return false; } return confirm('Put the ' + s.value + ' template back to the one in the backup zip? The current file is kept in _template_backups/. Nothing else on the form changes.');">Put back</button>
-            <span class="hint" style="margin: 0; flex: 1 1 14rem;">That size&#39;s saved template goes back to the copy in the backup zip; the file it replaces is kept in <code>_template_backups/</code>.</span>
+                    onclick="var s = this.closest('.inline-controls').querySelector('[name=reset_size]'); if (!s.value) { alert('Choose the size to put back first.'); return false; } var also = s.options[s.selectedIndex].getAttribute('data-with'); return confirm('Put the ' + s.value + (also ? ' and ' + also + ' (same shape, they share a template)' : '') + ' template back to the one in the backup zip? The current file is kept in _template_backups/. Nothing else on the form changes.');">Put back</button>
+            <span class="hint" style="margin: 0; flex: 1 1 14rem;">Marked <strong>changed</strong> means this product&#39;s template for that size no longer matches the backup zip. Sizes of the same shape share a template, so they go back together. The current file is kept in <code>_template_backups/</code>.</span>
           </div>
           {% endif %}
 
