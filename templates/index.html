@@ -1734,23 +1734,61 @@
         syncAiBody();
       }
 
-      // The campaign message and the description layer are the same
+      // Header, Description and the campaign message are the same
       // sentence in almost every brief -- the message IS the line the
-      // template prints -- so typing it twice is the common case. The
-      // description field mirrors the message until somebody edits it,
-      // and stops the moment they do: this fills a blank, it does not
-      // overwrite an answer.
+      // template prints -- so typing it two or three times is the
+      // common case, and a field left blank renders an empty layer.
+      //
+      // Each of Header and Description fills itself until somebody
+      // types in it, from whichever of the two a person actually wrote
+      // in, and from the campaign message when neither has been. So a
+      // header typed on its own fills the description, a description
+      // typed on its own fills the header, and with neither touched
+      // both carry the message. This fills a blank; it never overwrites
+      // an answer -- the moment a field has something typed in it, it
+      // stops following and starts leading.
       var messageField = root.querySelector('[name="campaign_message"]');
+      var headerField = root.querySelector('[name="layer_header_text"]');
       var descriptionField = root.querySelector('[name="layer_description_text"]');
-      if (messageField && descriptionField) {
-        var mirroring = !descriptionField.value || descriptionField.value === messageField.value;
-        descriptionField.addEventListener("input", function () {
-          mirroring = false;
+      if (messageField && (headerField || descriptionField)) {
+        // Prefilled from a brief or reopened from an Edit counts as
+        // written by a person -- unless it is just the message again,
+        // which is what this would have put there anyway.
+        var following = function (field) {
+          return !field.value.trim() || field.value === messageField.value;
+        };
+        var headerFollows = headerField ? following(headerField) : false;
+        var descFollows = descriptionField ? following(descriptionField) : false;
+        var wording = function () {
+          if (headerField && !headerFollows && headerField.value.trim()) return headerField.value;
+          if (descriptionField && !descFollows && descriptionField.value.trim()) return descriptionField.value;
+          return messageField.value;
+        };
+        var syncCopy = function () {
+          var text = wording();
+          if (headerField && headerFollows) headerField.value = text;
+          if (descriptionField && descFollows) descriptionField.value = text;
+        };
+        [[headerField, "header"], [descriptionField, "desc"]].forEach(function (pair) {
+          var field = pair[0];
+          if (!field) return;
+          field.addEventListener("input", function () {
+            if (pair[1] === "header") headerFollows = false; else descFollows = false;
+            syncCopy();
+          });
+          // Emptying a field hands it back: a blank header is the case
+          // this exists for, and leaving it blank because it was once
+          // typed in would be the opposite of the point. Checked on the
+          // way out rather than per keystroke, so clearing a field to
+          // retype it doesn't refill under the cursor mid-edit.
+          field.addEventListener("blur", function () {
+            if (field.value.trim()) return;
+            if (pair[1] === "header") headerFollows = true; else descFollows = true;
+            syncCopy();
+          });
         });
-        messageField.addEventListener("input", function () {
-          if (mirroring) descriptionField.value = messageField.value;
-        });
-        if (mirroring && !descriptionField.value) descriptionField.value = messageField.value;
+        messageField.addEventListener("input", syncCopy);
+        syncCopy();
       }
 
       // What the provider can actually do decides what is on offer.

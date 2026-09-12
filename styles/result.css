@@ -107,6 +107,13 @@
     .card .meta .psd-link {
       @apply inline-block mt-[0.4rem] text-[0.78rem] text-blue-400 no-underline font-semibold hover:underline;
     }
+    /* The `hidden` attribute only gets its display:none from the UA
+       stylesheet, which ANY author rule outranks -- and the rule above
+       sets display:inline-block. Without this the "Download video (MP4)"
+       link, which is marked hidden until a video exists, showed on every
+       card and led to href="#". Same trap as .approved-badge[hidden] and
+       .video-badge[hidden] above. */
+    .card .meta .psd-link[hidden] { display: none; }
     .notes-panel { @apply border border-slate-700 rounded-lg p-[0.6rem] mb-6 bg-slate-900; }
     .notes-panel.warning { @apply border-red-800 bg-red-950/40; }
     .adblock-notice {

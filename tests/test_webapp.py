@@ -253,6 +253,31 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertIn(b"Upload AI Image", r.data)
         self.assertNotIn(b"manual-creative-box", r.data)
 
+    def test_header_and_description_fill_each_other_and_fall_back_to_the_message(self):
+        """A blank Header or Description renders an empty layer.
+
+        Each fills itself from whichever of the two a person actually
+        typed in, and from the campaign message when neither has been --
+        so a header typed on its own fills the description, a
+        description typed on its own fills the header, and with neither
+        touched both carry the message."""
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('name="layer_header_text"', page)
+        self.assertIn('name="layer_description_text"', page)
+        self.assertIn('name="campaign_message"', page)
+        # Both directions, not just message -> description as before.
+        self.assertIn("headerFollows", page)
+        self.assertIn("descFollows", page)
+        self.assertIn("syncCopy", page)
+        # A field emptied again goes back to following: a blank header
+        # is the whole case this exists for, and refusing to refill one
+        # because it was typed in once would be the opposite of the
+        # point. On blur, not per keystroke -- clearing a field to
+        # retype it must not refill under the cursor mid-edit.
+        self.assertIn('field.addEventListener("blur"', page)
+        # The old one-way mirror is gone, not sitting alongside it.
+        self.assertNotIn("var mirroring =", page)
+
     def test_the_form_offers_the_brief_files_products_to_fill_the_campaign_from(self):
         """briefs/sample_campaign.json (the CLI's input) is offered on the
         form: one option per product, carrying the brief's fields, brand
@@ -5619,29 +5644,46 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertNotIn("branded backdrop", prompt)
         self.assertIn("unbranded", prompt)
 
-    def test_a_backdrop_prompt_naming_the_product_has_the_product_taken_out(self):
-        # "hydroboost sports drink, beach volleyball, sand and water" came
-        # back as a bottle with HydroBoost lettered on it -- the label is
-        # text, smeared out by the check, and the template has its own
-        # product layer anyway. The scene stays; the product goes.
+    def test_a_backdrop_prompt_loses_the_brand_name_and_keeps_the_brief(self):
+        # The BRAND NAME goes: "hydroboost sports drink" came back as a
+        # bottle with HydroBoost lettered on it, and the label is text.
+        # Everything else stays. An earlier version also deleted
+        # "bottle", "can", "sports drink" and "product", which turned "a
+        # chilled blue sports drink bottle, winter theme" into "a chilled
+        # blue, winter theme" -- an adjective with no noun. Handed a
+        # prompt with no subject, the model kept the colour and the mood
+        # and invented the rest, which is where the stray people in the
+        # backdrops came from. The prompt comes from the campaign brief;
+        # it is the instruction, not a first draft.
         self._write_template_with_a_background_layer("p3-300x250.psd", (300, 250))
         prompt = self._prompt_used(
             product_name="HydroBoost",
             upload_ai_prompt="hydroboost sports drink, beach volleyball, sand and water",
             upload_ai_background_style="1",
         )
-        self.assertTrue(prompt.startswith("beach volleyball, sand and water"), prompt)
-        self.assertNotIn("hydroboost", prompt.lower().split(", sharp focus")[0])
-        self.assertIn("no bottle", prompt)
+        authored = prompt.split(", sharp focus")[0]
+        self.assertNotIn("hydroboost", authored.lower())
+        # The subject the brief asked for survives the name's removal.
+        self.assertIn("sports drink", authored)
+        self.assertIn("beach volleyball, sand and water", authored)
+        # And the exclusions are NOT in the description of the picture:
+        # "no bottle" there feeds the token "bottle" to the model, and
+        # Ideogram's docs say the positive prompt outranks the negative.
+        self.assertNotIn("no bottle", authored)
+
         # Nothing but the product in the prompt: the automatic scene
-        # stands in rather than an empty prompt going out.
+        # stands in rather than a fragment going out. Removing the name
+        # from "a bottle of Hydro Boost" leaves "a bottle of" -- the
+        # dangling preposition goes with the name it was joining to.
         prompt = self._prompt_used(
             product_name="Hydro Boost",
             upload_ai_prompt="a bottle of Hydro Boost",
             upload_ai_background_style="1",
         )
         self.assertNotIn("Hydro Boost", prompt.split(", sharp focus")[0])
+        self.assertNotIn("bottle of", prompt)
         self.assertIn("unbranded", prompt)
+
         # Without backdrop mode the prompt is the author's, untouched.
         prompt = self._prompt_used(
             product_name="HydroBoost",
@@ -5657,8 +5699,22 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self._write_template_with_a_background_layer("p2-300x250.psd", (300, 250))
         on = self._prompt_used(upload_ai_prompt="marathon runners", upload_ai_background_style="1")
         self.assertTrue(on.startswith("marathon runners"), on)
-        self.assertIn("no faces", on)
         self.assertIn("sharp focus", on)
+        # The exclusions are NOT part of the description of the picture.
+        # "no faces, no logos, no bottle" used to be appended to the
+        # positive prompt, which is the one place it cannot work: it
+        # feeds those nouns to the model, and Ideogram's documentation
+        # says the positive prompt takes precedence over the negative
+        # one. A run asking for no people came back with two of them.
+        # These offline-placeholder runs have no negative-prompt field,
+        # so the exclusions are folded in at the end and are visible in
+        # this string -- but never as part of the authored description.
+        self.assertNotIn("no faces", on)
+        self.assertNotIn("no bottle", on)
+        self.assertNotIn("no faces", on.split(", no text")[0])
+        # What a backdrop can never want, whatever the brief says, is
+        # still excluded -- on the channel that works for "not this".
+        self.assertIn("cluttered composition", on)
         # It must never ask for softness. An earlier version did, and a
         # prompt reading "high resolution image of runners" went out with
         # "softly out of focus" stapled to it -- the model obliged, and
@@ -5683,7 +5739,7 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # steering the image, and Ideogram's docs say the positive prompt
         # wins over the negative one.
         self.assertNotIn("sharp focus", off)
-        self.assertNotIn("no faces", off)
+        self.assertNotIn("cluttered composition", off)
         self.assertTrue(off.startswith("marathon runners"), off)
         self.assertIn("no text", off)
         self.assertIn("no lettering", on)
@@ -5747,13 +5803,28 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertEqual(page.count('class="size size-zoom" data-role="zoom"'), cards)
         self.assertIn('<button type="button" class="thumb"', page)
         self.assertIn('<button type="button" class="size size-zoom"', page)
-        # The overlay exists but starts closed -- and stays closed. The
-        # `hidden` attribute only sets display:none through the UA
-        # stylesheet, which the overlay's own `display: flex` beats, so
-        # without an explicit [hidden] rule it renders open on load and
-        # covers the results.
+        # The overlay exists but starts closed -- and stays closed.
         self.assertIn('data-role="lightbox" hidden', page)
-        self.assertIn('.lightbox[hidden] { display: none; }', page)
+
+        # The `hidden` attribute only gets display:none from the UA
+        # stylesheet, and ANY author rule outranks that. So every element
+        # this page hides with the attribute AND styles with a display
+        # needs its own [hidden] guard, or it renders visible. The
+        # overlay's own `display: flex` would put it over the results on
+        # load; .card .meta .psd-link's `display: inline-block` did
+        # exactly this to the "Download video (MP4)" link, which showed
+        # on every size whether or not a video existed and led to "#".
+        #
+        # The rules live in the vendored stylesheet now, not inline, so
+        # this reads the file the page actually links to.
+        css = (Path(webapp.__file__).resolve().parent / "static" / "tailwind-result.css").read_text()
+        for guarded in (
+            ".lightbox[hidden]",
+            ".approved-badge[hidden]",
+            ".video-badge[hidden]",
+            ".psd-link[hidden]",
+        ):
+            self.assertIn(guarded, css, f"{guarded} has no display:none guard")
 
     def test_reloading_the_results_page_lands_on_the_form_not_a_405(self):
         # Results render straight from the POST, so the address bar keeps

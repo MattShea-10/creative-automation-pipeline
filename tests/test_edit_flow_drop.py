@@ -77,3 +77,52 @@ class EditFlowDropTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EditCardCampaignTest(unittest.TestCase):
+    """Reopening an old batch must not hand back a blank Campaign.
+
+    The Edit page is a second card builder -- it rebuilds from what the
+    job saved, not from the remembered form -- and a batch generated
+    before the field was required saved it empty.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self._orig_jobs = webapp.JOBS_DIR
+        self._orig_briefs = webapp.BRIEFS_DIR
+        webapp.JOBS_DIR = self.tmp / "jobs"
+        webapp.BRIEFS_DIR = self.tmp / "briefs"
+        webapp.BRIEFS_DIR.mkdir(parents=True)
+        (webapp.BRIEFS_DIR / "b.json").write_text("{}")
+        webapp._brief_campaign_cache.clear()
+        self.job = "d" * 32
+        (webapp.JOBS_DIR / self.job).mkdir(parents=True)
+        (webapp.JOBS_DIR / self.job / "form_state.json").write_text(json.dumps({
+            "fields": {"product_name": "HydroBoost Sports Drink", "campaign_name": "", "market": "France"},
+            "files": {},
+        }))
+        self.choices = [{"product_name": "HydroBoost Sports Drink", "campaign": "Winter Glow 2026"}]
+
+    def tearDown(self):
+        webapp.JOBS_DIR = self._orig_jobs
+        webapp.BRIEFS_DIR = self._orig_briefs
+        webapp._brief_campaign_cache.clear()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_reopening_an_old_batch_fills_the_campaign(self):
+        from unittest import mock
+        with mock.patch.object(webapp, "_brief_choices", return_value=self.choices):
+            cards = webapp._load_session_campaigns(None, self.job)
+        self.assertEqual(cards[0]["prefill"]["campaign_name"], "Winter Glow 2026")
+        self.assertEqual(cards[0]["prefill"]["market"], "France", "the rest of the batch is untouched")
+
+    def test_a_campaign_the_batch_saved_is_kept(self):
+        from unittest import mock
+        (webapp.JOBS_DIR / self.job / "form_state.json").write_text(json.dumps({
+            "fields": {"product_name": "HydroBoost Sports Drink", "campaign_name": "Summer Refresh 2026"},
+            "files": {},
+        }))
+        with mock.patch.object(webapp, "_brief_choices", return_value=self.choices):
+            cards = webapp._load_session_campaigns(None, self.job)
+        self.assertEqual(cards[0]["prefill"]["campaign_name"], "Summer Refresh 2026")
