@@ -3126,11 +3126,11 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertIn(b"300x250 used your uploaded PSD template", third.data)
 
     def test_edit_can_clear_a_size_specific_psd_template_via_hidden_flag(self):
-        # The "x" button next to a Size-specific PSD template row (see
-        # index.html) sets a hidden psd_size_N_clear field so a template
-        # carried forward from a prior job can be cancelled outright --
-        # otherwise there'd be no way to say "stop templating this size,
-        # go back to the hero image" short of uploading a different .psd.
+        # psd_size_N_clear drops a template carried forward from a prior
+        # job. The row no longer offers an "x" for it -- a template set for
+        # a size stays set, and is changed by uploading another PSD or put
+        # back with the card's per-size restore -- but the flag itself is
+        # still honoured, so an edit that sends it behaves as it always did.
         first_data = {
             "hero_image": (self._sample_image_bytes(color=(10, 200, 10)), "hero.png"),
             "psd_size_1": "300x250",
@@ -3167,8 +3167,8 @@ class DefaultTemplatesFolderTest(unittest.TestCase):
         self.assertGreater(g2, r2)
 
         # The Edit page for the cleared job must not show a "Currently: ..."
-        # hint (or the x button) for that row any more -- there's nothing
-        # left to cancel.
+        # hint for that row any more -- there is no template left to name.
+        # (id="psd_clear_btn_1" is gone from every row now, cleared or not.)
         edit_page = self.client.get(f"/edit/{second_job_id}")
         self.assertNotIn(b'id="psd_clear_btn_1"', edit_page.data)
 

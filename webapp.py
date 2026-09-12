@@ -2746,6 +2746,7 @@ def _seed_product_folders_once():
 def _inject_settings():
     return {
         "brief_choices": _brief_choices(),
+        "backup_zip_sizes": backup_zip_sizes(),
         "market_copy_languages": market_copy_languages(),
         "ideogram_key": _ideogram_key_status(),
         "env_file": str(ENV_FILE),
@@ -2829,14 +2830,50 @@ def template_reset_zip() -> Path | None:
     return zips[0] if len(zips) == 1 else None
 
 
-def restore_templates_from_backup(zip_path: Path | None = None, dest_dir: Path | None = None) -> tuple[list[str], list[str], str | None]:
+def backup_zip_sizes() -> list:
+    """The size labels the backup zip carries ("720x480"), largest first
+    -- what the per-size restore beside a card's Reset offers. Empty when
+    there is no zip, which is what hides that control."""
+    zip_path = template_reset_zip()
+    if zip_path is None:
+        return []
+    sizes = set()
+    try:
+        with zipfile.ZipFile(zip_path) as zf:
+            for info in zf.infolist():
+                name = Path(info.filename).name
+                if info.is_dir() or info.filename.startswith("__MACOSX/") or name.startswith("._"):
+                    continue
+                if name.lower().rsplit(".", 1)[-1] != "psd":
+                    continue
+                found = SIZE_IN_NAME_RE_LOOSE.search(name)
+                if found:
+                    sizes.add(found.group(0).lower())
+    except (OSError, zipfile.BadZipFile):
+        return []
+    def area(label):
+        w, h = label.split("x")
+        return int(w) * int(h)
+    return sorted(sizes, key=area, reverse=True)
+
+
+def restore_templates_from_backup(
+    zip_path: Path | None = None,
+    dest_dir: Path | None = None,
+    only_sizes: set | None = None,
+) -> tuple[list[str], list[str], str | None]:
     """Put the saved templates back to the copies in the backup zip.
 
     Every tester-WxH.psd in the zip replaces the one in `dest_dir` --
     default_templates/ itself, or a product's own folder under it (the
     one being replaced is moved to _template_backups/ first, stamped, so
     nothing is lost). Sizes the zip does not carry are left as they are.
-    Returns (restored names, untouched sizes, error message)."""
+    Returns (restored names, untouched sizes, error message).
+
+    `only_sizes` narrows it to those size labels ("720x480"), for putting
+    one size back after an edit went wrong without disturbing the other
+    eight. None means every size in the zip, which is what the card's
+    Reset does."""
     if zip_path is None:
         zip_path = template_reset_zip()
     if dest_dir is None:
@@ -2859,6 +2896,10 @@ def restore_templates_from_backup(zip_path: Path | None = None, dest_dir: Path |
                     continue
                 if name.lower().rsplit(".", 1)[-1] != "psd" or not SIZE_IN_NAME_RE_LOOSE.search(name):
                     continue
+                if only_sizes is not None:
+                    found = SIZE_IN_NAME_RE_LOOSE.search(name)
+                    if not found or found.group(0).lower() not in only_sizes:
+                        continue
                 dest_dir.mkdir(parents=True, exist_ok=True)
                 dest = dest_dir / name
                 if dest.exists():
@@ -2923,6 +2964,42 @@ def forget_remembered_form(keep_from=None) -> bool:
             new_prefs["products"] = products
     _save_preferences(new_prefs)
     return had_anything
+
+
+@app.route("/reset-size", methods=["POST"])
+def reset_one_size():
+    """Put one size's template back to the copy in the backup zip.
+
+    The card's Reset is all or nothing: it restores every size and clears
+    the form, which is a lot to lose when a single size's PSD was edited
+    into a state you want to undo. This restores just that one, keeps the
+    replaced file in _template_backups/ like every other write over a
+    saved template, and leaves the form alone."""
+    product_name = (request.form.get("product_name") or "").strip()
+    campaign_name = (request.form.get("campaign_name") or "").strip()
+    size = (request.form.get("reset_size") or "").strip().lower()
+    if not SIZE_IN_NAME_RE_LOOSE.fullmatch(size):
+        flash("Pick the size to put back first.")
+        return redirect(url_for("index"))
+
+    dest_dir = product_templates_dir(product_name, campaign_name=campaign_name)
+    restored, _untouched, error = restore_templates_from_backup(dest_dir=dest_dir, only_sizes={size})
+    if error:
+        flash(error)
+    elif not restored:
+        flash(f"The backup zip has no template for {size}, so nothing was changed.")
+    else:
+        where = "default_templates/" + (
+            f"{dest_dir.relative_to(DEFAULT_TEMPLATES_DIR).as_posix()}/" if dest_dir != DEFAULT_TEMPLATES_DIR else ""
+        )
+        flash(
+            (f"{product_name}: " if product_name else "")
+            + f"{', '.join(restored)} restored into {where} from "
+            + f"{(template_reset_zip() or Path(TEMPLATE_RESET_ZIP_NAME)).name}. "
+            + "The file it replaced is in _template_backups/. Nothing else was touched.",
+            "ok",
+        )
+    return redirect(url_for("index"))
 
 
 @app.route("/reset", methods=["POST"])

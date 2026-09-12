@@ -155,7 +155,7 @@
                     data-role="reset-product" style="background: none; cursor: pointer; font-family: inherit; margin: 0; padding: 0.2rem 0.6rem; font-size: 0.78rem;"
                     title="Put this product's templates back to the backup zip and clear the form"
                     onclick="event.stopPropagation(); return confirm('Reset ' + (this.closest('.campaign-card').querySelector('[name=product_name]').value.trim() || 'this campaign') + '? Its templates go back to the ones in the backup zip (the current ones are kept in _template_backups/). The campaign brief, brand colours and copy language are kept; every other field and every kept file is cleared.');">Reset</button>
-          </span>
+                      </span>
         </summary>
         <div class="hint" style="margin-top: -0.3rem;">
           Context for this batch -- not composited into the creatives, just carried along with them on the
@@ -1259,6 +1259,29 @@
             Drop updated PSDs here -- one or several. Each goes to the row for its size (read from the file), replacing
             the file that row was keeping; a size with no row yet gets a new one.
           </div>
+          {# Changing your mind about a size's template belongs with the
+             rows that set it. No id/for pair: a page can hold several
+             campaign cards, so the button finds its own select instead of
+             looking one up by id. #}
+          {% if backup_zip_sizes %}
+          <div class="inline-controls" style="margin-top: 0.7rem;">
+            <label style="font-weight: 400;">
+              <span style="white-space: nowrap;">Put a size back</span>
+              <select name="reset_size" aria-label="Size to restore from the backup zip" style="width: 10rem;">
+                <option value="">choose a size...</option>
+                {% for size in backup_zip_sizes %}
+                  <option value="{{ size }}">{{ size }}</option>
+                {% endfor %}
+              </select>
+            </label>
+            <button type="submit" class="reset-link" formaction="{{ url_for('reset_one_size') }}" formmethod="post" formnovalidate
+                    data-role="reset-size"
+                    style="background: none; cursor: pointer; font-family: inherit; margin: 0; padding: 0.2rem 0.6rem; font-size: 0.78rem;"
+                    onclick="var s = this.closest('.inline-controls').querySelector('[name=reset_size]'); if (!s.value) { alert('Choose the size to put back first.'); return false; } return confirm('Put the ' + s.value + ' template back to the one in the backup zip? The current file is kept in _template_backups/. Nothing else on the form changes.');">Put back</button>
+            <span class="hint" style="margin: 0; flex: 1 1 14rem;">That size&#39;s saved template goes back to the copy in the backup zip; the file it replaces is kept in <code>_template_backups/</code>.</span>
+          </div>
+          {% endif %}
+
           {# Every row the server accepts is in the page; the first
              psd_rows_shown are open and the rest hidden until the "+"
              below reveals them one at a time -- a hidden row that came
@@ -1289,8 +1312,11 @@
                 <div class="layer-image-cached-meta">
                   <strong>Kept from your last run</strong>
                   <span class="layer-image-cached-name" style="max-width: 24rem;" title="{{ prefill_files.get('psd_file_' ~ i) }}">Currently: <strong>{{ prefill_files.get('psd_file_' ~ i) }}</strong></span>
+                  {# No (x) here on purpose: a template set for a size stays
+                     set. Pick another PSD to replace it, or put the size back
+                     to the backup zip with "restore a size" on the card. #}
+                  <span class="hint" style="margin: 0;">Stays set for this size. Choose another PSD to replace it, or use <strong>restore a size</strong> on the campaign card to put the original back.</span>
                 </div>
-                <button type="button" class="clear-btn" id="psd_clear_btn_{{ i }}" data-role="psd-clear-btn-{{ i }}" data-prefill-hint title="Remove this template -- use the hero image for this size instead">&times;</button>
               </div>
             {% endif %}
             </div>
@@ -2041,28 +2067,18 @@
         })(k);
       }
 
+      // A template set for a size has no (x): it stays until another PSD
+      // replaces it, or the card's "restore a size" puts the backup zip's
+      // copy back. Only the replacement half is wired here -- picking a
+      // file hides the kept chip, so a row never reads as holding two.
       for (var i = 1; i <= MAX_PSD_ROWS; i++) {
         (function (i) {
-          var btn = root.querySelector('[data-role="psd-clear-btn-' + i + '"]');
-          if (!btn) return;
-          var sizeInput = root.querySelector('[name="psd_size_' + i + '"]');
           var fileInput = root.querySelector('[name="psd_file_' + i + '"]');
-          var clearFlag = root.querySelector('[name="psd_size_' + i + '_clear"]');
           var currentlyHint = root.querySelector('[data-role="psd-currently-' + i + '"]');
-          btn.addEventListener("click", function () {
-            sizeInput.value = "";
-            fileInput.value = "";
-            clearFlag.value = "1";
-            if (currentlyHint) currentlyHint.classList.add("is-cleared");
-            btn.disabled = true;
+          if (!fileInput) return;
+          fileInput.addEventListener("change", function () {
+            if (fileInput.files && fileInput.files.length && currentlyHint) currentlyHint.hidden = true;
           });
-          // Picking a replacement file supersedes the kept one: the chip
-          // goes so the row doesn't read as holding two templates.
-          if (fileInput) {
-            fileInput.addEventListener("change", function () {
-              if (fileInput.files && fileInput.files.length && currentlyHint) currentlyHint.hidden = true;
-            });
-          }
         })(i);
       }
 
