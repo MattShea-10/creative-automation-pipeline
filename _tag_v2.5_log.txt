@@ -1,0 +1,27 @@
+++ mktemp -d
++ WORK=/var/folders/_8/d052ws_s4g530jqldyh66jkc0000gq/T/tmp.fJCzCb8aeP
++ git clone --depth 1 https://github.com/MattShea-10/creative-automation-pipeline.git /var/folders/_8/d052ws_s4g530jqldyh66jkc0000gq/T/tmp.fJCzCb8aeP/repo
+Cloning into '/var/folders/_8/d052ws_s4g530jqldyh66jkc0000gq/T/tmp.fJCzCb8aeP/repo'...
++ cd /var/folders/_8/d052ws_s4g530jqldyh66jkc0000gq/T/tmp.fJCzCb8aeP/repo
++ git rev-parse HEAD
+5a6a48d409cd3376eea50ee1fbf78aee06e68b3d
++ echo '---- release contents ----'
+---- release contents ----
++ grep -c 'FreshGlow Body Wash' briefs/sample_campaign.json
+1
++ ls 'macos/Creative Automation Pipeline.app/Contents/Resources/install_guard.sh'
+macos/Creative Automation Pipeline.app/Contents/Resources/install_guard.sh
++ grep -c _looks_like_an_error_page src/localization.py
+2
++ grep -c ruamel windows/CreativeAutomationPipeline.spec
+2
++ git tag v2.5
++ git push origin v2.5
+To https://github.com/MattShea-10/creative-automation-pipeline.git
+ * [new tag]         v2.5 -> v2.5
++ echo PUSH_EXIT:0
+PUSH_EXIT:0
++ cd /
++ rm -rf /var/folders/_8/d052ws_s4g530jqldyh66jkc0000gq/T/tmp.fJCzCb8aeP
++ echo DONE
+DONE

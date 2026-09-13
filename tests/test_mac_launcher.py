@@ -24,6 +24,7 @@ REPO = Path(__file__).resolve().parent.parent
 APP = REPO / "macos" / "Creative Automation Pipeline.app"
 GUARD = APP / "Contents" / "Resources" / "install_guard.sh"
 LAUNCHER = APP / "Contents" / "MacOS" / "start"
+WORKFLOW = REPO / ".github" / "workflows" / "windows-exe.yml"
 
 BASH = shutil.which("bash")
 
@@ -136,6 +137,35 @@ class LauncherWiringTests(unittest.TestCase):
         anywhere else would simply not be there at launch."""
         self.assertTrue(GUARD.is_file())
         self.assertIn("Contents/Resources/install_guard.sh", self.script)
+
+
+@unittest.skipUnless(WORKFLOW.is_file(), "needs the release workflow")
+class ReleaseWorkflowTests(unittest.TestCase):
+    """One disk image per release, built from the tagged commit.
+
+    The dmg used to be built by hand and dragged onto the release page.
+    Two images from different days ended up in circulation, and opening
+    the older one overwrote a newer install without a word -- twice in
+    one evening, costing hours of confused debugging. Building it in the
+    same workflow as the Windows zip is what stops there being a second
+    image at all.
+    """
+
+    def setUp(self):
+        self.text = WORKFLOW.read_text()
+
+    def test_the_workflow_builds_the_disk_image(self):
+        self.assertIn("macos-latest", self.text)
+        self.assertIn("./macos/make_dmg.sh", self.text)
+
+    def test_a_tag_publishes_both_downloads(self):
+        self.assertIn("dist/CreativeAutomationPipeline-windows.zip", self.text)
+        self.assertIn("files: CreativeAutomationPipeline.dmg", self.text)
+
+    def test_the_image_is_checked_for_the_guard_before_it_is_published(self):
+        """A published image without the guard is a downgrade waiting to
+        happen, and nobody would notice until it had already fired."""
+        self.assertIn("grep -q image_is_older_than_install", self.text)
 
 
 if __name__ == "__main__":

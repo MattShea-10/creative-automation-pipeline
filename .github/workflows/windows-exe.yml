@@ -1,9 +1,17 @@
-# Builds the Windows package (CreativeAutomationPipeline-windows.zip) on
-# GitHub's Windows runner, so it can be made from a Mac. Runs on every
-# push to main and by hand from the Actions tab; the zip is attached to
-# the run as an artifact. Pushing a tag like v1.0 also publishes it on a
-# GitHub Release, which gives it a permanent download link.
-name: Windows exe
+# Builds both downloads: the Windows package
+# (CreativeAutomationPipeline-windows.zip) on GitHub's Windows runner, so
+# it can be made from a Mac, and CreativeAutomationPipeline.dmg on a macOS
+# runner. Runs on every push to main and by hand from the Actions tab;
+# each build is attached to the run as an artifact. Pushing a tag like
+# v1.0 also publishes both on a GitHub Release, which gives them permanent
+# download links.
+#
+# The dmg used to be built by hand and dragged onto the release. Two
+# hand-built images from different days ended up in circulation, and
+# opening the older one silently overwrote a newer install -- twice in one
+# evening. One image per release, built from the tagged commit, is the
+# fix.
+name: Windows exe and macOS dmg
 
 on:
   push:
@@ -110,3 +118,47 @@ jobs:
         uses: softprops/action-gh-release@v3
         with:
           files: dist/CreativeAutomationPipeline-windows.zip
+
+  dmg:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      # make_dmg.sh stages the working tree with `git ls-files`, so a plain
+      # checkout is all it needs. Node matters only when styles/ is ahead of
+      # the committed stylesheet -- ensure_css warns and carries on rather
+      # than failing, but with Node here it just rebuilds.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Build the disk image
+        run: ./macos/make_dmg.sh
+
+      # The launcher inside the image copies its code over an existing
+      # install. An image built without the guard downgrades whoever opens
+      # it, without asking, and the only symptom is the app behaving as
+      # though a week of fixes were undone. It has happened; it is worth
+      # one grep before the image is published.
+      - name: Check the image asks before installing over a newer copy
+        run: |
+          set -euo pipefail
+          MOUNT="$(mktemp -d)"
+          hdiutil attach CreativeAutomationPipeline.dmg -mountpoint "$MOUNT" -nobrowse -quiet
+          APP="$MOUNT/Creative Automation Pipeline.app"
+          grep -q image_is_older_than_install "$APP/Contents/MacOS/start"
+          test -f "$APP/Contents/Resources/install_guard.sh"
+          hdiutil detach "$MOUNT" -quiet
+          echo "the image carries the downgrade guard"
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: CreativeAutomationPipeline-dmg
+          path: CreativeAutomationPipeline.dmg
+
+      - name: Attach to release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v3
+        with:
+          files: CreativeAutomationPipeline.dmg
