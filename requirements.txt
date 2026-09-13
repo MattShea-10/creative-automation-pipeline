@@ -44,3 +44,8 @@ rapidocr-onnxruntime>=1.3; python_version < "3.13"
 fonttools>=4.40
 # iPhone HEIC photos on the mood board (converted to PNG on the way in).
 pillow-heif>=0.16
+# Round-trip YAML, so a run can add its product to a .yaml brief without
+# throwing the file's comments away. PyYAML above parses briefs; this one
+# writes them back. Optional: without it a YAML brief is left alone and
+# the results page says to add the product by hand.
+ruamel.yaml>=0.18

@@ -45,8 +45,14 @@ class CampaignBrief:
     # A CLI --no-header flag always wins over this and forces the header off.
 
     def __post_init__(self):
-        if len(self.products) < 2:
+        # One is enough. The web app writes briefs now, and a campaign
+        # starts life with the single product that was just generated:
+        # held to two, that brief fails to load and the campaign it was
+        # meant to record never reaches the picker. The same rule was
+        # also enforced in brief_loader.load_brief() -- two copies of it,
+        # so relaxing one alone changed nothing.
+        if len(self.products) < 1:
             raise ValueError(
-                "Campaign brief must include at least two products "
+                "Campaign brief must include at least one product "
                 f"(got {len(self.products)})."
             )

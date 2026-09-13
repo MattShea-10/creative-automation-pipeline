@@ -89,10 +89,23 @@ class FindTextTest(unittest.TestCase):
 
     def test_ignores_lettering_too_small_to_read(self):
         # A few pixels of "text" in a large frame is texture being
-        # over-read, not something a viewer would ever see.
+        # over-read, not something a viewer would ever see -- and each
+        # false flag costs a paid regeneration.
+        #
+        # The threshold is a fraction of the frame compared against the
+        # detector's BOX, which is not the glyph: this 9px font comes
+        # back a 26px box, nearly 3x the letters. MIN_HEIGHT_FRACTION is
+        # set so that reading is still below the line.
         big = Image.new("RGB", (2000, 1200), (235, 235, 235))
         ImageDraw.Draw(big).text((20, 20), "tiny", fill=(0, 0, 0), font=_font(9))
         self.assertFalse(find_text(big).found_text)
+
+    def test_a_headline_sized_word_is_still_read(self):
+        # The other side of that threshold: raising it must not blind the
+        # check to type a viewer plainly sees.
+        page = Image.new("RGB", (1200, 600), (235, 235, 235))
+        ImageDraw.Draw(page).text((60, 200), "SUMMER SALE", fill=(10, 10, 10), font=_font(90))
+        self.assertTrue(find_text(page).found_text)
 
 
 class _ScriptedProvider:

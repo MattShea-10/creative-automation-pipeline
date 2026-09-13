@@ -151,6 +151,24 @@ DEFAULT_BADGE_OPACITY_PERCENT = 100
 
 JOBS_DIR = BASE_DIR / "outputs" / "web"
 JOBS_DIR.mkdir(parents=True, exist_ok=True)
+_REAL_JOBS_DIR = JOBS_DIR
+
+
+def _refuse_the_real_jobs_dir_under_test() -> None:
+    """Stop a test writing into the real outputs/web.
+
+    A test that posts to /generate without pointing JOBS_DIR at a temp
+    folder leaves job and draft folders in the user's own outputs -- ten
+    of them turned up looking like real runs, carrying fixture values
+    (product "HydroBoost", market "UK"), and they are indistinguishable
+    from a batch someone actually made. Silent, so it went unnoticed for
+    as long as the tests have existed. Loud from here.
+    """
+    if app.config.get("TESTING") and JOBS_DIR == _REAL_JOBS_DIR:
+        raise RuntimeError(
+            "a test is about to write into the real outputs/web -- point "
+            "webapp.JOBS_DIR at a temp folder in setUp"
+        )
 
 # Templates here apply automatically to their matching output size on every /generate.
 # downloads/ is the browsable copy of each run's zip; job folders are named by random id.
@@ -178,6 +196,25 @@ def _product_folder_name(product_name) -> str:
 _brief_campaign_cache: dict = {}
 
 
+def brief_campaigns_by_product() -> dict:
+    """{product name, lowercased: every campaign that briefs it}.
+
+    A product can appear in more than one brief -- HydroBoost Sports
+    Drink is in both Winter Glow 2026 and Summer Refresh 2026 -- and each
+    one has its own template folder.
+    """
+    table = {}
+    for choice in _brief_choices():
+        name = (choice.get("product_name") or "").strip()
+        campaign = (choice.get("campaign") or "").strip()
+        if not name or not campaign:
+            continue
+        seen = table.setdefault(name.lower(), [])
+        if campaign not in seen:
+            seen.append(campaign)
+    return table
+
+
 def brief_campaign_by_product() -> dict:
     """{product name, lowercased: the campaign its brief files it under}.
 
@@ -186,14 +223,18 @@ def brief_campaign_by_product() -> dict:
     not a harmless empty field: it sends that product's templates to a
     folder of their own, which is invisible until a restore appears to do
     nothing.
+
+    Only products exactly one brief claims are in here. A product in two
+    campaigns has no right answer to fill in, and picking the first file
+    alphabetically is worse than filling nothing: it silently points the
+    run at the other campaign's templates. Those are offered as a hint
+    instead -- see brief_campaigns_by_product().
     """
-    table = {}
-    for choice in _brief_choices():
-        name = (choice.get("product_name") or "").strip()
-        campaign = (choice.get("campaign") or "").strip()
-        if name and campaign:
-            table.setdefault(name.lower(), campaign)
-    return table
+    return {
+        name: campaigns[0]
+        for name, campaigns in brief_campaigns_by_product().items()
+        if len(campaigns) == 1
+    }
 
 
 def default_campaign_name() -> str:
@@ -210,7 +251,7 @@ def default_campaign_name() -> str:
     return ""
 
 
-def campaign_for_product(product_name) -> str:
+def campaign_for_product(product_name, market=None) -> str:
     """The campaign a brief files this product under, or "".
 
     A blank Campaign field is not a different product -- it is the same
@@ -219,10 +260,30 @@ def campaign_for_product(product_name) -> str:
     chosen from a brief goes to default_templates/<campaign>/<product>/,
     so a person can edit one set and restore the other and never see why.
     Looked up from briefs/, cached against the folder's timestamps.
+
+    `market` breaks a tie. HydroBoost Sports Drink is in both Winter Glow
+    2026 and Summer Refresh 2026, so its name alone has no answer -- but a
+    saved batch also remembers the market it ran for, and Summer Refresh
+    is the only one targeting Mexico. Without it the product name alone
+    picked whichever brief file sorted first, which reopened a Mexico
+    batch pointing at the other campaign's templates.
     """
     product = (product_name or "").strip().lower()
     if not product:
         return ""
+    region = (market or "").strip().lower()
+    if region:
+        matches = []
+        for choice in _brief_choices():
+            if (choice.get("product_name") or "").strip().lower() != product:
+                continue
+            if (choice.get("market") or "").strip().lower() != region:
+                continue
+            campaign = (choice.get("campaign") or "").strip()
+            if campaign and campaign not in matches:
+                matches.append(campaign)
+        if len(matches) == 1:
+            return matches[0]
     try:
         stamp = tuple(sorted(
             (p.name, p.stat().st_mtime_ns) for p in BRIEFS_DIR.iterdir()
@@ -232,12 +293,17 @@ def campaign_for_product(product_name) -> str:
         return ""
     table = _brief_campaign_cache.get(stamp)
     if table is None:
-        table = {}
-        for choice in _brief_choices():
-            name = (choice.get("product_name") or "").strip().lower()
-            campaign = (choice.get("campaign") or "").strip()
-            if name and campaign and name not in table:
-                table[name] = campaign
+        # Ambiguous products are left out rather than resolved to
+        # whichever brief file sorts first. This feeds the template
+        # folder (see _campaign_folder_parts), so a wrong answer here
+        # edits one campaign's templates while the person thinks they
+        # are editing the other's -- the exact failure this fallback
+        # exists to prevent.
+        table = {
+            name: campaigns[0]
+            for name, campaigns in brief_campaigns_by_product().items()
+            if len(campaigns) == 1
+        }
         _brief_campaign_cache.clear()
         _brief_campaign_cache[stamp] = table
     return table.get(product, "")
@@ -380,6 +446,14 @@ def _content_psd_layer_images(psd_path) -> dict:
 # Plain fields captured into form_state.json for /edit/<job_id>. The multi-value "sizes"
 # checkboxes need request.form.getlist(), and the checkboxes below are stored as booleans.
 EDIT_TEXT_FIELD_NAMES = (
+    # campaign_name belongs here with the rest of the brief. It was
+    # missing, so every run wrote a form_state.json without it: the batch
+    # named its files and its template folder after the campaign, and
+    # then forgot which one it was. Reopening through /edit handed back a
+    # blank Campaign, which _fields_with_campaign() has been guessing at
+    # from the product name ever since -- a guess that is wrong whenever
+    # two briefs share a product.
+    "campaign_name",
     "product_name", "market", "audience", "campaign_message",
     "brand_color_1", "brand_color_2", "brand_color_3",
     "ai_hero_prompt", "ai_hero_provider",
@@ -2439,7 +2513,9 @@ def _fields_with_campaign(fields: dict) -> dict:
     """
     fields = dict(fields or {})
     if not (fields.get("campaign_name") or "").strip():
-        known = campaign_for_product(fields.get("product_name"))
+        # The market too: it is saved alongside, and it is what tells a
+        # product that two briefs claim which of them this batch was.
+        known = campaign_for_product(fields.get("product_name"), fields.get("market"))
         if known:
             fields["campaign_name"] = known
     return fields
@@ -2883,6 +2959,7 @@ def _inject_settings():
         "backup_zip_sizes": backup_zip_sizes(),
         "template_sizes_status": template_sizes_status,
         "brief_campaign_by_product": brief_campaign_by_product(),
+        "brief_campaigns_by_product": brief_campaigns_by_product(),
         "default_campaign_name": default_campaign_name(),
         "market_copy_languages": market_copy_languages(),
         "ideogram_key": _ideogram_key_status(),
@@ -3206,6 +3283,146 @@ def forget_remembered_form(keep_from=None) -> bool:
             new_prefs["products"] = products
     _save_preferences(new_prefs)
     return had_anything
+
+
+def _remove_product_from_briefs(campaign: str, product: str) -> str:
+    """Take a product out of its campaign's brief, and the brief with it
+    when that was the last one. Returns a note, or "" if nothing changed."""
+    path = _brief_file_for_campaign(campaign)
+    if path is None:
+        return ""
+    try:
+        if path.suffix.lower() in (".yaml", ".yml"):
+            from ruamel.yaml import YAML
+
+            yaml = YAML()
+            yaml.preserve_quotes = True
+            with open(path, encoding="utf-8") as handle:
+                data = yaml.load(handle)
+        else:
+            yaml = None
+            data = json.loads(path.read_text(encoding="utf-8"))
+        products = (data.get("campaign") or {}).get("products") or []
+        kept = [p for p in products if str(p.get("name") or "").strip().lower() != product.lower()]
+        if len(kept) == len(products):
+            return ""
+        if not kept:
+            # Nothing left to describe: the brief goes where the
+            # templates go, recoverable rather than erased.
+            grave = _grave_dir() / path.name
+            shutil.move(str(path), str(grave))
+            _brief_campaign_cache.clear()
+            return f"briefs/{path.name} held only {product}, so it moved to _to_delete/ too."
+        data["campaign"]["products"] = kept
+        spare = path.with_suffix(path.suffix + ".tmp")
+        if yaml is not None:
+            with open(spare, "w", encoding="utf-8") as handle:
+                yaml.dump(data, handle)
+        else:
+            spare.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        spare.replace(path)
+        _brief_campaign_cache.clear()
+        return f"{product} removed from briefs/{path.name}."
+    except Exception as exc:  # noqa: BLE001
+        return f"Couldn't update briefs/{path.name}: {type(exc).__name__}: {exc}"
+
+
+def _grave_dir():
+    """_to_delete/, made on demand. Gitignored, and the one place this
+    app puts things it is told to get rid of -- nothing is erased."""
+    grave = BASE_DIR / "_to_delete"
+    grave.mkdir(parents=True, exist_ok=True)
+    return grave
+
+
+@app.route("/delete-campaign", methods=["POST"])
+def delete_campaign():
+    """Remove one product-in-campaign: its templates, its brief entry and
+    its remembered form.
+
+    A card is one product inside one campaign, so this deletes that and
+    not every product sharing the campaign. Templates are MOVED to
+    _to_delete/, never erased: they are the one thing here a person makes
+    by hand, and _template_backups/ only keeps copies of files this app
+    overwrote, not ones it removed.
+
+    The remembered form goes too. Leaving it behind is what brings a
+    deleted card back on the next page load.
+    """
+    payload = request.get_json(silent=True) or {}
+    product = (payload.get("product_name") or "").strip()
+    campaign = (payload.get("campaign_name") or "").strip()
+    if not product:
+        return jsonify({"error": "no product to remove"}), 400
+
+    notes = []
+    folder = DEFAULT_TEMPLATES_DIR.joinpath(*_campaign_folder_parts(product, campaign))
+    if folder.is_dir() and folder != DEFAULT_TEMPLATES_DIR:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        label = "-".join(part for part in (campaign, product) if part) or product
+        grave = _grave_dir() / f"{_slugify_for_filename(label) or 'campaign'}-{stamp}"
+        try:
+            shutil.move(str(folder), str(grave))
+            notes.append(f"templates moved to _to_delete/{grave.name}")
+            # An emptied campaign folder is clutter, not data.
+            parent = folder.parent
+            if parent != DEFAULT_TEMPLATES_DIR and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError as exc:
+            return jsonify({"error": f"couldn't move the templates: {exc}"}), 500
+
+    brief_note = _remove_product_from_briefs(campaign, product)
+    if brief_note:
+        notes.append(brief_note)
+
+    # Every session slot pointing at this product-in-campaign is stale
+    # now. The index only ever gained slots -- generate() files a job
+    # under whatever campaign_slot its card posted, and removing a card
+    # renumbered the page without touching what was recorded -- so a slot
+    # outlived its card and later showed up as a second, identical card
+    # on the Edit page. Two slots for one product in one SESSION are
+    # legitimate (two cards generated side by side); a slot for a product
+    # that no longer exists is not.
+    pruned = 0
+    sessions = JOBS_DIR / "_sessions"
+    if sessions.is_dir():
+        for index_path in sessions.glob("*.json"):
+            try:
+                index = json.loads(index_path.read_text())
+                slots = index.get("slots") or {}
+                keep = {}
+                for slot_key, slot_job in slots.items():
+                    state = JOBS_DIR / str(slot_job) / "form_state.json"
+                    try:
+                        f = json.loads(state.read_text()).get("fields") or {}
+                    except (OSError, ValueError):
+                        keep[slot_key] = slot_job
+                        continue
+                    same = (
+                        (f.get("product_name") or "").strip().lower() == product.lower()
+                        and (f.get("campaign_name") or "").strip().lower() == campaign.lower()
+                    )
+                    if same:
+                        pruned += 1
+                    else:
+                        keep[slot_key] = slot_job
+                if len(keep) != len(slots):
+                    index["slots"] = keep
+                    index_path.write_text(json.dumps(index))
+            except (OSError, ValueError):
+                continue
+    if pruned:
+        notes.append(f"{pruned} session slot{'s' if pruned != 1 else ''} cleared")
+
+    prefs = _load_preferences()
+    products = _product_memories(prefs)
+    key = _product_memory_key(product, campaign)
+    if products.pop(key, None) is not None:
+        prefs["products"] = products
+        _save_preferences(prefs)
+        notes.append("remembered form cleared")
+
+    return jsonify({"ok": True, "notes": notes})
 
 
 @app.route("/reset-size", methods=["POST"])
@@ -3731,6 +3948,153 @@ def index():
     )
 
 
+def _brief_file_for_campaign(campaign_name):
+    """The brief file that already holds this campaign, or None."""
+    wanted = (campaign_name or "").strip().lower()
+    if not wanted:
+        return None
+    try:
+        files = sorted(p for p in BRIEFS_DIR.iterdir() if p.suffix.lower() in (".json", ".yaml", ".yml"))
+    except OSError:
+        return None
+    # Read the name, do not validate the brief. load_brief() enforces the
+    # whole schema, so a file it rejects becomes invisible to the code
+    # that maintains it -- and removing the second-to-last product from a
+    # campaign made its brief unloadable, which meant the last product
+    # could never be removed and the brief was orphaned.
+    for path in files:
+        try:
+            if path.suffix.lower() in (".yaml", ".yml"):
+                import yaml as _yaml
+
+                data = _yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+            else:
+                data = json.loads(path.read_text(encoding="utf-8"))
+            name = ((data.get("campaign") or data).get("name") or "").strip().lower()
+            if name == wanted:
+                return path
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def record_run_in_briefs(fields: dict) -> str:
+    """Write this run's campaign and product back into briefs/.
+
+    A campaign typed into the form is otherwise invisible to the brief
+    picker, so the next page load offers only what was in the files. This
+    puts it there: the campaign's own brief gains the product, and a
+    campaign no file knows yet gets one of its own.
+
+    Returns a short note for the results page, or "" when nothing needed
+    writing. Never raises -- a run must not fail because its brief could
+    not be updated.
+    """
+    campaign = (fields.get("campaign_name") or "").strip()
+    product = (fields.get("product_name") or "").strip()
+    if not campaign or not product:
+        return ""
+
+    entry = {"name": product, "slug": _slugify_for_filename(product) or product.lower()}
+    if (fields.get("upload_ai_prompt") or "").strip():
+        entry["prompt_hint"] = fields["upload_ai_prompt"].strip()
+    if (fields.get("upload_ai_headline") or "").strip():
+        entry["headline"] = fields["upload_ai_headline"].strip()
+
+    colors = [
+        (fields.get(f"brand_color_{i}") or "").strip().upper()
+        for i in (1, 2, 3)
+        if fields.get(f"brand_color_{i}_enabled") and (fields.get(f"brand_color_{i}") or "").strip()
+    ]
+    path = _brief_file_for_campaign(campaign)
+    if path is not None and path.suffix.lower() in (".yaml", ".yml"):
+        return _record_in_yaml_brief(path, campaign, product, entry)
+    try:
+        if path is None:
+            path = BRIEFS_DIR / f"{_slugify_for_filename(campaign) or 'campaign'}.json"
+            if path.exists():
+                return ""
+            data = {"campaign": {
+                "name": campaign,
+                "target_region": (fields.get("market") or "").strip(),
+                "target_audience": (fields.get("audience") or "").strip(),
+                "message": (fields.get("campaign_message") or "").strip(),
+                "brand": {"logo": "assets/brand/logo.png", "colors": colors},
+                "products": [entry],
+            }}
+            written = f"Campaign written to briefs/{path.name} -- it is in the brief list now."
+        else:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            products = data.setdefault("campaign", {}).setdefault("products", [])
+            for i, existing in enumerate(products):
+                if (existing.get("name") or "").strip().lower() == product.lower():
+                    merged = dict(existing)
+                    merged.update(entry)
+                    if merged == existing:
+                        return ""       # nothing changed; leave the file alone
+                    products[i] = merged
+                    written = f"{product} updated in briefs/{path.name}."
+                    break
+            else:
+                products.append(entry)
+                written = f"{product} added to \"{campaign}\" in briefs/{path.name}."
+        # Written beside the target and moved into place, so a failure
+        # halfway through cannot leave a half-written brief behind.
+        spare = path.with_suffix(path.suffix + ".tmp")
+        spare.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        spare.replace(path)
+        _brief_campaign_cache.clear()
+        return written
+    except Exception as exc:  # noqa: BLE001
+        return f"Couldn't record this campaign in briefs/: {type(exc).__name__}: {exc}"
+
+
+def _record_in_yaml_brief(path, campaign: str, product: str, entry: dict) -> str:
+    """Add a product to a YAML brief without losing the file's comments.
+
+    PyYAML parses a brief fine but dumping it back writes a fresh
+    document: comments gone, key order gone, block scalars reflowed.
+    sample_campaign.yaml is mostly comments documenting the optional
+    schema, so that trade is not worth a convenience. ruamel's
+    round-trip mode keeps all of it.
+    """
+    try:
+        from ruamel.yaml import YAML
+    except ImportError:
+        return (
+            f'"{campaign}" is described in {path.name}, and ruamel.yaml is not installed, '
+            f"so it was left alone. Add {product} to it by hand, or pip install ruamel.yaml."
+        )
+    try:
+        yaml = YAML()
+        yaml.preserve_quotes = True
+        with open(path, encoding="utf-8") as handle:
+            data = yaml.load(handle)
+        products = data.setdefault("campaign", {}).setdefault("products", [])
+        for i, existing in enumerate(products):
+            if str(existing.get("name") or "").strip().lower() == product.lower():
+                changed = False
+                for field, value in entry.items():
+                    if existing.get(field) != value:
+                        existing[field] = value
+                        changed = True
+                if not changed:
+                    return ""
+                written = f"{product} updated in briefs/{path.name}."
+                break
+        else:
+            products.append(entry)
+            written = f'{product} added to "{campaign}" in briefs/{path.name}.'
+        spare = path.with_suffix(path.suffix + ".tmp")
+        with open(spare, "w", encoding="utf-8") as handle:
+            yaml.dump(data, handle)
+        spare.replace(path)
+        _brief_campaign_cache.clear()
+        return written
+    except Exception as exc:  # noqa: BLE001
+        return f"Couldn't update briefs/{path.name}: {type(exc).__name__}: {exc}"
+
+
 def _brief_prefill(choice: dict) -> dict:
     """A card's fields from one brief entry: the campaign brief, the
     brand colours (ticked), the copy language and the AI prompt hint."""
@@ -3793,9 +4157,44 @@ def _remembered_campaign_cards() -> list:
         # Remembered from before the field was required: fill it from the
         # briefs so the card opens naming the campaign it actually uses.
         if not (prefill.get("campaign_name") or "").strip():
-            from_brief = campaign_for_product(prefill.get("product_name"))
+            from_brief = campaign_for_product(
+                prefill.get("product_name"), prefill.get("market")
+            )
             if from_brief:
                 prefill["campaign_name"] = from_brief
+        # Filling the campaign in can turn this key into one already on
+        # the page. Memories written while the campaign was never saved
+        # are filed under the bare product name ("HydroBoost Sports
+        # Drink"), and resolving that to Winter Glow 2026 makes it the
+        # same card as "Winter Glow 2026/HydroBoost Sports Drink" -- two
+        # rows a person cannot tell apart. It is one product in one
+        # campaign, so it is one card.
+        resolved = _product_memory_key(
+            prefill.get("product_name"), prefill.get("campaign_name")
+        )
+        if resolved and resolved != key and resolved in seen:
+            # Merge, not discard. This memory is the same product in the
+            # same campaign as a card already built -- it was just filed
+            # under the bare product name, from before the campaign was
+            # saved. Its remembered files and fields are the only copy,
+            # so dropping it loses the hero and copy of that run.
+            for built in cards:
+                built_fields = built.get("prefill") or {}
+                if _product_memory_key(
+                    built_fields.get("product_name"), built_fields.get("campaign_name")
+                ) != resolved:
+                    continue
+                for field, value in prefill.items():
+                    if not str(built_fields.get(field) or "").strip():
+                        built_fields[field] = value
+                built["prefill"] = built_fields
+                if not built.get("prefill_files"):
+                    built["prefill_files"] = files
+                if not built.get("carry_job_id"):
+                    built["carry_job_id"] = job_id
+                break
+            continue
+        seen.add(resolved)
         cards.append({
             "prefill": prefill,
             "prefill_files": files,
@@ -3808,7 +4207,17 @@ def _remembered_campaign_cards() -> list:
     prefs = _load_preferences()
     top_key = _product_memory_key(prefs.get("product_name"), prefs.get("campaign_name"))
     top_prefill = _remembered_prefill()
-    if not cards or (top_key not in seen and (top_prefill or prefs.get("last_job_id"))):
+    # The top-level memory earns a card only when it names a product.
+    #
+    # `top_key` is its folder path, and that sanitises to "" for a name
+    # made only of punctuation as well as for no name at all -- and "" is
+    # never in `seen`, so both produced an extra card. They are not the
+    # same thing. A run that named something gets its settings back; a
+    # memory naming nothing has nothing to show, and appearing beside the
+    # brief cards it just reads as a campaign that came from somewhere.
+    # "Add campaign" is how you start a new one.
+    top_named = bool((prefs.get("product_name") or "").strip())
+    if not cards or (top_named and top_key not in seen and (top_prefill or prefs.get("last_job_id"))):
         job_id, files = _remembered_files()
         cards.append({
             "prefill": top_prefill,
@@ -4006,6 +4415,7 @@ def _keep_submission(message: str):
             campaign_slot = int((request.form.get("campaign_slot") or "1").strip())
         except ValueError:
             campaign_slot = 1
+        _refuse_the_real_jobs_dir_under_test()
         (draft_dir / "form_state.json").write_text(
             json.dumps(
                 {
@@ -4311,6 +4721,7 @@ def generate():
         return _keep_submission(f"Couldn't parse the sizes you entered: {exc}")
 
     job_id = uuid.uuid4().hex
+    _refuse_the_real_jobs_dir_under_test()
     job_dir = JOBS_DIR / job_id
     job_dir.mkdir(parents=True, exist_ok=True)
     uploads_dir = job_dir / "uploads"
@@ -7481,6 +7892,13 @@ def generate():
             form_state_files[field_name] = saved_path.relative_to(uploads_dir).as_posix()
         except ValueError:
             continue
+    # The campaign this run used goes back into briefs/, so a campaign
+    # typed into the form is offered by the brief picker next time
+    # instead of existing only in this job's saved fields.
+    brief_note = record_run_in_briefs(form_state_fields)
+    if brief_note:
+        background_notes.append(brief_note)
+
     # Which multi-campaign page and card this job came from, for grouping on Edit. A missing or
     # blank session_id just means this job isn't grouped, never an error.
     session_id = (request.form.get("session_id") or "").strip() or uuid.uuid4().hex

@@ -268,6 +268,25 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertIn(b"Upload AI Image", r.data)
         self.assertNotIn(b"manual-creative-box", r.data)
 
+    def test_changing_the_provider_says_which_switches_it_turned_off(self):
+        """Switching to Pollinations clears "whole ad" and "put type in
+        the picture" -- and hides them, so the tick simply vanishes.
+
+        Silently: the next run then makes a plain backdrop and the person
+        who ticked it has no way to know why. The note has to live
+        OUTSIDE data-role="ideogram-only", or it is hidden in exactly the
+        state it exists to explain."""
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertIn('data-role="provider-cleared-note"', page)
+        # Not inside the block that folds away with Pollinations.
+        note_at = page.index('data-role="provider-cleared-note"')
+        block_at = page.index('<div data-role="ideogram-only">')
+        self.assertLess(note_at, block_at)
+        # Announced only for a switch that was really on, and only when a
+        # person changed the provider -- not on page load.
+        self.assertIn("if (userChanged && cleared.length)", page)
+        self.assertIn("fullAdBox.checked", page)
+
     def test_header_and_description_fill_each_other_and_fall_back_to_the_message(self):
         """A blank Header or Description renders an empty layer.
 
@@ -3412,6 +3431,15 @@ class PaidProviderTest(unittest.TestCase):
 
         _webapp.app.config["TESTING"] = True
         _webapp.app.config["SECRET_KEY"] = _webapp.app.config.get("SECRET_KEY") or "test"
+        # A rejected post saves a draft, so JOBS_DIR has to be a temp
+        # folder: without this the draft lands in the user's real
+        # outputs/web looking like a batch they made.
+        tmp = Path(tempfile.mkdtemp())
+        original_jobs = _webapp.JOBS_DIR
+        _webapp.JOBS_DIR = tmp / "jobs"
+        _webapp.JOBS_DIR.mkdir(parents=True)
+        self.addCleanup(setattr, _webapp, "JOBS_DIR", original_jobs)
+        self.addCleanup(shutil.rmtree, tmp, True)
         client = _webapp.app.test_client()
         data = {
             "product_name": "HydroBoost", "market": "UK", "audience": "runners",

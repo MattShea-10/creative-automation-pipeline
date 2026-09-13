@@ -59,7 +59,16 @@ MIN_LETTERS = 2
 # MIN_HEIGHT_FRACTION: a "word" a few pixels tall in a 2000px image is
 # texture being over-read. Anything a viewer would actually see as text
 # occupies a meaningful slice of the frame.
-MIN_HEIGHT_FRACTION = 0.012
+# 0.012 was calibrated against Tesseract, whose box is roughly the glyph.
+# The scene-text detector's box is not: it pads, so a 9px font in a
+# 2000x1200 frame comes back 26px tall -- nearly 3x the letters, and over
+# the 14.4px this used to allow. Lettering no viewer could see was being
+# flagged at 96% confidence, and each flag is a paid regeneration.
+# 0.03 puts the threshold back where it was meant to sit in the picture:
+# 36px of box in that frame, so the 26px reading is ignored while a 90px
+# headline (a ~110px box) is not. Padding is roughly additive rather than
+# proportional, so this filters small text harder than large.
+MIN_HEIGHT_FRACTION = 0.03
 
 _LETTERS = re.compile(r"[A-Za-z]")
 

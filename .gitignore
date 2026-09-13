@@ -36,3 +36,6 @@ image_library/
 _test_log.txt
 _ocr_check.txt
 _ocr_check/
+
+# Diagnostic screenshots, not source.
+Claude outputs/

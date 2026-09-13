@@ -44,9 +44,13 @@ def load_brief(path: str) -> CampaignBrief:
         raise ValueError(f"Campaign brief is missing required field(s): {missing}")
 
     products_raw = data["products"]
-    if not isinstance(products_raw, list) or len(products_raw) < 2:
+    # One is enough. The web app writes briefs now, and a campaign starts
+    # life with the single product that was just generated -- held to a
+    # minimum of two, that brief fails to load, so the campaign it was
+    # meant to record never appears in the picker at all.
+    if not isinstance(products_raw, list) or len(products_raw) < 1:
         raise ValueError(
-            "Campaign brief must include a 'products' list with at least two products."
+            "Campaign brief must include a 'products' list with at least one product."
         )
 
     products = []

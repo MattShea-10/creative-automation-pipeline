@@ -168,6 +168,8 @@
                this product's templates to a second folder of their own, which
                is invisible until you restore one set and edit the other. #}
             <input type="text" id="campaign_name" name="campaign_name" placeholder="e.g. Winter Glow 2026" value="{{ prefill.get('campaign_name', '') }}" required>
+            <div class="hint" data-role="campaign-ambiguous" hidden
+                 style="margin-top: 0.25rem; color: var(--warn, #fbbf24);"></div>
           </label>
           <label for="product_name" style="font-weight: 400; flex: 1 1 200px;">
             <span style="white-space: nowrap;">Product name</span>
@@ -332,6 +334,13 @@
                 </select>
               </label>
             </div>
+            {# Switching to Pollinations clears "whole ad" and "put type in
+               the picture", and hides the switches along with them -- so
+               without this the tick just vanishes and the next run quietly
+               makes a plain backdrop. Outside data-role="ideogram-only" on
+               purpose: it has to be visible in the state it describes. #}
+            <div class="hint" data-role="provider-cleared-note" hidden
+                 style="margin-top: 0.35rem; color: var(--warn, #fbbf24);"></div>
           {# Ideogram's speed/quality tier lives with the provider it
              belongs to, and folds away when Pollinations is chosen. #}
           <div data-role="ideogram-only">
@@ -1837,12 +1846,37 @@
       // overwritten. Leaving it empty is what sent a product's templates
       // to a second folder nobody knew about.
       var briefCampaigns = {{ brief_campaign_by_product | tojson }};
+      // Every campaign each product appears in, so a product two briefs
+      // claim can be named as ambiguous rather than silently resolved.
+      var briefCampaignsAll = {{ brief_campaigns_by_product | tojson }};
       var productField = root.querySelector('[name="product_name"]');
       var campaignField = root.querySelector('[name="campaign_name"]');
+      var campaignHint = root.querySelector('[data-role="campaign-ambiguous"]');
       if (productField && campaignField) {
         var syncCampaignToProduct = function () {
-          if (campaignField.value.trim()) return;
-          var known = briefCampaigns[productField.value.trim().toLowerCase()];
+          var product = productField.value.trim().toLowerCase();
+          var all = briefCampaignsAll[product] || [];
+          // Whatever is already in the field wins. It is the answer a
+          // person gave, and it decides which template folder the run
+          // uses; nothing derived should overwrite it.
+          if (campaignField.value.trim()) {
+            if (campaignHint) campaignHint.hidden = true;
+            return;
+          }
+          // Blank and the product is in two campaigns: say so and fill
+          // nothing. Guessing points the run at the other campaign's
+          // templates, which is invisible until a restore does nothing.
+          if (all.length > 1) {
+            if (campaignHint) {
+              campaignHint.textContent =
+                productField.value.trim() + " is in " + all.length + " campaigns (" +
+                all.join(", ") + "). Pick one, or choose the product from the brief list above.";
+              campaignHint.hidden = false;
+            }
+            return;
+          }
+          if (campaignHint) campaignHint.hidden = true;
+          var known = briefCampaigns[product];
           if (known) campaignField.value = known;
         };
         productField.addEventListener("change", syncCampaignToProduct);
@@ -1886,6 +1920,7 @@
       var ideogramOnly = root.querySelectorAll('[data-role="ideogram-only"]');
       var fullAdBox = root.querySelector('[name="upload_ai_full_ad"]');
       var allowTextBox = root.querySelector('[name="upload_ai_allow_text"]');
+      var clearedNote = root.querySelector('[data-role="provider-cleared-note"]');
       if (providerSelect && ideogramOnly.length) {
         var syncProvider = function (userChanged) {
           var isIdeogram = providerSelect.value === "ideogram";
@@ -1894,9 +1929,23 @@
           // Ideogram no longer ticks "whole ad" by itself: that tick is
           // nine paid images instead of one, and it was going on unseen
           // when the provider changed -- a $0.27 run for a backdrop.
+          var cleared = [];
           if (!isIdeogram) {
-            if (fullAdBox) fullAdBox.checked = false;
-            if (allowTextBox) allowTextBox.checked = false;
+            if (fullAdBox && fullAdBox.checked) { fullAdBox.checked = false; cleared.push("Generate the whole ad"); }
+            if (allowTextBox && allowTextBox.checked) { allowTextBox.checked = false; cleared.push("Put type in the picture"); }
+          }
+          // Only ever say it about a switch that was really on and is now
+          // off, and only when a person changed the provider -- announcing
+          // it on page load would be noise about something nobody did.
+          if (clearedNote) {
+            if (userChanged && cleared.length) {
+              clearedNote.textContent =
+                "Turned off with the provider change: " + cleared.join(" and ") +
+                ". Pollinations can't lay out an ad or set type -- switch back to Ideogram to use them.";
+              clearedNote.hidden = false;
+            } else if (isIdeogram || !cleared.length) {
+              clearedNote.hidden = true;
+            }
           }
         };
         providerSelect.addEventListener("change", function () { syncProvider(true); });
@@ -2262,12 +2311,16 @@
         var product = card.querySelector('[name="product_name"]');
         var name = product ? product.value.trim() : "";
         var title = card.querySelector(".campaign-card-title");
+        // A card with no product yet is the blank one you start a new
+        // campaign in. "Campaign 6" made it read as a sixth campaign
+        // that came from somewhere; it came from nowhere, it is empty.
+        var blankLabel = "New campaign";
         if (title) {
-          title.dataset.fallback = "Campaign " + index;
-          title.textContent = name || title.dataset.fallback;
+          title.dataset.fallback = blankLabel;
+          title.textContent = name || blankLabel;
         }
         var bar = card.querySelector('[data-role="card-name"]');
-        if (bar) bar.textContent = name || ("Campaign " + index);
+        if (bar) bar.textContent = name || blankLabel;
         var campaign = card.querySelector('[name="campaign_name"]');
         var barCampaign = card.querySelector('[data-role="card-campaign"]');
         if (barCampaign) barCampaign.textContent = campaign ? campaign.value.trim() : "";
@@ -2334,8 +2387,38 @@
           // open/closed.
           event.preventDefault();
           event.stopPropagation();
-          card.remove();
-          renumberCampaigns();
+          var product = (card.querySelector('[name="product_name"]') || {}).value || "";
+          var campaign = (card.querySelector('[name="campaign_name"]') || {}).value || "";
+          product = product.trim(); campaign = campaign.trim();
+          // A card with no product yet has nothing on disk behind it, so
+          // it just goes -- nothing to confirm and nothing to delete.
+          if (!product) { card.remove(); renumberCampaigns(); return; }
+          // Named, so this deletes files. Say which, before it happens:
+          // this button used to be free, and one that quietly removes a
+          // hand-edited template set is a different button.
+          var where = campaign ? '"' + product + '" in ' + campaign : '"' + product + '"';
+          if (!window.confirm(
+                "Remove " + where + "?\n\n" +
+                "Its saved templates move to _to_delete/ (recoverable), it comes out of the " +
+                "brief file, and its remembered form is cleared.")) {
+            return;
+          }
+          removeBtn.disabled = true;
+          removeBtn.textContent = "Removing\u2026";
+          fetch("{{ url_for('delete_campaign') }}", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ product_name: product, campaign_name: campaign })
+          }).then(function (r) { return r.json().then(function (d) {
+            if (!r.ok) throw new Error(d.error || r.status); return d;
+          }); }).then(function () {
+            card.remove();
+            renumberCampaigns();
+          }).catch(function (err) {
+            removeBtn.disabled = false;
+            removeBtn.textContent = "Remove";
+            window.alert("Couldn't remove it: " + err.message);
+          });
         });
         var titleEl = card.querySelector(".campaign-card-title");
         if (titleEl && titleEl.parentNode) titleEl.parentNode.appendChild(removeBtn);

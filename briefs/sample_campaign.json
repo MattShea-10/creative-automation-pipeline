@@ -6,19 +6,22 @@
     "message": "Glow Through Winter.",
     "brand": {
       "logo": "assets/brand/logo.png",
-      "colors": ["#0057B8", "#FFD100"]
+      "colors": [
+        "#0057B8",
+        "#FFD100"
+      ]
     },
     "products": [
       {
         "name": "HydroBoost Sports Drink",
-        "slug": "hydroboost",
+        "slug": "HydroBoost_Sports_Drink",
         "prompt_hint": "Professional studio product photo of a chilled blue sports drink bottle, winter theme, clean bright background"
       },
       {
         "name": "FreshGlow Body Wash",
         "slug": "freshglow",
         "prompt_hint": "Professional studio product photo of a green body wash bottle, winter theme, clean bright background"
-      },	
+      },
       {
         "name": "PureShine Shampoo",
         "slug": "pureshine",
