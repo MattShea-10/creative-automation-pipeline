@@ -47,6 +47,13 @@ for optional in (
     # The scene-text detector (src/text_check.py): its ONNX models and
     # config ship inside the package as data files.
     "rapidocr_onnxruntime", "pyclipper", "shapely", "yaml",
+    # Round-trip YAML, so a run can add its product to a .yaml brief
+    # without stripping the file's comments. Imported inside the
+    # function that needs it and guarded by ImportError, so a build
+    # without it still runs -- the YAML brief is just left alone. Named
+    # here because ruamel is a namespace package and PyInstaller does
+    # not reliably follow it from a deferred import.
+    "ruamel", "ruamel.yaml",
 ):
     try:
         hiddenimports += collect_submodules(optional)
