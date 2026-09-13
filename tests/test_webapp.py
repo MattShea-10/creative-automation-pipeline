@@ -287,6 +287,10 @@ class WebAppSmokeTest(unittest.TestCase):
         self.assertIn("if (userChanged && cleared.length)", page)
         self.assertIn("fullAdBox.checked", page)
 
+    def test_the_form_does_not_claim_to_be_editing_anything(self):
+        page = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("editing-banner", page)
+
     def test_header_and_description_fill_each_other_and_fall_back_to_the_message(self):
         """A blank Header or Description renders an empty layer.
 
@@ -370,6 +374,15 @@ class WebAppSmokeTest(unittest.TestCase):
         edit_page = self.client.get(f"/edit/{job_id}")
         self.assertEqual(edit_page.status_code, 200)
         self.assertIn(b'data-role="reset-product"', edit_page.data)
+        # And it says it is an Edit. This page is the form's own
+        # template, heading and brief picker included, so an Edit
+        # carrying one card reads as the form having lost the others --
+        # the banner is the only thing separating them once a card is
+        # folded shut.
+        page = edit_page.get_data(as_text=True)
+        self.assertIn("editing-banner", page)
+        self.assertIn("Editing a batch", page)
+        self.assertIn("Back to the form", page)
 
     def test_generate_renders_default_sizes_and_zip(self):
         data = {

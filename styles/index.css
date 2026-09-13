@@ -260,4 +260,13 @@
     .create-campaign-btn {
       @apply inline-block bg-transparent text-slate-400 text-[0.85rem] font-semibold uppercase tracking-wide border border-slate-700 rounded-md px-[0.9rem] py-[0.45rem] cursor-pointer hover:bg-slate-800 hover:text-slate-100 transition-colors;
     }
-  
+    /* The Edit page wears the same heading and picker as the form, so
+       it says which it is. Amber rather than the page's blue: this is a
+       state you are in, not a control. */
+    .editing-banner {
+      @apply flex flex-wrap items-baseline gap-x-3 gap-y-1 rounded-lg mb-6 px-4 py-3;
+      @apply border border-amber-700 bg-amber-950/40 text-[0.88rem] text-amber-200;
+    }
+    .editing-banner strong { @apply font-bold text-amber-100; }
+    .editing-banner span { @apply text-amber-200/80; }
+    .editing-banner a { @apply ml-auto font-semibold text-amber-200 underline; }

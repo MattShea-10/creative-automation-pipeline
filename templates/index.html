@@ -35,6 +35,20 @@
       compliance checks, use the CLI instead (<code>python -m src.main --brief ...</code>).
     </p>
 
+    {# An Edit page is this same template, so without saying so it looks
+       like the form -- one that has mysteriously lost every campaign
+       except the batch's own. Say which batch, how many cards belong to
+       it, and how to get back. #}
+    {% if editing_job_id %}
+      <div class="editing-banner">
+        <strong>Editing a batch</strong>
+        <span>{{ editing_count }} campaign{{ '' if editing_count == 1 else 's' }} from
+        this run{% if editing_count == 1 %} &mdash; the form has your others{% endif %}.
+        Generating here replaces nothing: each card is a new run.</span>
+        <a href="{{ url_for('index') }}">Back to the form</a>
+      </div>
+    {% endif %}
+
     <div style="text-align: right; margin-bottom: 1.5rem;">
       <span style="display: inline-flex; gap: 0.5rem; flex: none;">
         <button type="button" class="create-campaign-btn" data-role="collapse-all" title="Fold every campaign down to its name">Collapse all</button>

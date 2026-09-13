@@ -1,0 +1,19 @@
+[webapp] code build stamp: 2026-09-13 01:26:09 (auto-reload on unless FLASK_RELOAD=0)
+brief choices: 5
+   HydroBoost Sports Drink    Winter Glow 2026       key='Winter Glow 2026/HydroBoost Sports Drink'
+   FreshGlow Body Wash        Winter Glow 2026       key='Winter Glow 2026/FreshGlow Body Wash'
+   PureShine Shampoo          Winter Glow 2026       key='Winter Glow 2026/PureShine Shampoo'
+   HydroBoost Sports Drink    Summer Refresh 2026    key='Summer Refresh 2026/HydroBoost Sports Drink'
+   FreshGlow Body Wash        Summer Refresh 2026    key='Summer Refresh 2026/FreshGlow Body Wash'
+
+remembered product keys: ['FreshGlow Body Wash', 'Winter Glow 2026/PureShine Shampoo', 'PureShine Shampoo', 'HydroBoost Sports Drink', 'Summer Refresh 2026/HydroBoost Sports Drink', 'Winter Glow 2026/FreshGlow Body Wash', 'Winter Glow 2026/HydroBoost Sports Drink']
+top-level product_name: 'HydroBoost Sports Drink'
+
+CARDS BUILT: 5
+  1. HydroBoost Sports Drink    Winter Glow 2026       carry=-
+  2. FreshGlow Body Wash        Winter Glow 2026       carry=-
+  3. PureShine Shampoo          Winter Glow 2026       carry=-
+  4. HydroBoost Sports Drink    Summer Refresh 2026    carry=-
+  5. FreshGlow Body Wash        Summer Refresh 2026    carry=-
+
+cards in the rendered page: 5

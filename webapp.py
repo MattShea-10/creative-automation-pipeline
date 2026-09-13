@@ -4266,6 +4266,13 @@ def edit(job_id):
         video_extensions=VIDEO_EXTENSIONS,
         build_stamp=BUILD_STAMP,
         campaigns=campaigns,
+        # This page and the form are the same template, down to the
+        # heading and the brief picker, and the only thing telling them
+        # apart was a line inside a card -- invisible when the card is
+        # folded. So an Edit showing one card reads as the form having
+        # lost the other four.
+        editing_job_id=job_id,
+        editing_count=len(campaigns),
         session_id=session_id,
         hideable_layers=HIDEABLE_LAYER_NAMES,
         **_page_layer_sets(),
