@@ -40,6 +40,43 @@ def infer_language(target_region: str, explicit_language: str | None = None) -> 
     return REGION_TO_LANGUAGE.get(key, "en")
 
 
+# Google's error pages come back through the translator as ordinary
+# strings, not exceptions -- so a 500 reads as a successful translation.
+# Three campaigns shipped with the headline "ERROR 500 (SERVER ERROR)"
+# and the body "That's an error. There was an error. Please try again
+# later. That's all we know." painted into the creative by the model,
+# and the same text cached against the source phrase so every later run
+# reused it without calling the translator at all.
+_ERROR_PAGE_MARKERS = (
+    "that\u2019s an error",
+    "that's an error",
+    "that\u2019s all we know",
+    "that's all we know",
+    "server error",
+    "error 500",
+    "error 502",
+    "error 503",
+    "<!doctype",
+    "<html",
+)
+
+
+def _looks_like_an_error_page(text: str) -> bool:
+    """Is this an error page wearing a translation's clothes?
+
+    Deliberately a fixed list of markers rather than a guess at what a
+    translation "should" look like: a real translation can be any
+    length, any script, and can legitimately contain the word "error".
+    Two markers together, or one of the unmistakable ones, is the bar.
+    """
+    lowered = (text or "").lower()
+    if "<!doctype" in lowered or "<html" in lowered:
+        return True
+    hits = sum(1 for marker in _ERROR_PAGE_MARKERS if marker in lowered)
+    return hits >= 2
+
+
+
 def localize_message(message: str, language: str) -> tuple[str, bool]:
     """Returns (localized_text, was_translated). Falls back to English on any failure."""
     if language == "en":
@@ -57,8 +94,14 @@ def localize_message(message: str, language: str) -> tuple[str, bool]:
         # the creative and cached as the French for that phrase. Letting
         # Google detect the language actually translates it.
         translated = GoogleTranslator(source="auto", target=language).translate(message)
-        if translated:
+        if translated and not _looks_like_an_error_page(translated):
             return translated, True
+        if translated:
+            print(
+                "[localization] %s: the translator returned an error page, not a "
+                "translation: %r" % (language, translated[:120]),
+                file=sys.stderr,
+            )
     except Exception as exc:
         # Still swallowed -- the caller falls back to English and warns on
         # the results page -- but no longer without trace: the reason a run

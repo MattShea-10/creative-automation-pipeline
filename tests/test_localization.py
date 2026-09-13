@@ -84,5 +84,59 @@ class InferLanguageTest(unittest.TestCase):
         self.assertEqual(infer_language("France", "es"), "es")
 
 
+class ErrorPageIsNotATranslationTest(unittest.TestCase):
+    """Google's 500 page comes back as a string, not an exception.
+
+    So a failed call read as a successful translation: three campaigns
+    shipped with the headline "ERROR 500 (SERVER ERROR)" and the body
+    "That's an error. There was an error. Please try again later. That's
+    all we know." painted into the creative by the model -- and the same
+    text cached against the source phrase, so every later run reused it
+    without calling the translator at all.
+    """
+
+    ERROR_PAGE = (
+        "Error 500 (Server Error)!!1500.That\u2019s an error.There was an error. "
+        "Please try again later.That\u2019s all we know."
+    )
+
+    def test_an_error_page_is_refused_and_the_source_comes_back(self):
+        from unittest import mock
+
+        import src.localization as localization
+
+        class _Translator:
+            def __init__(self, *a, **k): pass
+            def translate(self, text): return ErrorPageIsNotATranslationTest.ERROR_PAGE
+
+        with mock.patch.dict("sys.modules", {"deep_translator": mock.MagicMock(GoogleTranslator=_Translator)}):
+            text, ok = localization.localize_message("Feel the Fresh.", "es")
+        self.assertFalse(ok, "an error page must not report itself as a translation")
+        self.assertEqual(text, "Feel the Fresh.", "the source text comes back untouched")
+
+    def test_a_real_translation_is_still_accepted(self):
+        from unittest import mock
+
+        import src.localization as localization
+
+        class _Translator:
+            def __init__(self, *a, **k): pass
+            def translate(self, text): return "Siente lo fresco."
+
+        with mock.patch.dict("sys.modules", {"deep_translator": mock.MagicMock(GoogleTranslator=_Translator)}):
+            text, ok = localization.localize_message("Feel the Fresh.", "es")
+        self.assertTrue(ok)
+        self.assertEqual(text, "Siente lo fresco.")
+
+    def test_a_translation_that_mentions_an_error_is_not_an_error_page(self):
+        # "error" is a word. A page is several markers together.
+        from src.localization import _looks_like_an_error_page
+
+        self.assertFalse(_looks_like_an_error_page("Une erreur de serveur est survenue"))
+        self.assertFalse(_looks_like_an_error_page("BOISSON RAFRA\u00ceCHISSANTE"))
+        self.assertTrue(_looks_like_an_error_page(self.ERROR_PAGE))
+        self.assertTrue(_looks_like_an_error_page("<!doctype html><title>Error</title>"))
+
+
 if __name__ == "__main__":
     unittest.main()
