@@ -7,6 +7,7 @@ whole thing stay out of the way when OCR isn't installed).
 """
 
 import sys
+import contextlib
 import unittest
 from pathlib import Path
 
@@ -50,6 +51,28 @@ def _image_without_text(size=(1200, 600)):
 
 
 @unittest.skipUnless(ocr_available(), "Tesseract isn't installed")
+
+@contextlib.contextmanager
+def _no_ocr():
+    """Run with nothing able to read text out of a picture.
+
+    find_text() does not consult ocr_available(); it runs the scene-text
+    detector and then Tesseract, so patching ocr_available (which these
+    tests used to do) left the detector running and the "couldn't check"
+    path untested. Both engines have to go.
+    """
+    import src.text_check as text_check
+
+    detector, tesseract = text_check.ensure_text_detector, text_check.tesseract_available
+    text_check.ensure_text_detector = lambda *a, **k: None
+    text_check.tesseract_available = lambda: False
+    try:
+        yield text_check
+    finally:
+        text_check.ensure_text_detector = detector
+        text_check.tesseract_available = tesseract
+
+
 class FindTextTest(unittest.TestCase):
     def test_reads_lettering_baked_into_an_image(self):
         result = find_text(_image_with_text())
@@ -122,8 +145,13 @@ class RetryLoopTest(unittest.TestCase):
         self.assertEqual(attempts, 2)
         self.assertFalse(result.found_text)
         # The retry escalates rather than re-sending the phrasing that
-        # has already demonstrably failed for this prompt.
-        self.assertEqual(provider.prompts, ["marathon runners", "marathon runners"])
+        # has already demonstrably failed for this prompt -- on BOTH
+        # channels. The negative prompt alone did not take the brand off
+        # a volleyball, so NO_TEXT_RETRY_CLAUSE goes into the positive
+        # prompt as well from the second attempt on.
+        self.assertEqual(provider.prompts[0], "marathon runners")
+        self.assertTrue(provider.prompts[1].startswith("marathon runners, "))
+        self.assertIn(webapp.NO_TEXT_RETRY_CLAUSE, provider.prompts[1])
         self.assertNotIn(webapp.NO_TEXT_ESCALATION, provider.negatives[0])
         self.assertIn(webapp.NO_TEXT_ESCALATION, provider.negatives[1])
 
@@ -180,14 +208,39 @@ class RemoveTextTest(unittest.TestCase):
         self.assertEqual(removed, 0)
         self.assertIs(cleaned, huge)  # handed back untouched, not smeared
 
-    def test_a_refusal_warns_instead_of_claiming_a_fix(self):
+    def test_lettering_too_big_to_paint_over_is_refused_by_remove_text(self):
+        # Painting a word out means inventing what was behind it, which
+        # only convinces on small isolated lettering. remove_text() still
+        # refuses anything larger rather than trade readable text for an
+        # obvious smear: a 240px word fills 43% of this frame against a
+        # 6% limit.
+        from src.text_check import MAX_REMOVABLE_AREA_FRACTION, build_text_mask, masked_area_fraction, remove_text
+
+        huge = Image.new("RGB", (900, 300), (230, 230, 230))
+        ImageDraw.Draw(huge).text((10, 40), "SALE", fill=(0, 0, 0), font=_font(240))
+        found = find_text(huge)
+        fraction = masked_area_fraction(huge, build_text_mask(huge, found))
+        self.assertGreater(fraction, MAX_REMOVABLE_AREA_FRACTION)
+        cleaned, removed, reason = remove_text(huge, found)
+        self.assertEqual(removed, 0)
+        self.assertIn("too much to paint out", reason)
+        self.assertEqual(list(cleaned.getdata()), list(huge.getdata()))
+
+    def test_lettering_too_big_to_paint_is_cropped_off_rather_than_refused(self):
+        # _clean_text_out() does NOT stop at that refusal any more. It
+        # calls scrub_text(), which crops to the largest text-free band
+        # when painting would replace the picture, then paints with
+        # force=True -- "whatever it takes short of a new image". So the
+        # caller gets a note saying what was done, not a warning saying
+        # nothing could be. A warning now means something readable
+        # survived scrubbing, which is a different fact.
         huge = Image.new("RGB", (900, 300), (230, 230, 230))
         ImageDraw.Draw(huge).text((10, 40), "SALE", fill=(0, 0, 0), font=_font(240))
         found = find_text(huge)
         _image, note, warning = webapp._clean_text_out(huge, found, "backdrop", 3)
-        self.assertIsNone(note)
-        self.assertIn("wasn't painted out", warning)
-        self.assertIn("3 attempts", warning)
+        self.assertIsNone(warning)
+        self.assertIsNotNone(note)
+        self.assertIn("3 attempts", note)
 
     def test_a_success_is_reported_as_a_note_not_a_warning(self):
         dirty = _image_with_text("SALE", size=(1200, 900))
@@ -227,29 +280,17 @@ class OcrUnavailableTest(unittest.TestCase):
         # must never collapse into each other -- the caller says so on
         # the results page rather than implying a verification that never
         # happened.
-        import src.text_check as text_check
-
-        original = text_check.ocr_available
-        text_check.ocr_available = lambda: False
-        try:
+        with _no_ocr() as text_check:
             result = text_check.find_text(_image_with_text())
-        finally:
-            text_check.ocr_available = original
         self.assertFalse(result.available)
         self.assertFalse(result.found_text)
 
     def test_no_retries_are_spent_when_nothing_can_be_checked(self):
-        import src.text_check as text_check
-
-        original = text_check.ocr_available
-        text_check.ocr_available = lambda: False
-        try:
+        with _no_ocr():
             provider = _ScriptedProvider([_image_with_text(), _image_without_text()])
             _image, _prompt, attempts, result = webapp._generate_text_free(
                 provider, "marathon runners", 600, 300
             )
-        finally:
-            text_check.ocr_available = original
         self.assertEqual(attempts, 1)
         self.assertFalse(result.available)
 

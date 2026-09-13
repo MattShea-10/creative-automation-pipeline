@@ -350,6 +350,12 @@ class PipelineSmokeTest(unittest.TestCase):
         brief.headline = "Campaign-Wide Tagline"
         brief.products[0].headline = "Product-Specific Title"
         # brief.products[1] has no override -- should fall back to brief.headline.
+        # English, so the assertions below compare the headline that was
+        # CHOSEN rather than its Spanish translation. sample_campaign.yaml
+        # targets Mexico, and headlines are localized like any other copy:
+        # this test is about precedence, and it only passed before because
+        # the translator was silently returning its input.
+        brief.language = "en"
         store = LocalAssetStore(input_dir=str(repo_root / "assets"), cache_dir=str(self.cache_dir))
         pipeline = CreativePipeline(
             provider=MockImageProvider(), store=store, output_dir=str(self.output_dir), sizes=[(1080, 1080)]

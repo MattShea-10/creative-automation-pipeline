@@ -1322,11 +1322,11 @@ def _clean_text_out(image, result, label: str, attempts: int):
     it runs before giving up and warning, and why it is worth attempting
     even on a detection that might be a false alarm.
 
-    Painting out means inventing what was behind the words, so it is only
-    convincing on small, isolated lettering; remove_text() refuses
-    anything larger rather than trading readable text for an obvious
-    smear, and this reports that refusal plainly instead of implying the
-    image was fixed.
+    scrub_text() does whatever it takes short of a new image: it paints
+    words out, re-reads, paints again, and crops to the largest
+    text-free band when the lettering covers so much of the frame that
+    painting would replace the picture. So a warning here means
+    something readable SURVIVED all of that, not that nothing was tried.
     """
     attempt_word = f"{attempts} attempt{'s' if attempts != 1 else ''}"
     # Paint out, re-read, paint again, crop if painting can't finish. Report what is left.

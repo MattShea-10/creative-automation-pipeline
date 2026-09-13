@@ -1,0 +1,16 @@
+detector: rapidocr 1.4.4, read at 1600/2560 px
+MAX_REMOVABLE_AREA_FRACTION = 0.06
+MIN_HEIGHT_FRACTION         = 0.012
+
+A) 240px 'SALE' in 900x300  (270,000 px)
+   read as: [('A', [214, 73, 136, 202]), ('S', [0, 51, 227, 237])]
+   masked area: 43.37% of frame   (refuses above 6%)
+   if masked by BOUNDING BOX instead: 30.1%
+   remove_text -> refused: the text covers 43% of the frame, too much to paint out convincingly (limit 6%)
+   image changed: False
+
+B) 9px 'tiny' in 2000x1200   (min height threshold = 14.4 px)
+   found_text: True
+   findings: [('tiny', 'h=26.0', 'conf=96')]
+
+done

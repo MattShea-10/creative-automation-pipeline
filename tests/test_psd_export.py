@@ -18,6 +18,8 @@ from psd_tools import PSDImage
 
 from src.creative_render import render_creative, render_creative_layers
 from src.image_ops import get_psd_backdrop, get_psd_layer_background, get_psd_layer_boxes
+from template_fixture import template
+
 from src.psd_export import (
     REUPLOAD_LAYER_NAMES,
     _tight_bbox_crop,
@@ -94,10 +96,10 @@ class PsdExportTest(unittest.TestCase):
         save_layered_psd([("logo", logo)], size, dest, layer_names={})
         self.assertIsNone(get_psd_backdrop(dest))
 
-    REAL_TEMPLATE = Path(__file__).resolve().parent.parent / "default_templates" / "tester-1080x1080.psd"
+    REAL_TEMPLATE = template("tester-1080x1080.psd")
 
     @unittest.skipUnless(
-        REAL_TEMPLATE.is_file(),
+        REAL_TEMPLATE is not None,
         "needs a real template with a live type layer -- the synthetic fixtures have none",
     )
     def test_set_type_layer_colors_recolours_live_text_in_place(self):
@@ -850,9 +852,9 @@ class PsdExportTest(unittest.TestCase):
         self.assertEqual(kept, [])
         self.assertTrue(dest.is_file())
 
-    HEADER_TEMPLATE = Path(__file__).resolve().parent.parent / "default_templates" / "tester-1080x1080.psd"
+    HEADER_TEMPLATE = template("tester-1080x1080.psd")
 
-    @unittest.skipUnless(HEADER_TEMPLATE.is_file(), "needs a template with a live header type layer")
+    @unittest.skipUnless(HEADER_TEMPLATE is not None, "needs a template with a live header type layer")
     def test_preserving_type_keeps_header_and_description_editable_together(self):
         # Six of the seven shipped templates carry both a header and a
         # description as live type; preserving one must not cost the
@@ -907,6 +909,7 @@ class PsdExportTest(unittest.TestCase):
         self.assertEqual(after["description"].text, "Still works")
         self.assertEqual(after["logo"].kind, "pixel", "logo must stay ordinary art")
 
+    @unittest.skipUnless(REAL_TEMPLATE is not None, "needs a shipped template")
     def test_a_vector_shape_layer_does_not_cost_us_the_other_layers(self):
         # A CTA built as a group holding a rectangle puts a VECTOR SHAPE
         # layer in the template. psd-tools can only draw one with aggdraw
@@ -1205,8 +1208,8 @@ class FormDropShadowTest(unittest.TestCase):
         from pathlib import Path
         from psd_tools import PSDImage
         from src.psd_export import set_type_layer_effects
-        source = Path("default_templates/tester-1080x1080.psd")
-        if not source.is_file():
+        source = template("tester-1080x1080.psd")
+        if source is None:
             self.skipTest("project template not present")
         tmp = Path(tempfile.mkdtemp()) / "fx.psd"
         shutil.copy(source, tmp)
@@ -1264,8 +1267,8 @@ class FormDropShadowTest(unittest.TestCase):
         self.assertEqual(list(glow.keys())[-3:], [b"AntA", b"TrnS", b"Inpr"])
 
         # And it survives a save/reload through psd-tools unchanged.
-        source = Path("default_templates/tester-1080x1080.psd")
-        if not source.is_file():
+        source = template("tester-1080x1080.psd")
+        if source is None:
             self.skipTest("project template not present")
         from src.psd_export import set_type_layer_effects
         tmp = Path(tempfile.mkdtemp()) / "fx.psd"
@@ -1311,8 +1314,8 @@ class FormDropShadowTest(unittest.TestCase):
         when the block has one, never beside it as a single key."""
         from psd_tools.constants import Tag
         from src.psd_export import set_type_layer_effects
-        source = Path("default_templates/tester-1080x1080.psd")
-        if not source.is_file():
+        source = template("tester-1080x1080.psd")
+        if source is None:
             self.skipTest("project template not present")
         tmp = Path(tempfile.mkdtemp()) / "fx.psd"
         shutil.copy(source, tmp)

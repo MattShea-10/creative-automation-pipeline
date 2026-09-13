@@ -60,6 +60,21 @@ def _own_card_html(page: str) -> str:
     return cards[-1] if cards else visible
 
 
+
+def _stylesheet_has(needle, filename):
+    """Is this CSS rule in the vendored stylesheet the page links?
+
+    The styles used to be an inline <style> block, so tests asserted on
+    rules by searching the rendered HTML. They compile to static/ now,
+    and Tailwind's minifier also drops the quotes inside attribute
+    selectors -- so both where a rule lives and how it is spelled
+    changed. Quotes are normalised out of both sides here.
+    """
+    css = (Path(webapp.__file__).resolve().parent / "static" / filename).read_text(encoding="utf-8")
+    strip_quotes = str.maketrans("", "", "\"'")
+    return needle.translate(strip_quotes) in css.translate(strip_quotes)
+
+
 class _CampaignBriefAutoFillClient:
     """Wraps a Flask test client so a POST to /generate gets sensible
     defaults merged in for the four now-required campaign-brief fields
@@ -5212,7 +5227,10 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         # disabled the controls and changed nothing visible: the only
         # greying a browser gives a disabled input on this dark theme is
         # invisible, and a checkbox's own <span> label never greys.
-        self.assertIn('[data-role="upload-ai-fresh"].is-inactive', page)
+        self.assertTrue(
+            _stylesheet_has('[data-role="upload-ai-fresh"].is-inactive', "tailwind-index.css"),
+            "the wrapper's greying rule is missing from the compiled stylesheet",
+        )
 
         # Ticking the generator clears "keep" -- asking for a new image
         # and keeping the old one are contradictory, and the reuse would
@@ -5255,7 +5273,10 @@ class ContentPsdQuickModeTest(unittest.TestCase):
         self.assertIn('"pageshow"', page)
         self.assertIn("if (!event.persisted) return;", page)
         # Motion is a system-level accessibility setting, not a taste.
-        self.assertIn("prefers-reduced-motion", page)
+        self.assertTrue(
+            _stylesheet_has("prefers-reduced-motion", "tailwind-index.css"),
+            "the spinner ignores prefers-reduced-motion",
+        )
 
     def test_template_edits_reach_a_running_server(self):
         # Jinja compiles a template once and caches it for the process's
@@ -8838,8 +8859,14 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         hide_at = page.index(">Hide layers<")
         self.assertGreater(hide_at, page.index("Upload AI Image"))
         self.assertGreater(hide_at, page.index('id="layer_overrides_section"'))
+        # Per card, not per page. The card macro is rendered once for
+        # every campaign in the session plus once into the blank
+        # <template>, so a page-wide count is a multiple of this and
+        # depends on what earlier tests left in the session.
+        card = page[page.index('<div class="campaign-card"'):]
+        card = card[: card.index('<div class="campaign-card"', 1)] if card.count('<div class="campaign-card"') > 1 else card
         self.assertEqual(
-            len(re.findall(r'data-role="layer-hide" data-layer="[a-z]+"', page)),
+            len(re.findall(r'data-role="layer-hide" data-layer="[a-z]+"', card)),
             len(webapp.HIDEABLE_LAYER_NAMES),
         )
 
@@ -10321,7 +10348,16 @@ class TemplateFontTest(unittest.TestCase):
     def test_the_psd_style_names_the_runs_font(self):
         from src.image_ops import get_psd_layer_text_style
 
-        style = get_psd_layer_text_style("default_templates/tester-1920x1080.psd", "header")
+        from template_fixture import template
+
+        # Extracted from the committed default_templates.zip. The loose
+        # copies that used to sit in default_templates/ moved into
+        # per-campaign subfolders, and those are gitignored, so this
+        # raised AttributeError on a None style in a fresh checkout.
+        source = template("tester-1920x1080.psd")
+        if source is None:
+            self.skipTest("needs a shipped template with a live header type layer")
+        style = get_psd_layer_text_style(str(source), "header")
         self.assertEqual(style.get("font_name"), "AvenirNextCondensed-DemiBold")
         self.assertEqual(style.get("family"), "condensed")
 
