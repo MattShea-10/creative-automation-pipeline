@@ -11383,3 +11383,195 @@ class PsdTemplateReadTest(unittest.TestCase):
             self.assertEqual(open_as_rgb(path).getpixel((5, 5)), (200, 0, 0))
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+class TranslationFailureWordingTest(unittest.TestCase):
+    """What the results page says when the copy comes back in English.
+
+    It used to say one thing for every cause -- "the translator didn't
+    answer, check the connection" -- and the cause was usually Google
+    counting requests, not a network fault. An hour went into the
+    connection before anyone read the traceback, so the warning now
+    names which of the three it was.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        patch = mock.patch.object(
+            webapp, "_translation_cache_path", return_value=self.tmp / "translations.json"
+        )
+        patch.start()
+        self.addCleanup(patch.stop)
+
+    def _localize(self, reason, fields=None):
+        notes, warnings = [], []
+        calls = []
+
+        def never_works(text, language):
+            calls.append(text)
+            return text, False
+
+        with mock.patch.object(webapp, "localize_message", side_effect=never_works), \
+                mock.patch.object(webapp, "take_last_failure", return_value=reason):
+            out = webapp._localize_form_copy(
+                "es", fields if fields is not None else {"header": "A", "description": "B"},
+                notes, warnings,
+            )
+        return out, notes, warnings, calls
+
+    def test_a_rate_limit_is_named_as_one(self):
+        _, _, warnings, _ = self._localize("rate limit")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("rate-limited", warnings[0])
+        self.assertNotIn("Check the connection", warnings[0])
+
+    def test_a_rate_limit_stops_the_run_asking_for_the_other_fields(self):
+        """The limit is per connection and per second. Asking for field
+        two only waits out the same backoff to be refused again -- with
+        eight fields that turned a failed run into a minute of waiting."""
+        _, _, warnings, calls = self._localize("rate limit")
+        self.assertEqual(calls, ["A"], "only the first field should have been attempted")
+        self.assertIn("header, description", warnings[0], "both are still reported as untranslated")
+
+    def test_an_unreachable_translator_still_says_check_the_connection(self):
+        _, _, warnings, calls = self._localize("unavailable")
+        self.assertIn("Check the connection", warnings[0])
+        self.assertEqual(calls, ["A", "B"], "nothing to back off from, so both were tried")
+
+    def test_an_error_page_is_described_as_the_endpoint_misbehaving(self):
+        _, _, warnings, _ = self._localize("error page")
+        self.assertIn("error page", warnings[0])
+        self.assertNotIn("Check the connection", warnings[0])
+
+    def test_the_english_comes_back_untouched_whatever_the_reason(self):
+        out, notes, _, _ = self._localize("rate limit")
+        self.assertEqual(out, {"header": "A", "description": "B"})
+        self.assertEqual(notes, [], "nothing was translated, so nothing to show beside it")
+
+    def test_a_working_translator_warns_about_nothing(self):
+        notes, warnings = [], []
+        with mock.patch.object(
+            webapp, "localize_message", side_effect=lambda text, language: ("ES " + text, True)
+        ):
+            out = webapp._localize_form_copy("es", {"header": "A"}, notes, warnings)
+        self.assertEqual(out, {"header": "ES A"})
+        self.assertEqual(warnings, [])
+        self.assertEqual(len(notes), 1)
+
+
+try:  # the YAML write-back is optional on it, so the test is too
+    import ruamel.yaml  # noqa: F401
+
+    _HAS_RUAMEL = True
+except ImportError:  # pragma: no cover
+    _HAS_RUAMEL = False
+
+
+class BriefSlugIsNotRewrittenTest(unittest.TestCase):
+    """Writing a run back into a brief must not rename the product.
+
+    A product's slug names its asset file, its output folder and its
+    template folder -- the pipeline's whole idea of where that product
+    lives on disk. Recording a run regenerated it from the display name,
+    so an ordinary Generate quietly turned "hydroboost" into
+    "HydroBoost_Sports_Drink" in a file nobody had edited, and six tests
+    that had passed for weeks started failing on paths that no longer
+    existed.
+    """
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, self.tmp, True)
+        patch = mock.patch.object(webapp, "BRIEFS_DIR", self.tmp)
+        patch.start()
+        self.addCleanup(patch.stop)
+        webapp._brief_campaign_cache.clear()
+        self.addCleanup(webapp._brief_campaign_cache.clear)
+
+    def _fields(self, **overrides):
+        fields = {
+            "campaign_name": "Winter Glow 2026",
+            "product_name": "HydroBoost Sports Drink",
+            "market": "France",
+            "audience": "Adults 25-40",
+            "campaign_message": "Glow Through Winter.",
+            "upload_ai_prompt": "A blue bottle in snow",
+        }
+        fields.update(overrides)
+        return fields
+
+    def _write_json_brief(self, products):
+        path = self.tmp / "winter.json"
+        path.write_text(json.dumps(
+            {"campaign": {"name": "Winter Glow 2026", "products": products}}, indent=2
+        ), encoding="utf-8")
+        return path
+
+    def _products_in(self, path):
+        return json.loads(path.read_text(encoding="utf-8"))["campaign"]["products"]
+
+    def test_an_existing_slug_survives_a_run_that_changes_other_fields(self):
+        path = self._write_json_brief([
+            {"name": "HydroBoost Sports Drink", "slug": "hydroboost", "prompt_hint": "old wording"},
+        ])
+        webapp.record_run_in_briefs(self._fields())
+        product = self._products_in(path)[0]
+        self.assertEqual(product["slug"], "hydroboost", "the run renamed the product")
+        self.assertEqual(product["prompt_hint"], "A blue bottle in snow")
+
+    def test_a_run_that_changes_nothing_leaves_the_file_untouched(self):
+        path = self._write_json_brief([
+            {"name": "HydroBoost Sports Drink", "slug": "hydroboost",
+             "prompt_hint": "A blue bottle in snow"},
+        ])
+        before = path.read_bytes()
+        self.assertEqual(webapp.record_run_in_briefs(self._fields()), "")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_a_product_with_no_slug_at_all_gets_one(self):
+        """Only absence earns a generated slug -- the brief is otherwise
+        the authority on its own naming."""
+        path = self._write_json_brief([{"name": "HydroBoost Sports Drink"}])
+        webapp.record_run_in_briefs(self._fields())
+        self.assertEqual(self._products_in(path)[0]["slug"], "HydroBoost_Sports_Drink")
+
+    def test_a_product_new_to_the_campaign_is_added_with_a_slug(self):
+        path = self._write_json_brief([
+            {"name": "PureShine Shampoo", "slug": "pureshine"},
+        ])
+        webapp.record_run_in_briefs(self._fields())
+        products = self._products_in(path)
+        self.assertEqual([p["name"] for p in products],
+                         ["PureShine Shampoo", "HydroBoost Sports Drink"])
+        self.assertEqual(products[0]["slug"], "pureshine", "the untouched product kept its slug")
+        self.assertEqual(products[1]["slug"], "HydroBoost_Sports_Drink")
+
+    def test_a_campaign_no_file_knows_yet_gets_its_own_brief(self):
+        webapp.record_run_in_briefs(self._fields(campaign_name="Autumn Ember 2026"))
+        written = list(self.tmp.glob("*.json"))
+        self.assertEqual(len(written), 1)
+        product = self._products_in(written[0])[0]
+        self.assertEqual(product["name"], "HydroBoost Sports Drink")
+        self.assertEqual(product["slug"], "HydroBoost_Sports_Drink")
+
+    @unittest.skipUnless(_HAS_RUAMEL, "needs ruamel.yaml; the YAML write-back is optional on it")
+    def test_a_yaml_briefs_slug_survives_too(self):
+        """The YAML path is a separate implementation, and it is the one
+        that actually mangled sample_campaign.yaml."""
+        path = self.tmp / "summer.yaml"
+        path.write_text(
+            'campaign:\n'
+            '  name: "Summer Refresh 2026"\n'
+            '  # a comment that must survive the round trip\n'
+            '  products:\n'
+            '  - name: "HydroBoost Sports Drink"\n'
+            '    slug: "hydroboost"\n'
+            '    prompt_hint: "old wording"\n',
+            encoding="utf-8",
+        )
+        webapp.record_run_in_briefs(self._fields(campaign_name="Summer Refresh 2026"))
+        text = path.read_text(encoding="utf-8")
+        self.assertIn('slug: "hydroboost"', text, "the YAML write-back renamed the product")
+        self.assertIn("A blue bottle in snow", text)
+        self.assertIn("a comment that must survive", text)

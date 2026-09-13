@@ -38,12 +38,31 @@ if [ ! -d "$SOURCE" ]; then
   done
 fi
 if [ -d "$SOURCE" ]; then
-  mkdir -p "$DEST"
-  rsync -a --exclude '.venv' --exclude 'outputs' --exclude 'downloads' --exclude '__pycache__' \
-        --exclude '.git' --exclude '_to_delete' --exclude '_template_backups' --exclude '.env' \
-        --exclude 'default_templates/*/' \
-        "$SOURCE/" "$DEST/" || fail "Copying the project to '$DEST' failed."
-  chmod +x "$DEST/install.sh" "$DEST/run.sh" 2>/dev/null
+  # ...but only forwards. An older image opened over a newer install --
+  # keeping an old dmg around to check something, most often -- used to
+  # overwrite the newer code without a word, and the app then behaved as
+  # though every recent fix had been undone. Going backwards is now the
+  # user's call, and the default answer is no.
+  COPY_FROM_IMAGE=yes
+  GUARD="$APP_DIR/Contents/Resources/install_guard.sh"
+  if [ -f "$GUARD" ]; then
+    . "$GUARD"
+    if image_is_older_than_install "$SOURCE" "$DEST"; then
+      ANSWER="$(osascript -e 'display dialog "The copy already installed in your home folder is NEWER than the one on this disk image.\n\nInstalling would replace it with older code." buttons {"Run what is installed", "Replace with this image"} default button 1 with icon caution with title "Creative Automation Pipeline"' 2>/dev/null)"
+      case "$ANSWER" in
+        *"Replace with this image"*) COPY_FROM_IMAGE=yes ;;
+        *) COPY_FROM_IMAGE=no ;;
+      esac
+    fi
+  fi
+  if [ "$COPY_FROM_IMAGE" = yes ]; then
+    mkdir -p "$DEST"
+    rsync -a --exclude '.venv' --exclude 'outputs' --exclude 'downloads' --exclude '__pycache__' \
+          --exclude '.git' --exclude '_to_delete' --exclude '_template_backups' --exclude '.env' \
+          --exclude 'default_templates/*/' \
+          "$SOURCE/" "$DEST/" || fail "Copying the project to '$DEST' failed."
+    chmod +x "$DEST/install.sh" "$DEST/run.sh" 2>/dev/null
+  fi
 elif [ ! -d "$DEST" ]; then
   fail "Couldn't find the project folder next to this app. Open the disk image and run the app from inside it."
 fi

@@ -78,7 +78,7 @@ from src.psd_export import (
     set_type_layer_colors,
 )
 from src.compliance import check_profanity, check_trademark_text
-from src.localization import localize_message
+from src.localization import localize_message, take_last_failure
 from src.image_ops import (
     get_psd_text_layers,
     DEFAULT_SIZES,
@@ -3613,17 +3613,16 @@ def _translate_copy(text, language: str, cache: dict):
     key = f"{language}\u0000{text}"
     if key in cache:
         return cache[key], True
-    # Two tries: the translator is a free public endpoint that drops the odd call, and
-    # one dropped line left a header half translated.
-    for _attempt in range(2):
-        translated, ok = localize_message(text, language)
-        if ok and translated:
-            # Text returned unchanged is not a translation, so don't cache it as one:
-            # a cached self-mapping stood in front of the real English.
-            if translated.strip() != text.strip():
-                cache[key] = translated
-            return translated, True
-        time.sleep(0.5)
+    # One call from here. Retrying the odd dropped call is worth doing, but it
+    # now happens inside localize_message, which also spaces its requests -- two
+    # layers of retry meant a rate-limited field waited out the backoff twice.
+    translated, ok = localize_message(text, language)
+    if ok and translated:
+        # Text returned unchanged is not a translation, so don't cache it as one:
+        # a cached self-mapping stood in front of the real English.
+        if translated.strip() != text.strip():
+            cache[key] = translated
+        return translated, True
     return text, False
 
 
@@ -3759,8 +3758,16 @@ def _localize_form_copy(language: str, fields: dict, notes: list, warnings: list
         cache = {}
     before = dict(cache)
     failed = []
+    reason = ""
     out = {}
     for name, text in fields.items():
+        if reason == "rate limit" and text:
+            # The limit is counted per network, not per phrase. Asking for the
+            # next field only waits out the same backoff to be told the same
+            # thing -- eight fields turned a failed run into a minute of it.
+            out[name] = text
+            failed.append(name)
+            continue
         translated, ok = _translate_copy(text, language, cache)
         out[name] = translated
         if text and ok and translated != text:
@@ -3769,11 +3776,33 @@ def _localize_form_copy(language: str, fields: dict, notes: list, warnings: list
             )
         elif text and not ok:
             failed.append(name)
+            reason = take_last_failure() or reason
     if failed:
+        language_name = COPY_LANGUAGE_ENGLISH_NAMES.get(language, language)
+        # Name the actual failure. "Check the connection" sent someone hunting a
+        # network fault for an hour when the endpoint was up and simply counting.
+        if reason == "rate limit":
+            why = (
+                "Google's free translation endpoint rate-limited this run -- it allows "
+                "about five calls a second and 200,000 a day, counted across everyone "
+                "sharing your connection. Waiting a few minutes and running again "
+                "usually clears it, and copy translated earlier is cached, so a rerun "
+                "asks for less."
+            )
+        elif reason == "error page":
+            why = (
+                "the translator answered with an error page instead of a translation, "
+                "which is the endpoint having a bad minute rather than anything wrong "
+                "with the copy. Run again in a moment."
+            )
+        else:
+            why = (
+                "the translator (Google Translate via deep-translator) didn't answer. "
+                "Check the connection and run again."
+            )
         warnings.append(
-            f"Couldn't translate the {', '.join(failed)} into "
-            f"{COPY_LANGUAGE_ENGLISH_NAMES.get(language, language)} -- the translator (Google Translate via "
-            "deep-translator) didn't answer, so those are drawn in English. Check the connection and run again."
+            f"Couldn't translate the {', '.join(failed)} into {language_name} -- {why} "
+            "Those are drawn in English."
         )
     if cache != before:
         try:
@@ -3995,7 +4024,15 @@ def record_run_in_briefs(fields: dict) -> str:
     if not campaign or not product:
         return ""
 
-    entry = {"name": product, "slug": _slugify_for_filename(product) or product.lower()}
+    # The slug is not a display detail: it names the product's asset file,
+    # its output folder and its template folder. A brief that already has
+    # one is the authority on it. Regenerating "hydroboost" as
+    # "HydroBoost_Sports_Drink" on an ordinary run moved every rendered
+    # path at once and pointed the pipeline at folders that don't exist,
+    # from a brief nobody had edited. Only a product being written for the
+    # first time gets one made up for it.
+    entry = {"name": product}
+    new_slug = _slugify_for_filename(product) or product.lower()
     if (fields.get("upload_ai_prompt") or "").strip():
         entry["prompt_hint"] = fields["upload_ai_prompt"].strip()
     if (fields.get("upload_ai_headline") or "").strip():
@@ -4008,7 +4045,7 @@ def record_run_in_briefs(fields: dict) -> str:
     ]
     path = _brief_file_for_campaign(campaign)
     if path is not None and path.suffix.lower() in (".yaml", ".yml"):
-        return _record_in_yaml_brief(path, campaign, product, entry)
+        return _record_in_yaml_brief(path, campaign, product, entry, new_slug)
     try:
         if path is None:
             path = BRIEFS_DIR / f"{_slugify_for_filename(campaign) or 'campaign'}.json"
@@ -4020,7 +4057,7 @@ def record_run_in_briefs(fields: dict) -> str:
                 "target_audience": (fields.get("audience") or "").strip(),
                 "message": (fields.get("campaign_message") or "").strip(),
                 "brand": {"logo": "assets/brand/logo.png", "colors": colors},
-                "products": [entry],
+                "products": [dict(entry, slug=new_slug)],
             }}
             written = f"Campaign written to briefs/{path.name} -- it is in the brief list now."
         else:
@@ -4030,13 +4067,14 @@ def record_run_in_briefs(fields: dict) -> str:
                 if (existing.get("name") or "").strip().lower() == product.lower():
                     merged = dict(existing)
                     merged.update(entry)
+                    merged.setdefault("slug", new_slug)   # only if it never had one
                     if merged == existing:
                         return ""       # nothing changed; leave the file alone
                     products[i] = merged
                     written = f"{product} updated in briefs/{path.name}."
                     break
             else:
-                products.append(entry)
+                products.append(dict(entry, slug=new_slug))
                 written = f"{product} added to \"{campaign}\" in briefs/{path.name}."
         # Written beside the target and moved into place, so a failure
         # halfway through cannot leave a half-written brief behind.
@@ -4049,7 +4087,7 @@ def record_run_in_briefs(fields: dict) -> str:
         return f"Couldn't record this campaign in briefs/: {type(exc).__name__}: {exc}"
 
 
-def _record_in_yaml_brief(path, campaign: str, product: str, entry: dict) -> str:
+def _record_in_yaml_brief(path, campaign: str, product: str, entry: dict, new_slug: str) -> str:
     """Add a product to a YAML brief without losing the file's comments.
 
     PyYAML parses a brief fine but dumping it back writes a fresh
@@ -4078,12 +4116,15 @@ def _record_in_yaml_brief(path, campaign: str, product: str, entry: dict) -> str
                     if existing.get(field) != value:
                         existing[field] = value
                         changed = True
+                if not existing.get("slug"):
+                    existing["slug"] = new_slug   # only if it never had one
+                    changed = True
                 if not changed:
                     return ""
                 written = f"{product} updated in briefs/{path.name}."
                 break
         else:
-            products.append(entry)
+            products.append(dict(entry, slug=new_slug))
             written = f'{product} added to "{campaign}" in briefs/{path.name}.'
         spare = path.with_suffix(path.suffix + ".tmp")
         with open(spare, "w", encoding="utf-8") as handle:
