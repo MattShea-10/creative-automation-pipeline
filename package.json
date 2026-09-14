@@ -6,6 +6,7 @@
     "css": "tailwindcss -i styles/index.css -o static/tailwind-index.css --minify && tailwindcss -i styles/result.css -o static/tailwind-result.css --minify && node scripts/stamp_css.js"
   },
   "devDependencies": {
+    "@fontsource/inter": "^5.3.0",
     "tailwindcss": "^3.4.19"
   }
 }

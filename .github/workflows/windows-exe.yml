@@ -47,24 +47,25 @@ jobs:
           node-version: "20"
           cache: npm
 
-      - name: Rebuild the stylesheet
+      # Rebuilt only to compare. This build ships the COMMITTED stylesheet
+      # -- and so does the .dmg, and so does every run from source. Quietly
+      # shipping a freshly compiled one here meant the exe could be styled
+      # from different bytes than everything else, which is precisely the
+      # difference nobody can see in a screenshot. A stale committed copy
+      # is now a failed build, not a warning nobody reads.
+      - name: The committed stylesheet must be in step with styles/
+        shell: pwsh
         run: |
           npm ci
           npm run css
-
-      # Say so loudly rather than quietly shipping the rebuilt file: the
-      # committed copy is what a source run and the .dmg use, so if it
-      # differs here it is stale in those too.
-      - name: Warn if the committed stylesheet was stale
-        shell: pwsh
-        run: |
           $changed = git status --porcelain static
           if ($changed) {
-            Write-Host "::warning::static/tailwind-*.css was out of date with styles/*.css -- this build used a freshly compiled copy. Run 'npm run css' and commit the result so source runs and the .dmg match."
             Write-Host $changed
-          } else {
-            Write-Host "committed stylesheet is up to date"
+            Write-Host "::error::static/tailwind-*.css is out of date with styles/*.css. The .dmg and every source run serve the committed copy, so a stale one means the two builds do not look alike. Run 'npm run css' and commit the result."
+            exit 1
           }
+          git checkout -- static
+          Write-Host "committed stylesheet is in step with styles/"
 
       # run.ps1 and install.ps1 are edited from a Mac, where nothing can
       # parse them. The Windows runner can, so a syntax error surfaces here
@@ -102,11 +103,36 @@ jobs:
             if ($log -match "http://127\.0\.0\.1:(\d+)") { $url = "http://127.0.0.1:$($Matches[1])/" }
             try { $r = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 60; if ($r.StatusCode -eq 200) { $ok = $true; break } } catch { }
           }
+          if ($ok) { $r.Content | Set-Content -Path "$PWD\served-exe.html" -Encoding UTF8 }
           Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
           Write-Host "---- exe.log ----"; Get-Content exe.log -ErrorAction SilentlyContinue
           Write-Host "---- exe.err ----"; Get-Content exe.err -ErrorAction SilentlyContinue
           if ($ok) { Write-Host "the exe answered on $url after $i s" -ForegroundColor Green }
           else { Write-Host "the exe never answered (last tried $url)" -ForegroundColor Red; exit 1 }
+
+      # "Does the .exe look like the .dmg?" as a build step instead of a
+      # screenshot. Same runner, same Python, same commit, so PyInstaller is
+      # the only variable -- and a bundle that lost templates/ or static/
+      # still answers 200, it just answers with a different page. That is
+      # what the smoke test above cannot see and this can.
+      - name: The packaged app must serve the same page as the source
+        shell: pwsh
+        run: |
+          $env:FLASK_RELOAD = "0"
+          $src = Start-Process -FilePath "python" -ArgumentList "webapp.py" -PassThru -RedirectStandardOutput "$PWD\src.log" -RedirectStandardError "$PWD\src.err"
+          $ok = $false
+          $url = "http://127.0.0.1:5000/"
+          for ($i = 0; $i -lt 180; $i++) {
+            Start-Sleep -Seconds 1
+            if ($src.HasExited) { Write-Host "the source run exited early with code $($src.ExitCode)" -ForegroundColor Red; break }
+            $log = Get-Content src.log -Raw -ErrorAction SilentlyContinue
+            if ($log -match "http://127\.0\.0\.1:(\d+)") { $url = "http://127.0.0.1:$($Matches[1])/" }
+            try { $r = Invoke-WebRequest -UseBasicParsing -Uri $url -TimeoutSec 60; if ($r.StatusCode -eq 200) { $ok = $true; break } } catch { }
+          }
+          if ($ok) { $r.Content | Set-Content -Path "$PWD\served-source.html" -Encoding UTF8 }
+          Stop-Process -Id $src.Id -Force -ErrorAction SilentlyContinue
+          if (-not $ok) { Write-Host "---- src.err ----"; Get-Content src.err -ErrorAction SilentlyContinue; exit 1 }
+          python scripts/compare_served.py served-exe.html served-source.html
 
       - uses: actions/upload-artifact@v6
         with:

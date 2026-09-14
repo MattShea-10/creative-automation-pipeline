@@ -167,6 +167,23 @@ class ReleaseWorkflowTests(unittest.TestCase):
         happen, and nobody would notice until it had already fired."""
         self.assertIn("grep -q image_is_older_than_install", self.text)
 
+    def test_a_stale_stylesheet_fails_the_build(self):
+        """Both builds serve the COMMITTED stylesheet. The workflow used to
+        rebuild it and warn -- so a release could ship an exe styled from
+        different bytes than the dmg, which is invisible in a screenshot."""
+        self.assertIn("::error::static/tailwind-*.css is out of date", self.text)
+        self.assertNotIn("::warning::static/tailwind-*.css", self.text)
+
+    def test_the_exe_is_compared_against_a_source_run(self):
+        """HTTP 200 is not the question. A bundle missing templates/ or
+        static/ answers 200 with a different page."""
+        self.assertIn("scripts/compare_served.py served-exe.html served-source.html", self.text)
+        self.assertLess(
+            self.text.index("Smoke test the exe"),
+            self.text.index("compare_served.py"),
+            "the comparison needs the page the smoke test captured",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
