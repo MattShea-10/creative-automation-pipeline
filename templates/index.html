@@ -85,6 +85,39 @@
       </div>
     </details>
 
+    {# Optional, and the form says so: without a key the free Google
+       endpoint still translates. With one, copy comes from DeepL and
+       the free endpoint is only the fallback -- which is what keeps an
+       invisible daily quota from deciding what language a campaign
+       ships in. Collapsed by default, unlike the Ideogram box: nothing
+       here is broken without it. #}
+    <details class="key-box" data-role="deepl-key-box">
+      <summary>
+        <span class="caret">&#9656;</span>
+        {% if deepl_key.set %}
+          DeepL key: set{% if deepl_key.hint %} (ends in {{ deepl_key.hint }}){% endif %}
+          {% if deepl_key.limit %}
+            <span style="font-weight: 400; color: var(--muted);">-- {{ "{:,}".format(deepl_key.used or 0) }} of {{ "{:,}".format(deepl_key.limit) }} characters used this month</span>
+          {% else %}
+            <span style="font-weight: 400; color: var(--muted);">-- click to change</span>
+          {% endif %}
+        {% else %}
+          Translation: Google's free endpoint
+          <span style="font-weight: 400; color: var(--muted);">-- paste a DeepL key here for better copy and a quota you can see</span>
+        {% endif %}
+      </summary>
+      <form action="{{ url_for('set_deepl_key') }}" method="post" class="key-row" autocomplete="off">
+        <input type="password" name="deepl_api_key" placeholder="Paste the DeepL API key" aria-label="DeepL API key" required>
+        <button type="submit">Save key</button>
+      </form>
+      <div class="hint" style="margin-top: 0.5rem; margin-bottom: 0;">
+        Free keys give 500,000 characters a month and end in <code>:fx</code>; the app picks the right
+        endpoint from that. Saved to <code>.env</code> beside the app and never sent anywhere but DeepL.
+        Without a key, copy is still translated by the free Google endpoint -- which has no key, no quota
+        you can check, and no promises.
+      </div>
+    </details>
+
     {% if brief_choices %}
       {# The brief files in briefs/ -- the same ones the command-line
          pipeline runs from. Page-level: picking a product fills the

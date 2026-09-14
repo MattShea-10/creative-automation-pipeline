@@ -11426,6 +11426,23 @@ class TranslationFailureWordingTest(unittest.TestCase):
         self.assertIn("rate-limited", warnings[0])
         self.assertNotIn("Check the connection", warnings[0])
 
+    def test_a_spent_deepl_month_is_named_as_a_quota(self):
+        """A rate limit is worth waiting out and a spent quota is not.
+        Telling someone to wait when the month is gone wastes an evening."""
+        _, _, warnings, _ = self._localize("quota")
+        self.assertIn("month", warnings[0])
+        self.assertNotIn("Check the connection", warnings[0])
+
+    def test_a_refused_key_points_at_the_key(self):
+        _, _, warnings, _ = self._localize("no key")
+        self.assertIn("DeepL", warnings[0])
+        self.assertIn(":fx", warnings[0], "the free-key suffix is the usual cause")
+
+    def test_a_language_nobody_has_says_that_rather_than_blaming_the_network(self):
+        _, _, warnings, _ = self._localize("unsupported language")
+        self.assertIn("language", warnings[0])
+        self.assertNotIn("Check the connection", warnings[0])
+
     def test_a_rate_limit_stops_the_run_asking_for_the_other_fields(self):
         """The limit is per connection and per second. Asking for field
         two only waits out the same backoff to be refused again -- with
@@ -11519,6 +11536,27 @@ class BriefSlugIsNotRewrittenTest(unittest.TestCase):
         product = self._products_in(path)[0]
         self.assertEqual(product["slug"], "hydroboost", "the run renamed the product")
         self.assertEqual(product["prompt_hint"], "A blue bottle in snow")
+
+    def test_a_prompt_that_only_wraps_differently_is_not_a_change(self):
+        """The form sends one line; the file holds the same words folded
+        over three. Treating that as a change made every run rewrite the
+        brief in ruamel's style, reindenting a file somebody had
+        commented by hand."""
+        path = self._write_json_brief([
+            {"name": "HydroBoost Sports Drink", "slug": "hydroboost",
+             "prompt_hint": "A blue bottle\n  in snow"},
+        ])
+        before = path.read_bytes()
+        self.assertEqual(webapp.record_run_in_briefs(self._fields()), "")
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_a_real_wording_change_still_lands(self):
+        path = self._write_json_brief([
+            {"name": "HydroBoost Sports Drink", "slug": "hydroboost",
+             "prompt_hint": "A red bottle in snow"},
+        ])
+        webapp.record_run_in_briefs(self._fields())
+        self.assertEqual(self._products_in(path)[0]["prompt_hint"], "A blue bottle in snow")
 
     def test_a_run_that_changes_nothing_leaves_the_file_untouched(self):
         path = self._write_json_brief([

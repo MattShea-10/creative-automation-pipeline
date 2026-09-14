@@ -2869,6 +2869,29 @@ def _ideogram_key_status() -> dict:
     return {"set": bool(key), "hint": key[-4:] if len(key) >= 8 else ""}
 
 
+def _deepl_key_status() -> dict:
+    """What the page may say about the DeepL key: whether one is set, its
+    last four characters, and how much of the month's allowance is left.
+    Never the key itself.
+
+    The usage figure is the reason to have a key at all -- a number you
+    can look at before a demo, rather than finding out mid-demo that an
+    invisible quota ran out hours ago."""
+    from src.translation_providers import DeepLProvider
+
+    provider = DeepLProvider()
+    status = {"set": provider.is_configured(), "hint": provider.api_key[-4:] if len(provider.api_key) >= 8 else ""}
+    if not status["set"]:
+        return status
+    # Best effort: a key that works but whose usage call fails should
+    # still read as "set", not as a problem.
+    usage = provider.usage()
+    if usage:
+        status["used"] = usage.get("character_count")
+        status["limit"] = usage.get("character_limit")
+    return status
+
+
 def _brief_choices() -> list:
     """One entry per product in every brief file under briefs/ -- the
     campaign fields it fills (product, market, audience, message), the
@@ -2963,6 +2986,7 @@ def _inject_settings():
         "default_campaign_name": default_campaign_name(),
         "market_copy_languages": market_copy_languages(),
         "ideogram_key": _ideogram_key_status(),
+        "deepl_key": _deepl_key_status(),
         "env_file": str(ENV_FILE),
         "ideogram_speeds": IDEOGRAM_SPEED_CHOICES,
         "default_ideogram_speed": DEFAULT_IDEOGRAM_SPEED,
@@ -3550,6 +3574,28 @@ def set_ideogram_key():
     return redirect(url_for("index"))
 
 
+@app.route("/settings/deepl-key", methods=["POST"])
+def set_deepl_key():
+    """Same box, same deal as the Ideogram key: paste, save, done. Stored
+    in .env beside the app and never sent back to the browser.
+
+    With a key set, copy is translated by DeepL and the free Google
+    endpoint becomes the fallback rather than the plan -- which is what
+    stops a day's invisible quota deciding what language a campaign
+    ships in."""
+    key = (request.form.get("deepl_api_key") or "").strip()
+    if not key:
+        flash("Paste the DeepL API key before saving.")
+        return redirect(url_for("index"))
+    if any(ch.isspace() for ch in key) or len(key) < 20:
+        flash("That doesn't look like a DeepL API key -- check it was copied whole.")
+        return redirect(url_for("index"))
+    save_env_value("DEEPL_API_KEY", key)
+    free = " (free tier -- 500,000 characters a month)" if key.endswith(":fx") else ""
+    flash(f"DeepL key saved (ends in {key[-4:]}){free}. Copy is translated with it from now on.", "ok")
+    return redirect(url_for("index"))
+
+
 # Brand-level settings that outlive a run, kept in a small JSON beside the jobs so a
 # test's temp JOBS_DIR gets its own.
 BRAND_COLOR_FIELD_NAMES = tuple(
@@ -3781,13 +3827,31 @@ def _localize_form_copy(language: str, fields: dict, notes: list, warnings: list
         language_name = COPY_LANGUAGE_ENGLISH_NAMES.get(language, language)
         # Name the actual failure. "Check the connection" sent someone hunting a
         # network fault for an hour when the endpoint was up and simply counting.
-        if reason == "rate limit":
+        if reason == "quota":
             why = (
-                "Google's free translation endpoint rate-limited this run -- it allows "
+                "the DeepL key has used up this month's characters, and the free "
+                "endpoint behind it couldn't answer either. Check the usage on your "
+                "DeepL account; the allowance resets monthly."
+            )
+        elif reason == "no key":
+            why = (
+                "DeepL refused the key. A free key ends in \":fx\" and must be used "
+                "against api-free.deepl.com -- the app works that out from the key "
+                "itself, so this usually means the key was copied short or has been "
+                "revoked. Paste it again at the top of the form."
+            )
+        elif reason == "unsupported language":
+            why = (
+                "neither translator offers this language. DeepL doesn't have it, and "
+                "the free endpoint couldn't answer."
+            )
+        elif reason == "rate limit":
+            why = (
+                "the translator rate-limited this run. Google's free endpoint allows "
                 "about five calls a second and 200,000 a day, counted across everyone "
-                "sharing your connection. Waiting a few minutes and running again "
-                "usually clears it, and copy translated earlier is cached, so a rerun "
-                "asks for less."
+                "sharing your connection -- waiting a few minutes usually clears it, "
+                "and copy translated earlier is cached so a rerun asks for less. A "
+                "DeepL key avoids this entirely."
             )
         elif reason == "error page":
             why = (
@@ -3797,8 +3861,7 @@ def _localize_form_copy(language: str, fields: dict, notes: list, warnings: list
             )
         else:
             why = (
-                "the translator (Google Translate via deep-translator) didn't answer. "
-                "Check the connection and run again."
+                "no translator answered. Check the connection and run again."
             )
         warnings.append(
             f"Couldn't translate the {', '.join(failed)} into {language_name} -- {why} "
@@ -4007,6 +4070,19 @@ def _brief_file_for_campaign(campaign_name):
     return None
 
 
+def _same_text(a, b) -> bool:
+    """Whether two brief values say the same thing.
+
+    A prompt written in the form arrives as one line; the same prompt in
+    the file is a folded block scalar wrapped over three. Comparing them
+    literally made every run "a change", so ruamel rewrote the whole YAML
+    brief in its own style -- reindenting the product list and reflowing
+    the comments somebody wrote by hand -- to save a difference nobody
+    made.
+    """
+    return " ".join(str(a or "").split()) == " ".join(str(b or "").split())
+
+
 def record_run_in_briefs(fields: dict) -> str:
     """Write this run's campaign and product back into briefs/.
 
@@ -4066,7 +4142,9 @@ def record_run_in_briefs(fields: dict) -> str:
             for i, existing in enumerate(products):
                 if (existing.get("name") or "").strip().lower() == product.lower():
                     merged = dict(existing)
-                    merged.update(entry)
+                    for field, value in entry.items():
+                        if not _same_text(existing.get(field), value):
+                            merged[field] = value
                     merged.setdefault("slug", new_slug)   # only if it never had one
                     if merged == existing:
                         return ""       # nothing changed; leave the file alone
@@ -4113,7 +4191,7 @@ def _record_in_yaml_brief(path, campaign: str, product: str, entry: dict, new_sl
             if str(existing.get("name") or "").strip().lower() == product.lower():
                 changed = False
                 for field, value in entry.items():
-                    if existing.get(field) != value:
+                    if not _same_text(existing.get(field), value):
                         existing[field] = value
                         changed = True
                 if not existing.get("slug"):
