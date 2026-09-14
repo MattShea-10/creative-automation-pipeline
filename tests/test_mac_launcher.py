@@ -171,7 +171,7 @@ class ReleaseWorkflowTests(unittest.TestCase):
         """Both builds serve the COMMITTED stylesheet. The workflow used to
         rebuild it and warn -- so a release could ship an exe styled from
         different bytes than the dmg, which is invisible in a screenshot."""
-        self.assertIn("::error::static/tailwind-*.css is out of date", self.text)
+        self.assertIn("python scripts/check_stylesheet.py", self.text)
         self.assertNotIn("::warning::static/tailwind-*.css", self.text)
 
     def test_the_exe_is_compared_against_a_source_run(self):

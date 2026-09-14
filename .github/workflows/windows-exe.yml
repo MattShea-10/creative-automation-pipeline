@@ -58,14 +58,11 @@ jobs:
         run: |
           npm ci
           npm run css
-          $changed = git status --porcelain static
-          if ($changed) {
-            Write-Host $changed
-            Write-Host "::error::static/tailwind-*.css is out of date with styles/*.css. The .dmg and every source run serve the committed copy, so a stale one means the two builds do not look alike. Run 'npm run css' and commit the result."
-            exit 1
-          }
+          # Compared in Python, not with `git status`: the runner checks
+          # text out as CRLF and the Tailwind CLI writes LF, so a byte
+          # comparison called an identical file stale on every line.
+          python scripts/check_stylesheet.py
           git checkout -- static
-          Write-Host "committed stylesheet is in step with styles/"
 
       # run.ps1 and install.ps1 are edited from a Mac, where nothing can
       # parse them. The Windows runner can, so a syntax error surfaces here
