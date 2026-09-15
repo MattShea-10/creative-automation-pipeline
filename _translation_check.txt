@@ -1,0 +1,15 @@
+translation check -- Mon Sep 14 20:42:15 CDT 2026
+
+[localization] es: TooManyRequests: Server Error: You made too many requests to the server.According to google, you are allowed to make 5 requests per secondand up to 200k requests per day. You can wait and try again later oryou can try the translate_batch function
+[localization] es: TooManyRequests: Server Error: You made too many requests to the server.According to google, you are allowed to make 5 requests per secondand up to 200k requests per day. You can wait and try again later oryou can try the translate_batch function
+[localization] es: TooManyRequests: Server Error: You made too many requests to the server.According to google, you are allowed to make 5 requests per secondand up to 200k requests per day. You can wait and try again later oryou can try the translate_batch function
+[localization] es: TooManyRequests: Server Error: You made too many requests to the server.According to google, you are allowed to make 5 requests per secondand up to 200k requests per day. You can wait and try again later oryou can try the translate_batch function
+asking each provider for Spanish: 'Feel the Fresh. Own Your Summer.'
+
+google-free    REFUSED [rate limit] Server Error: You made too many requests to the server.According to google, you are allowed to make 5 requests per secondand up to 200k requests per day. You can wait and try again later oryou can try the translate_batch function
+mymemory       OK -> 'Siéntase fresco. Sea dueño de su verano.'
+lingva         REFUSED [unavailable] translate.plausibility.cloud answered 500
+
+VERDICT: translation works. First to answer: mymemory
+If a campaign still comes out in English, the problem is in the app,
+not the translators -- say so and that is where to look.

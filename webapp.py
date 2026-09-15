@@ -3587,12 +3587,22 @@ def set_deepl_key():
     if not key:
         flash("Paste the DeepL API key before saving.")
         return redirect(url_for("index"))
-    if any(ch.isspace() for ch in key) or len(key) < 20:
-        flash("That doesn't look like a DeepL API key -- check it was copied whole.")
+    if any(ch.isspace() for ch in key):
+        flash("That key has a space in it -- check it was copied whole.")
+        return redirect(url_for("index"))
+    # Ask DeepL whether the key works instead of guessing from its shape.
+    # The first version of this box accepted anything over 20 characters,
+    # so an Ideogram key pasted by mistake was stored, reported as "set",
+    # and quietly produced English copy for hours.
+    from src.translation_providers import DeepLProvider
+
+    ok, detail = DeepLProvider(key).verify()
+    if not ok:
+        flash(detail)
         return redirect(url_for("index"))
     save_env_value("DEEPL_API_KEY", key)
-    free = " (free tier -- 500,000 characters a month)" if key.endswith(":fx") else ""
-    flash(f"DeepL key saved (ends in {key[-4:]}){free}. Copy is translated with it from now on.", "ok")
+    free = " (free tier)" if key.endswith(":fx") else ""
+    flash(f"DeepL key saved (ends in {key[-4:]}){free} -- {detail}.", "ok")
     return redirect(url_for("index"))
 
 

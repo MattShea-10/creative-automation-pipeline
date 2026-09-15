@@ -19,6 +19,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from src.translation_providers import (
     DeepLProvider,
     GoogleFreeProvider,
+    LingvaProvider,
+    MyMemoryProvider,
     TranslationError,
     active_providers,
 )
@@ -240,16 +242,94 @@ class GoogleFreeTest(unittest.TestCase):
         self.assertTrue(any(0 < pause <= GoogleFreeProvider.min_seconds_between_calls for pause in self.pauses))
 
 
-class ActiveProvidersTest(unittest.TestCase):
-    def test_without_a_key_only_the_free_endpoint_is_offered(self):
-        with mock.patch.dict("os.environ", {"DEEPL_API_KEY": ""}):
-            self.assertEqual([p.name for p in active_providers()], ["google-free"])
+class MyMemoryTest(unittest.TestCase):
+    """The second keyless provider, and the traps it shares with the first."""
 
-    def test_with_a_key_deepl_goes_first_and_the_free_endpoint_stays(self):
-        """Not a replacement -- a preference. The free endpoint still
-        covers the languages DeepL lacks and a month that runs out."""
+    def setUp(self):
+        MyMemoryProvider._last_call_at = 0.0
+        patch = mock.patch("src.translation_providers._pause", lambda seconds: None)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.provider = MyMemoryProvider()
+
+    def _get(self, body, status=200):
+        return mock.patch("requests.get", return_value=_Response(status, body))
+
+    def test_a_translation_comes_back(self):
+        with self._get({"responseData": {"translatedText": "Siente lo fresco."}}):
+            self.assertEqual(self.provider.translate("Feel the Fresh.", "es"), "Siente lo fresco.")
+
+    def test_a_spent_allowance_arrives_as_a_200_and_is_caught(self):
+        """Same trap as Google's error page: the refusal is delivered in
+        the translation field, so it reads as a successful translation."""
+        body = {"responseData": {"translatedText":
+                "YOU USED ALL AVAILABLE FREE TRANSLATIONS FOR TODAY. NEXT AVAILABLE IN 12 HOURS"}}
+        with self._get(body), self.assertRaises(TranslationError) as caught:
+            self.provider.translate("Feel the Fresh.", "es")
+        self.assertEqual(caught.exception.reason, "quota")
+
+    def test_a_warning_in_the_translation_field_is_not_a_translation(self):
+        body = {"responseData": {"translatedText": "MYMEMORY WARNING: YOU HAVE USED ALL..."}}
+        with self._get(body), self.assertRaises(TranslationError):
+            self.provider.translate("Feel the Fresh.", "es")
+
+    def test_the_source_returned_unchanged_is_not_a_translation(self):
+        """Cached as one, it would stand in front of the real thing on
+        every later run -- which is how a French campaign ended up with
+        English in its type layers."""
+        body = {"responseData": {"translatedText": "Feel the Fresh."}}
+        with self._get(body), self.assertRaises(TranslationError):
+            self.provider.translate("Feel the Fresh.", "es")
+
+    def test_portuguese_asks_for_the_regional_pairing(self):
+        with self._get({"responseData": {"translatedText": "Sinta o frescor."}}) as get:
+            self.provider.translate("Feel the Fresh.", "pt")
+        self.assertEqual(get.call_args.kwargs["params"]["langpair"], "en|pt-BR")
+
+
+class LingvaTest(unittest.TestCase):
+    """The third keyless provider. Public instances come and go, so it
+    must not trust any single volunteer server."""
+
+    def setUp(self):
+        LingvaProvider._last_call_at = 0.0
+        patch = mock.patch("src.translation_providers._pause", lambda seconds: None)
+        patch.start()
+        self.addCleanup(patch.stop)
+        self.provider = LingvaProvider()
+
+    def test_a_translation_comes_back(self):
+        with mock.patch("requests.get", return_value=_Response(200, {"translation": "Siente lo fresco."})):
+            self.assertEqual(self.provider.translate("Feel the Fresh.", "es"), "Siente lo fresco.")
+
+    def test_a_dead_instance_is_stepped_over(self):
+        answers = [_Response(502, {}), _Response(200, {"translation": "Siente lo fresco."})]
+        with mock.patch("requests.get", side_effect=answers):
+            self.assertEqual(self.provider.translate("Feel the Fresh.", "es"), "Siente lo fresco.")
+
+    def test_every_instance_failing_raises(self):
+        with mock.patch("requests.get", side_effect=OSError("down")):
+            with self.assertRaises(TranslationError):
+                self.provider.translate("Feel the Fresh.", "es")
+
+    def test_it_tries_more_than_one_host(self):
+        self.assertGreater(len(LingvaProvider.HOSTS), 1)
+
+
+class KeylessChainTest(unittest.TestCase):
+    def test_the_feature_works_with_nothing_configured(self):
+        """The point of the whole arrangement: choose Spanish, get
+        Spanish, configure nothing. One free endpoint with an invisible
+        daily quota was never enough to promise that."""
+        with mock.patch.dict("os.environ", {"DEEPL_API_KEY": ""}):
+            names = [p.name for p in active_providers()]
+        self.assertEqual(names, ["google-free", "mymemory", "lingva"])
+
+    def test_a_key_only_adds_a_preference(self):
         with mock.patch.dict("os.environ", {"DEEPL_API_KEY": "key-1234:fx"}):
-            self.assertEqual([p.name for p in active_providers()], ["deepl", "google-free"])
+            names = [p.name for p in active_providers()]
+        self.assertEqual(names[0], "deepl")
+        self.assertEqual(names[1:], ["google-free", "mymemory", "lingva"])
 
 
 if __name__ == "__main__":

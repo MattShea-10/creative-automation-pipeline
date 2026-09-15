@@ -114,10 +114,25 @@ class DeepLProvider(TranslationProvider):
     def is_configured(self) -> bool:
         return bool(self.api_key)
 
+    # DeepL runs free and paid accounts on different hosts, and a key
+    # sent to the wrong one answers 403 -- indistinguishable from a bad
+    # key. The ":fx" suffix says which, but people copy keys out of a
+    # dashboard and the suffix gets left behind, so the suffix decides
+    # the ORDER rather than the answer: try the likely host, and on a
+    # refusal try the other before calling the key bad.
+    FREE_HOST = "api-free.deepl.com"
+    PAID_HOST = "api.deepl.com"
+
+    def hosts(self) -> list:
+        return (
+            [self.FREE_HOST, self.PAID_HOST]
+            if self.api_key.endswith(":fx")
+            else [self.PAID_HOST, self.FREE_HOST]
+        )
+
     @property
     def endpoint(self) -> str:
-        host = "api-free.deepl.com" if self.api_key.endswith(":fx") else "api.deepl.com"
-        return f"https://{host}/v2/translate"
+        return f"https://{self.hosts()[0]}/v2/translate"
 
     def target_for(self, language: str) -> str:
         target = self.TARGETS.get((language or "").strip().lower())
@@ -131,18 +146,22 @@ class DeepLProvider(TranslationProvider):
         target = self.target_for(language)
         import requests
 
-        self.wait_our_turn()
-        try:
-            response = requests.post(
-                self.endpoint,
-                headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
-                json={"text": [text], "target_lang": target},
-                timeout=20,
-            )
-        except Exception as exc:  # noqa: BLE001
-            raise TranslationError(f"{type(exc).__name__}: {exc}", "unavailable") from exc
-        finally:
-            type(self)._last_call_at = time.monotonic()
+        response = None
+        for host in self.hosts():
+            self.wait_our_turn()
+            try:
+                response = requests.post(
+                    f"https://{host}/v2/translate",
+                    headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
+                    json={"text": [text], "target_lang": target},
+                    timeout=20,
+                )
+            except Exception as exc:  # noqa: BLE001
+                raise TranslationError(f"{type(exc).__name__}: {exc}", "unavailable") from exc
+            finally:
+                type(self)._last_call_at = time.monotonic()
+            if response.status_code not in (401, 403):
+                break   # this host knows the key; whatever it says is the answer
 
         if response.status_code == 456:
             raise TranslationError("DeepL says this month's characters are used up", "quota")
@@ -162,6 +181,51 @@ class DeepLProvider(TranslationProvider):
         if not translated.strip():
             raise TranslationError("DeepL sent back nothing", "unavailable")
         return translated
+
+    def verify(self) -> tuple[bool, str]:
+        """(ok, what to tell the person). Asks DeepL rather than guessing.
+
+        A key box that accepts anything long enough is how an Ideogram
+        key ended up in DEEPL_API_KEY, reading as "set" on the page while
+        every run quietly came back in English. Shape rules would have
+        caught that one and would also reject some future key DeepL
+        decides to issue -- so the check is simply to use the key and see
+        what DeepL says.
+
+        An unreachable network is not a bad key: that answers ok, with a
+        note saying it could not be confirmed.
+        """
+        if not self.is_configured():
+            return False, "no key"
+        import requests
+
+        response = None
+        for host in self.hosts():
+            try:
+                response = requests.get(
+                    f"https://{host}/v2/usage",
+                    headers={"Authorization": f"DeepL-Auth-Key {self.api_key}"},
+                    timeout=15,
+                )
+            except Exception:  # noqa: BLE001
+                return True, "couldn't reach DeepL to confirm the key -- saved anyway"
+            if response.status_code not in (401, 403):
+                break
+        if response.status_code in (401, 403):
+            return False, (
+                "DeepL rejected that key on both its free and paid endpoints. A DeepL key "
+                "looks like 0123abcd-4567-89ef-0123-456789abcdef, with \":fx\" on the end "
+                "for a free account -- check you copied the DeepL one and not another "
+                "service's, and that nothing was left off the end."
+            )
+        if response.status_code != 200:
+            return True, f"DeepL answered {response.status_code} when asked about usage -- saved anyway"
+        try:
+            body = response.json()
+            used, limit = body["character_count"], body["character_limit"]
+        except Exception:  # noqa: BLE001
+            return True, "key accepted"
+        return True, f"{used:,} of {limit:,} characters used this month"
 
     def usage(self) -> dict | None:
         """{"character_count": n, "character_limit": n} or None.
@@ -276,6 +340,118 @@ class GoogleFreeProvider(TranslationProvider):
         raise last
 
 
+class MyMemoryProvider(TranslationProvider):
+    """MyMemory's public API. No key, no account.
+
+    Here because the keyless path had exactly one member. Google's free
+    endpoint counts an invisible daily quota against whoever shares your
+    IP, and when it ran out the whole feature went with it -- copy came
+    back in English with no way to see why or when it would return. A
+    second keyless provider turns that from an outage into a bad day for
+    translation quality.
+    """
+
+    name = "mymemory"
+    min_seconds_between_calls = 0.25
+
+    ENDPOINT = "https://api.mymemory.translated.net/get"
+
+    # MyMemory wants a language, not a locale, but is happier with the
+    # common pairings for the ones that have regional variants.
+    PAIRS = {"pt": "pt-BR", "zh-cn": "zh-CN", "zh": "zh-CN"}
+
+    # It answers an exhausted allowance with 200 and a message in the
+    # translation field, which is the same trap Google's error page set.
+    REFUSALS = ("mymemory warning", "you used all available free translations",
+                "no query specified", "invalid langpair", "please contact")
+
+    def target_for(self, language: str) -> str:
+        code = (language or "").strip().lower()
+        return self.PAIRS.get(code, code)
+
+    def translate(self, text: str, language: str) -> str:
+        import requests
+
+        self.wait_our_turn()
+        try:
+            response = requests.get(
+                self.ENDPOINT,
+                params={"q": text, "langpair": f"en|{self.target_for(language)}"},
+                timeout=20,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise TranslationError(f"{type(exc).__name__}: {exc}", "unavailable") from exc
+        finally:
+            type(self)._last_call_at = time.monotonic()
+
+        if response.status_code == 429:
+            raise TranslationError("MyMemory says slow down", "rate limit")
+        if response.status_code != 200:
+            raise TranslationError(f"MyMemory answered {response.status_code}", "unavailable")
+        try:
+            body = response.json()
+            translated = (body.get("responseData") or {}).get("translatedText") or ""
+        except Exception as exc:  # noqa: BLE001
+            raise TranslationError(f"MyMemory sent a reply this doesn't understand: {exc}", "unavailable") from exc
+
+        lowered = translated.lower()
+        if any(refusal in lowered for refusal in self.REFUSALS):
+            reason = "quota" if "all available free translations" in lowered else "unavailable"
+            raise TranslationError(translated[:120], reason)
+        if not translated.strip():
+            raise TranslationError("MyMemory sent back nothing", "unavailable")
+        if translated.strip().lower() == text.strip().lower():
+            # Unchanged text is not a translation. Cached as one, it would
+            # stand in front of the real thing for every later run.
+            raise TranslationError("MyMemory returned the source unchanged", "unavailable")
+        return translated
+
+
+class LingvaProvider(TranslationProvider):
+    """Lingva, a keyless front end onto Google's translations.
+
+    Third in the keyless chain. Public instances come and go, so it tries
+    more than one host rather than trusting any single volunteer server.
+    """
+
+    name = "lingva"
+    min_seconds_between_calls = 0.25
+
+    HOSTS = ("lingva.ml", "lingva.lunar.icu", "translate.plausibility.cloud")
+
+    def translate(self, text: str, language: str) -> str:
+        import urllib.parse
+
+        import requests
+
+        quoted = urllib.parse.quote(text, safe="")
+        target = (language or "").strip().lower()
+        last = TranslationError("no Lingva instance answered", "unavailable")
+        for host in self.HOSTS:
+            self.wait_our_turn()
+            try:
+                response = requests.get(
+                    f"https://{host}/api/v1/en/{target}/{quoted}", timeout=15
+                )
+            except Exception as exc:  # noqa: BLE001
+                last = TranslationError(f"{host}: {type(exc).__name__}", "unavailable")
+                continue
+            finally:
+                type(self)._last_call_at = time.monotonic()
+            if response.status_code != 200:
+                last = TranslationError(f"{host} answered {response.status_code}", "unavailable")
+                continue
+            try:
+                translated = (response.json() or {}).get("translation") or ""
+            except Exception:  # noqa: BLE001
+                last = TranslationError(f"{host} sent a reply this doesn't understand", "unavailable")
+                continue
+            if translated.strip() and translated.strip().lower() != text.strip().lower():
+                return translated
+            last = TranslationError(f"{host} returned nothing usable", "unavailable")
+        raise last
+
+
 def active_providers() -> list:
     """Who to ask, in order. DeepL first when a key is set, then the free
     endpoint -- so the app works with no key at all and gets better with
@@ -284,5 +460,11 @@ def active_providers() -> list:
     deepl = DeepLProvider()
     if deepl.is_configured():
         providers.append(deepl)
+    # Three keyless providers, not one. The feature is meant to work with
+    # nothing configured, and for a long time it did -- until the single
+    # free endpoint it relied on hit a daily quota nobody could see, and
+    # "choose Spanish" quietly started meaning "get English".
     providers.append(GoogleFreeProvider())
+    providers.append(MyMemoryProvider())
+    providers.append(LingvaProvider())
     return providers

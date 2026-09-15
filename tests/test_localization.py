@@ -75,16 +75,27 @@ class EnglishAndOfflineTest(unittest.TestCase):
             self.assertEqual(localize_message("Shop now", "en"), ("Shop now", False))
         self.assertEqual(provider.asked, [])
 
-    def test_a_test_process_never_reaches_a_translator(self):
+    def test_the_suite_stays_offline_when_it_says_so(self):
         """Nothing in the suite asserts a translation -- the pipeline
-        tests just run copy through the real path. Hundreds of live calls
-        per run went out unnoticed until the quota ran out."""
+        tests just run copy through the real path, and hundreds of live
+        calls per run went out unnoticed until the day's quota was gone.
+        "Run tests.command" sets the variable; the app itself has no idea
+        tests exist."""
         provider = _Provider("deepl", "should not happen")
-        with _using(provider):
+        with mock.patch.dict("os.environ", {"CREATIVE_PIPELINE_OFFLINE": "1"}), _using(provider):
             text, ok = localize_message("Shop now", "es")
         self.assertEqual((text, ok), ("Shop now", False))
         self.assertEqual(provider.asked, [])
         self.assertEqual(localization.take_last_failure(), "offline")
+
+    def test_the_app_cannot_tell_it_is_being_tested(self):
+        """The bug this replaced: the app answered "offline" whenever
+        unittest was importable, so a library importing unittest for its
+        own reasons stopped a shipped app translating -- silently."""
+        with mock.patch.dict("os.environ"):
+            os.environ.pop("CREATIVE_PIPELINE_OFFLINE", None)
+            self.assertIn("unittest", sys.modules, "this is a test process")
+            self.assertFalse(localization._network_is_off_limits())
 
     def test_the_packaged_app_is_never_held_back(self):
         with mock.patch.object(sys, "frozen", True, create=True):

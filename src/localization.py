@@ -54,20 +54,23 @@ _last_provider = ""
 def _network_is_off_limits() -> bool:
     """Whether this process may call a translator at all.
 
-    The suite drives the real pipeline, and the real pipeline translates
-    -- so a full run fired hundreds of requests at Google's free
-    endpoint. That is what exhausted the daily quota, and the symptom was
-    not a failing test: it was every real run afterwards coming back in
-    English.
+    Only ever true when something deliberately says so. The first
+    version of this also answered true when "unittest" was in
+    sys.modules -- meant to stop the suite spending the day's free
+    translation quota, which it really was doing. But the app imports
+    scikit-image, psd-tools and a dozen other libraries, any of which
+    may import unittest for its own reasons, and when one did the
+    running app silently refused to translate: no call, no error, no
+    warning, just English copy and a green test suite.
 
-    A frozen build is never held back, whatever it happens to import:
-    the packaged app translating for real is the whole point.
+    Production code should not be able to tell it is under test. The
+    suite keeps its quota discipline by setting the variable below (see
+    "Run tests.command"), and tests that exercise the call inject a
+    fake provider instead.
     """
     if getattr(sys, "frozen", False):
         return False
-    if os.environ.get("CREATIVE_PIPELINE_OFFLINE"):
-        return True
-    return "unittest" in sys.modules
+    return bool(os.environ.get("CREATIVE_PIPELINE_OFFLINE"))
 
 
 def take_last_failure() -> str:
