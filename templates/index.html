@@ -1788,6 +1788,26 @@
           syncAiBody();
         });
         syncAiBody();
+
+        // Exactly one way in -- enforced when the card is DRAWN, not only
+        // when someone clicks.
+        //
+        // The pairing above runs on "change". A card can open with both
+        // already ticked, because the custom-hero box is also ticked by a
+        // hero file carried over from a previous run, while the generator
+        // box comes back from that product's remembered settings. Then no
+        // handler ever fired, both posted, and the generator won -- so a
+        // campaign where someone had ticked "custom hero image" quietly
+        // rendered an Ideogram backdrop over the file they supplied.
+        //
+        // The file wins. It is the thing the person actually put there,
+        // and a generated backdrop is always one click away.
+        if (customHeroToggle && customHeroToggle.checked && aiEnabled.checked) {
+          aiEnabled.checked = false;
+          aiBody.hidden = true;
+          if (customHeroBody) customHeroBody.hidden = false;
+          syncLayerOverrides();
+        }
       }
 
       // Header, Description and the campaign message are the same

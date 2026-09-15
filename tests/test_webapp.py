@@ -11613,3 +11613,37 @@ class BriefSlugIsNotRewrittenTest(unittest.TestCase):
         self.assertIn('slug: "hydroboost"', text, "the YAML write-back renamed the product")
         self.assertIn("A blue bottle in snow", text)
         self.assertIn("a comment that must survive", text)
+
+
+class HeroSourceIsNeverBothTest(unittest.TestCase):
+    """A card must not open with both ways of supplying a hero ticked.
+
+    Custom hero and the AI generator are alternatives for the same slot,
+    and the page pairs them -- but only on "change". A card drawn with
+    both already ticked (the custom-hero box is also ticked by a hero
+    file carried over from an earlier run, while the generator box comes
+    back from the product's remembered settings) fired no handler, posted
+    both, and the generator won. The symptom was a campaign rendering an
+    Ideogram backdrop over the file someone had just supplied.
+    """
+
+    def setUp(self):
+        self.template = (Path(webapp.__file__).parent / "templates" / "index.html").read_text()
+
+    def test_the_pairing_runs_when_the_card_is_drawn(self):
+        pairing = "if (customHeroToggle && customHeroToggle.checked && aiEnabled.checked)"
+        self.assertIn(pairing, self.template)
+
+    def test_the_supplied_file_wins_over_the_generator(self):
+        """Not arbitrary: the file is what the person actually put there,
+        and a generated backdrop is one click away."""
+        start = self.template.index("if (customHeroToggle && customHeroToggle.checked && aiEnabled.checked)")
+        block = self.template[start:start + 400]
+        self.assertIn("aiEnabled.checked = false", block)
+        self.assertNotIn("customHeroToggle.checked = false", block)
+
+    def test_the_click_pairing_is_still_there(self):
+        """The render-time check is an addition, not a replacement -- both
+        boxes must still untick each other when clicked."""
+        self.assertIn('customHeroToggle.addEventListener("change"', self.template)
+        self.assertIn('aiEnabled.addEventListener("change"', self.template)
