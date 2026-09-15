@@ -1,0 +1,30 @@
+17:15:08 [INFO] Loaded campaign 'Summer Refresh 2026' (2 products, region=Mexico)
+17:15:09 [INFO] Product 'HydroBoost Sports Drink': reusing existing asset (cache)
+17:15:09 [INFO] Saved HydroBoost Sports Drink (1080x1080 / 1:1) -> outputs/hydroboost/1x1/hydroboost_1080x1080.png
+17:15:09 [INFO] Saved HydroBoost Sports Drink (1080x1920 / 9:16) -> outputs/hydroboost/9x16/hydroboost_1080x1920.png
+17:15:09 [INFO] Saved HydroBoost Sports Drink (1920x1080 / 16:9) -> outputs/hydroboost/16x9/hydroboost_1920x1080.png
+17:15:09 [INFO] Product 'FreshGlow Body Wash': reusing existing asset (cache)
+17:15:09 [INFO] Saved FreshGlow Body Wash (1080x1080 / 1:1) -> outputs/freshglow/1x1/freshglow_1080x1080.png
+17:15:09 [INFO] Saved FreshGlow Body Wash (1080x1920 / 9:16) -> outputs/freshglow/9x16/freshglow_1080x1920.png
+17:15:09 [INFO] Saved FreshGlow Body Wash (1920x1080 / 16:9) -> outputs/freshglow/16x9/freshglow_1920x1080.png
+
+=== Creative Automation Run Summary ===
+Campaign:     Summer Refresh 2026
+Language:     es (translated: True)
+Fit mode:     crop
+Header:       shown
+Creatives:    6
+Duration:     0.9s
+Report file:  outputs/run_report.json
+
+Warnings (3):
+  - FreshGlow Body Wash (1080x1080) failed compliance checks: logo_present=True, brand_color_match=False, legal_flags=[]
+  - FreshGlow Body Wash (1080x1920) failed compliance checks: logo_present=True, brand_color_match=False, legal_flags=[]
+  - FreshGlow Body Wash (1920x1080) failed compliance checks: logo_present=True, brand_color_match=False, legal_flags=[]
+
+  [OK] HydroBoost Sports Drink 1080x1080  1:1                        cache                    -> outputs/hydroboost/1x1/hydroboost_1080x1080.png
+  [OK] HydroBoost Sports Drink 1080x1920  9:16                       cache                    -> outputs/hydroboost/9x16/hydroboost_1080x1920.png
+  [OK] HydroBoost Sports Drink 1920x1080  16:9                       cache                    -> outputs/hydroboost/16x9/hydroboost_1920x1080.png
+  [FLAGGED] FreshGlow Body Wash  1080x1080  1:1                        cache                    -> outputs/freshglow/1x1/freshglow_1080x1080.png
+  [FLAGGED] FreshGlow Body Wash  1080x1920  9:16                       cache                    -> outputs/freshglow/9x16/freshglow_1080x1920.png
+  [FLAGGED] FreshGlow Body Wash  1920x1080  16:9                       cache                    -> outputs/freshglow/16x9/freshglow_1920x1080.png

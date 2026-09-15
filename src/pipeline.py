@@ -231,13 +231,23 @@ class CreativePipeline:
                 )
 
                 filename = f"{product.slug}_{label}.png"
+                # Outputs are filed by product, then by aspect ratio:
+                # outputs/<product>/<ratio>/<product>_<WxH>.png. The ratio
+                # is the thing a creative team reasons in -- "the 9:16s" --
+                # and a folder per ratio makes a run legible at a glance
+                # rather than by reading every filename.
+                #
+                # The label is punctuated for reading ("16:9", "1.91:1"),
+                # which a folder name can't be: a colon is illegal in a
+                # Windows path (this ships a Windows exe) and Finder swaps
+                # ':' and '/' on macOS. So it becomes 16x9 / 1.91x1.
+                ratio_folder = ratio.replace(":", "x")
+                target_dir = product_dir / ratio_folder
                 # Recognized display ad sizes (web-top7) are further sorted
                 # into mobile/ and desktop/ subfolders, since "mobile" vs.
                 # "desktop" is a meaningful distinction for those units.
-                # Social (1:1/9:16/16:9) and broadcast/video sizes aren't
-                # classic "ad sizes" in that sense, so they stay directly
-                # under the product folder as before.
-                target_dir = product_dir / device if device else product_dir
+                if device:
+                    target_dir = target_dir / device
                 target_dir.mkdir(parents=True, exist_ok=True)
                 out_path = target_dir / filename
                 final_image.save(out_path)

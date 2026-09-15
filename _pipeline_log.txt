@@ -1,0 +1,8 @@
+..........................[mov,mp4,m4a,3gp,3g2,mj2 @ 0x116907bd0] moov atom not found
+OpenCV: Couldn't read video stream from file "/var/folders/_8/d052ws_s4g530jqldyh66jkc0000gq/T/tmp5784ht_6/not_really_a_video.mp4"
+.........................Product 'HydroBoost Sports Drink': asset_path '/var/folders/_8/d052ws_s4g530jqldyh66jkc0000gq/T/tmpun682y9a/does_not_exist.png' does not exist; falling back to convention-based lookup.
+.........................
+----------------------------------------------------------------------
+Ran 76 tests in 5.566s
+
+OK

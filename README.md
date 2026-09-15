@@ -301,6 +301,9 @@ Filenames and the run report label each creative by its actual pixel
 dimensions (e.g. `hydroboost_1080x1080.png`) plus the aspect ratio derived
 from those pixels (e.g. `1:1`) -- so pointing the pipeline at a custom size
 like `1200x628` still gets a sensible label instead of a hardcoded name.
+That derived ratio is also the folder each creative is filed under
+(`outputs/hydroboost/1x1/...`), so a custom size sorts itself without
+anything having to know about it in advance.
 
 **A campaign isn't limited to 3 sizes.** `--sizes` (and `output_sizes` in
 the brief) both accept a comma-separated list where each item is a preset
@@ -840,15 +843,31 @@ Running the command above produces:
 ```
 outputs/
   hydroboost/
-    hydroboost_1080x1080.png
-    hydroboost_1080x1920.png
-    hydroboost_1920x1080.png
+    1x1/
+      hydroboost_1080x1080.png
+    9x16/
+      hydroboost_1080x1920.png
+    16x9/
+      hydroboost_1920x1080.png
   freshglow/
-    freshglow_1080x1080.png
-    freshglow_1080x1920.png
-    freshglow_1920x1080.png
+    1x1/
+      freshglow_1080x1080.png
+    9x16/
+      freshglow_1080x1920.png
+    16x9/
+      freshglow_1920x1080.png
   run_report.json
 ```
+
+Outputs are filed by product, then by aspect ratio -- the ratio is what a
+creative team reasons in ("send me the 9:16s"), so a folder per ratio makes
+a run legible without reading filenames. The folder name drops the colon
+(`16x9`, not `16:9`) because a colon is illegal in a Windows path and macOS
+Finder swaps `:` and `/`; the punctuated label is kept in `run_report.json`.
+
+Recognised display ad units (the `--sizes web-top7` preset) are sorted one
+level further, into `mobile/` or `desktop/` -- e.g.
+`hydroboost/32x5/mobile/hydroboost_320x50.png`.
 
 Console summary:
 
@@ -862,7 +881,7 @@ Creatives:    6
 Duration:     1.2s
 Report file:  outputs/run_report.json
 
-  [OK] HydroBoost Sports Drink 1080x1080  1:1                        generated                -> outputs/hydroboost/hydroboost_1080x1080.png
+  [OK] HydroBoost Sports Drink 1080x1080  1:1                        generated                -> outputs/hydroboost/1x1/hydroboost_1080x1080.png
   ...
 ```
 
@@ -1072,6 +1091,7 @@ assets/
   brand/logo.png      # sample brand logo
   generated_cache/    # generated hero images get cached here for reuse
 outputs/              # generated creatives + run_report.json land here
+  <product>/<ratio>/  # e.g. hydroboost/9x16/hydroboost_1080x1920.png
   web/                # quick-generate UI job output (one folder per job)
 ```
 

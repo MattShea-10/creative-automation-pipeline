@@ -68,9 +68,9 @@ class PipelineSmokeTest(unittest.TestCase):
         for creative in report.creatives:
             self.assertTrue(Path(creative.output_path).exists(), f"missing {creative.output_path}")
 
-        self.assertTrue((self.output_dir / "hydroboost" / "hydroboost_1080x1080.png").exists())
-        self.assertTrue((self.output_dir / "hydroboost" / "hydroboost_1080x1920.png").exists())
-        self.assertTrue((self.output_dir / "hydroboost" / "hydroboost_1920x1080.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "1x1" / "hydroboost_1080x1080.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "9x16" / "hydroboost_1080x1920.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "16x9" / "hydroboost_1920x1080.png").exists())
 
     def test_custom_sizes_override(self):
         repo_root = Path(__file__).resolve().parent.parent
@@ -92,12 +92,12 @@ class PipelineSmokeTest(unittest.TestCase):
         # under the product folder; 300x600 IS a recognized size ("Half
         # Page Ad") even though it's not part of the web-top7 preset, so
         # it's still sorted into desktop/ like any other known display ad size.
-        self.assertTrue((self.output_dir / "hydroboost" / "hydroboost_500x500.png").exists())
-        self.assertTrue((self.output_dir / "hydroboost" / "desktop" / "hydroboost_300x600.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "1x1" / "hydroboost_500x500.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "1x2" / "desktop" / "hydroboost_300x600.png").exists())
         # A live PNG's actual pixel size should match what was requested.
         from PIL import Image
 
-        with Image.open(self.output_dir / "hydroboost" / "hydroboost_500x500.png") as img:
+        with Image.open(self.output_dir / "hydroboost" / "1x1" / "hydroboost_500x500.png") as img:
             self.assertEqual(img.size, (500, 500))
 
     def test_web_top7_and_broadcast_presets_render_without_error(self):
@@ -139,8 +139,8 @@ class PipelineSmokeTest(unittest.TestCase):
             self.assertIn("/mobile/", c.output_path.replace("\\", "/"))
         for c in desktop:
             self.assertIn("/desktop/", c.output_path.replace("\\", "/"))
-        self.assertTrue((self.output_dir / "hydroboost" / "mobile" / "hydroboost_320x50.png").exists())
-        self.assertTrue((self.output_dir / "hydroboost" / "desktop" / "hydroboost_728x90.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "32x5" / "mobile" / "hydroboost_320x50.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "8.09x1" / "desktop" / "hydroboost_728x90.png").exists())
 
     def test_720x480_is_recognized_but_not_in_the_web_top7_preset(self):
         from src.image_ops import WEB_AD_SIZES, device_category, size_name
@@ -163,7 +163,7 @@ class PipelineSmokeTest(unittest.TestCase):
         )
         report = pipeline.run(brief)
         self.assertEqual(len(report.creatives), 2)  # 2 products x 1 size
-        out_path = Path(self.output_dir / "hydroboost" / "desktop" / "hydroboost_720x480.png")
+        out_path = Path(self.output_dir / "hydroboost" / "3x2" / "desktop" / "hydroboost_720x480.png")
         self.assertTrue(out_path.exists())
         from PIL import Image as PILImage
 
@@ -180,7 +180,7 @@ class PipelineSmokeTest(unittest.TestCase):
         report = pipeline.run(brief)
         for c in report.creatives:
             self.assertIsNone(c.device)
-        self.assertTrue((self.output_dir / "hydroboost" / "hydroboost_1080x1080.png").exists())
+        self.assertTrue((self.output_dir / "hydroboost" / "1x1" / "hydroboost_1080x1080.png").exists())
 
     def test_contain_fit_mode_preserves_whole_image_no_crop(self):
         # Build a tall, skinny synthetic "designed creative" and fit it into
@@ -220,7 +220,7 @@ class PipelineSmokeTest(unittest.TestCase):
 
         # 300x250 ("Medium Rectangle") is a recognized display ad size, so
         # it's sorted into desktop/ like any other known ad unit.
-        out_path = self.output_dir / "hydroboost" / "desktop" / "hydroboost_300x250.png"
+        out_path = self.output_dir / "hydroboost" / "6x5" / "desktop" / "hydroboost_300x250.png"
         self.assertTrue(out_path.exists())
         with PILImage.open(out_path) as img:
             self.assertEqual(img.size, (300, 250))
