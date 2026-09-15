@@ -28,6 +28,7 @@ from fractions import Fraction
 import os
 import random
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -1135,7 +1136,15 @@ def _build_full_ad_prompt(
         parts.append(f'with the product name "{product_name}" as large bold headline text' if product_name else "with a large bold headline")
     if cta_text:
         parts.append(f'and a button with the text "{cta_text.strip()}"')
-    parts.append("a hero shot of the product as the focus")
+    # Unlabelled on purpose. Nobody asked for lettering on the packaging --
+    # the model puts it there because product shots have labels, and then
+    # improvises the letters, which is where "HROPPBOOST" and "HYDRO
+    # BOOOST" came from. A model will leave text out far more reliably
+    # than it will spell it, so the bottle is described as blank and the
+    # brand name is carried by the headline, which is the one string worth
+    # spending the model's spelling on. The real label goes back on in the
+    # split PSD, where the actual product layer sits under the painted one.
+    parts.append("a hero shot of the product as the focus, its packaging plain and unlabelled")
     palette = _brand_palette_phrase(brand_colors)
     if palette:
         parts.append(palette)
@@ -1155,7 +1164,15 @@ FULL_AD_HEADLINE_WORDS = 6
 # with fine print, which comes out as gibberish since there are no real words to set.
 FULL_AD_NEGATIVE_CLAUSE = (
     "extra text, fine print, disclaimer, lorem ipsum, gibberish lettering, "
-    "misspelled words, cropped text"
+    "misspelled words, cropped text, "
+    # The packaging specifically: it is the one surface the model letters
+    # without being asked, and the one place a misspelling reads as a
+    # broken brand rather than as a rough draft.
+    "text on the packaging, label text, writing on the bottle, brand name on the product, "
+    # And the quote marks themselves. They are in the prompt to mark which
+    # words are literal, and the model was painting them into the artwork
+    # -- four of nine sizes came back with the headline in quotes.
+    "quotation marks, quote marks around text"
 )
 
 
@@ -2869,6 +2886,53 @@ def _ideogram_key_status() -> dict:
     return {"set": bool(key), "hint": key[-4:] if len(key) >= 8 else ""}
 
 
+# The month's DeepL allowance, remembered between renders. This function
+# runs from a context processor -- on EVERY page -- and it used to ask
+# DeepL over the network each time, with a 20 second timeout. One slow
+# reply from a vendor and the form itself took 20 seconds to draw, for a
+# number nobody was waiting on.
+_DEEPL_USAGE = {"at": 0.0, "used": None, "limit": None}
+_DEEPL_USAGE_TTL_SECONDS = 600
+_DEEPL_USAGE_LOCK = threading.Lock()
+_DEEPL_USAGE_REFRESHING = False
+
+
+def _refresh_deepl_usage_in_the_background() -> None:
+    """Ask DeepL what the month looks like, off the request. At most one
+    of these is in flight; a failure leaves the last known figures
+    alone rather than blanking them."""
+    global _DEEPL_USAGE_REFRESHING
+
+    with _DEEPL_USAGE_LOCK:
+        if _DEEPL_USAGE_REFRESHING:
+            return
+        _DEEPL_USAGE_REFRESHING = True
+
+    def work():
+        global _DEEPL_USAGE_REFRESHING
+        try:
+            from src.translation_providers import DeepLProvider
+
+            usage = DeepLProvider().usage()
+            if usage:
+                _DEEPL_USAGE.update({
+                    "at": time.time(),
+                    "used": usage.get("character_count"),
+                    "limit": usage.get("character_limit"),
+                })
+            else:
+                # Reachable but unhappy: back off for the full period
+                # rather than retrying on every render.
+                _DEEPL_USAGE["at"] = time.time()
+        except Exception:  # noqa: BLE001
+            _DEEPL_USAGE["at"] = time.time()
+        finally:
+            with _DEEPL_USAGE_LOCK:
+                _DEEPL_USAGE_REFRESHING = False
+
+    threading.Thread(target=work, daemon=True).start()
+
+
 def _deepl_key_status() -> dict:
     """What the page may say about the DeepL key: whether one is set, its
     last four characters, and how much of the month's allowance is left.
@@ -2876,19 +2940,24 @@ def _deepl_key_status() -> dict:
 
     The usage figure is the reason to have a key at all -- a number you
     can look at before a demo, rather than finding out mid-demo that an
-    invisible quota ran out hours ago."""
+    invisible quota ran out hours ago. It is read from the last answer
+    DeepL gave, never fetched here: this runs on every page render, and
+    a page must not wait on a vendor to draw. The first render after a
+    start shows the key without a figure, and the number appears on the
+    next one. The template already draws it that way."""
     from src.translation_providers import DeepLProvider
 
     provider = DeepLProvider()
     status = {"set": provider.is_configured(), "hint": provider.api_key[-4:] if len(provider.api_key) >= 8 else ""}
     if not status["set"]:
         return status
+    if time.time() - _DEEPL_USAGE["at"] > _DEEPL_USAGE_TTL_SECONDS:
+        _refresh_deepl_usage_in_the_background()
     # Best effort: a key that works but whose usage call fails should
     # still read as "set", not as a problem.
-    usage = provider.usage()
-    if usage:
-        status["used"] = usage.get("character_count")
-        status["limit"] = usage.get("character_limit")
+    if _DEEPL_USAGE["limit"] is not None:
+        status["used"] = _DEEPL_USAGE["used"]
+        status["limit"] = _DEEPL_USAGE["limit"]
     return status
 
 
@@ -4647,6 +4716,21 @@ def generate():
     # later campaign starts from them. Ticked, a retype sticks for good.
     update_saved_templates = bool(request.form.get("update_saved_templates"))
     upload_ai_full_ad = bool(request.form.get("upload_ai_full_ad"))
+    # Choosing your own hero settles it here, whatever the form posted.
+    #
+    # The page pairs these boxes, but only some of them and only on click,
+    # and the settings are remembered per product -- so a campaign where
+    # someone once used Ideogram kept generating for the one they moved on
+    # to, over the artwork they had just supplied, at nine paid images a
+    # run. The browser is not the place to enforce "my file, not yours":
+    # every path through the form has to come out the same, so the answer
+    # is decided here instead.
+    supplied_own_hero_instead = upload_custom_hero_enabled and (
+        upload_ai_enabled or upload_ai_full_ad
+    )
+    if supplied_own_hero_instead:
+        upload_ai_enabled = False
+        upload_ai_full_ad = False
     # Separate from layer_header_text, which greys out when its layer is off in
     # Photoshop; here the words go to the prompt, not a layer. Falls back to that
     # field, then to the campaign message.
@@ -5378,6 +5462,15 @@ def generate():
             f"{product_name}: templates from default_templates/{_g.templates_dir.relative_to(DEFAULT_TEMPLATES_DIR).as_posix()}/ (this product's own)."
         )
     background_warnings = []  # same idea, but rendered in red -- for things worth flagging (e.g. a missing brand color), not just FYI context
+    if supplied_own_hero_instead:
+        # Said out loud: an image generator switching itself off silently
+        # is the same class of surprise as one switching itself on.
+        background_notes.append(
+            "Custom hero image was ticked, so the AI generator was left off for this run "
+            "(both it and \"generate the whole ad\" are remembered per product, and one of "
+            "them was still on from an earlier campaign). Untick Custom hero image to "
+            "generate a backdrop instead."
+        )
     missing_fonts_reported: set = set()  # each uninstalled template font is reported once, not once per size
     if background_notes_pending_hero:
         background_notes.append(background_notes_pending_hero)
@@ -5854,8 +5947,24 @@ def generate():
 
     # A hide wins over content supplied for the same layer: honouring both would
     # draw the thing just asked to disappear.
+    #
+    # "locked" is the template talking, not the person. That box is ticked and
+    # disabled because the layer is switched off in the saved templates, and a
+    # disabled checkbox posts nothing, so a hidden input carries the value. It
+    # must not drive the wipe below, for two reasons: a layer that really is
+    # switched off is not drawn anyway, so wiping its box achieves nothing --
+    # and the lock is computed when the PAGE renders, from the templates as
+    # they were BEFORE this run. Upload a corrected template that has the layer
+    # back on and the same submission still carried the old lock, so the run
+    # wiped out the very layer the upload was fixing. Re-uploading a fixed
+    # template could never take effect on the run that fixed it; you had to run
+    # it twice and nothing on the page said so.
     hidden_layer_names = {
-        name for name in HIDEABLE_LAYER_NAMES if request.form.get(f"layer_{name}_hidden")
+        name for name in HIDEABLE_LAYER_NAMES
+        if any(
+            value and value != "locked"
+            for value in request.form.getlist(f"layer_{name}_hidden")
+        )
     }
     # Copy typed for a hidden layer never appears, which reads as "my change did
     # not take". Say which box is doing it.
@@ -7078,6 +7187,19 @@ def generate():
                         design_shadow["distance"] = design_shadow["distance"] * fx_scale
                         design_shadow["size"] = design_shadow["size"] * fx_scale
                     design_size = psd_text_style.get("font_size") or 1
+                    # Which of these effects are the TEMPLATE's own live layer styles
+                    # rather than something typed on this form. The distinction only
+                    # matters for the picture stored back inside a type layer: that
+                    # layer still carries its style, so a raster with the style
+                    # already drawn into it gets the style drawn again on the next
+                    # run -- one more copy every time, until a soft drop shadow is a
+                    # solid black slab. Effects the FORM asked for are not on the
+                    # layer, so those do belong in the raster.
+                    fx_from_template = {
+                        "shadow": not shadow and bool(template_fx.get("shadow")),
+                        "glow": bool(template_fx.get("glow")) and not glow and bool(design_size),
+                        "stroke": bool(template_fx.get("stroke")) and not stroke_size and bool(design_size),
+                    }
                     if template_fx.get("glow") and not glow and design_size:
                         glow = True
                         glow_color = tuple(template_fx["glow"]["color"])
@@ -7119,7 +7241,9 @@ def generate():
                     )
                     # Same call onto a transparent canvas with keep_alpha=True: isolates the new
                     # glyphs as their own layer for the downloadable PSD.
-                    def _patch(with_background):
+                    def _patch(with_background, bare=False):
+                        """`bare=True` leaves out the effects that came from the
+                        template's own layer styles -- see fx_from_template."""
                         return apply_layer_text_override(
                             Image.new("RGBA", final_image.size, (0, 0, 0, 0)),
                             box,
@@ -7132,7 +7256,7 @@ def generate():
                             bold=effective_bold,
                             leading=effective_leading,
                             leading_reference_size=leading_reference_size,
-                            glow=glow,
+                            glow=False if (bare and fx_from_template["glow"]) else glow,
                             glow_color=glow_color,
                             glow_size=glow_size,
                             glow_opacity=glow_opacity,
@@ -7142,15 +7266,20 @@ def generate():
                             background_opacity=background_opacity,
                             background_blur=background_blur,
                             keep_alpha=True,
-                            stroke_size=stroke_size,
+                            stroke_size=0 if (bare and fx_from_template["stroke"]) else stroke_size,
                             stroke_color=stroke_color,
                             keep_size=keep_design_size,
-                            shadow=design_shadow,
+                            shadow=None if (bare and fx_from_template["shadow"]) else design_shadow,
                         )
                     export_layer_patches[layer_key] = _patch(show_background)
                     # The picture stored inside a type layer is the words alone: a stored background
-                    # box travelled into later templates as an unremovable band.
-                    words_only_patches[layer_key] = _patch(False) if show_background else export_layer_patches[layer_key]
+                    # box travelled into later templates as an unremovable band, and a stored drop
+                    # shadow compounded with the layer's own live style on every write-back.
+                    _bare_needed = any(fx_from_template.values())
+                    words_only_patches[layer_key] = (
+                        _patch(False, bare=True) if (show_background or _bare_needed)
+                        else export_layer_patches[layer_key]
+                    )
                     applied_layers.append(layer_key)
                     # The size the words were actually laid out at: glow radius and stroke width are
                     # percentages of it. A type layer has no usable size of its own, and deriving
@@ -7432,8 +7561,20 @@ def generate():
                     # (get_psd_layer_stack()), touched ones from the override's isolated RGBA patch,
                     # so the download matches the preview. Best-effort.
                     try:
+                        # with_effects: a drop shadow / glow / stroke is a Photoshop
+                        # layer style, not pixels, so a bare recomposite loses it
+                        # while the preview -- built on the file's own flattened
+                        # composite -- keeps it. Without this the header opened in
+                        # the download with no shadow under it.
+                        #
+                        # Verified in Photoshop, not by psd-tools: psd-tools'
+                        # composite() draws the resulting soft alpha as a solid
+                        # slab, which is a limitation of that compositor and not of
+                        # the file. Anything measuring this by psd-tools composite
+                        # will disagree with what a designer actually opens.
                         layer_stack = (
-                            get_psd_layer_stack(psd_path_for_size) if psd_path_for_size is not None else None
+                            get_psd_layer_stack(psd_path_for_size, with_effects=True)
+                            if psd_path_for_size is not None else None
                         )
                         export_layers = []
                         for name, layer_img in layer_stack or []:

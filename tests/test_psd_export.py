@@ -947,6 +947,66 @@ class PsdExportTest(unittest.TestCase):
             "every top-level layer must survive isolation, groups included",
         )
 
+    def test_a_layers_drop_shadow_survives_into_the_rebuilt_stack(self):
+        """A Photoshop layer style is not pixels.
+
+        The results-page preview is built on the file's own flattened
+        composite, which Photoshop baked WITH the header's drop shadow.
+        The layered PSD download is rebuilt from this stack, and a bare
+        psd-tools recomposite renders the glyphs and none of the style --
+        so the download opened flat while the preview it copies had a
+        shadow. The download link promises it "opens looking exactly like
+        the preview above".
+        """
+        from psd_tools import PSDImage
+
+        from src.image_ops import get_psd_layer_stack
+
+        psd = PSDImage.open(self.REAL_TEMPLATE)
+        styled = [
+            (layer.name or "").strip().lower()
+            for layer in psd
+            if (layer.name or "").strip() and list(layer.effects or [])
+        ]
+        if not styled:
+            self.skipTest("no layer in this template carries a Photoshop effect")
+
+        plain = dict(
+            (name.strip().lower(), image)
+            for name, image in (get_psd_layer_stack(self.REAL_TEMPLATE) or [])
+        )
+        with_effects = dict(
+            (name.strip().lower(), image)
+            for name, image in (get_psd_layer_stack(self.REAL_TEMPLATE, with_effects=True) or [])
+        )
+        self.assertTrue(plain and with_effects)
+
+        def opaque(image):
+            return sum(1 for value in image.getchannel("A").getdata() if value > 8)
+
+        grew = []
+        for name in styled:
+            self.assertIn(name, with_effects)
+            before, after = opaque(plain[name]), opaque(with_effects[name])
+            self.assertGreaterEqual(
+                after, before,
+                f"{name}: drawing its effects removed pixels",
+            )
+            if after > before:
+                grew.append(name)
+        self.assertTrue(
+            grew,
+            f"no styled layer gained any pixels -- {styled} carry effects that were not drawn",
+        )
+        # Layers with no style of their own are untouched by the flag,
+        # so this cannot quietly become "redraw everything".
+        for name, image in plain.items():
+            if name not in styled:
+                self.assertEqual(
+                    opaque(image), opaque(with_effects[name]),
+                    f"{name} has no effects but changed anyway",
+                )
+
     def test_background_override_can_fit_instead_of_crop(self):
         # Cropping to fill is right for a texture and wrong for artwork
         # the model laid out: it takes the end off a generated headline.

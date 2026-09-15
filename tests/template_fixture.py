@@ -42,3 +42,20 @@ def template(name: str) -> Path | None:
     except KeyError:
         return None
     return out
+
+
+def names() -> list:
+    """Every shipped template in the zip, smallest name first, with
+    Finder's shadow entries left out. Empty when there is no zip."""
+    if not ZIP.is_file():
+        return []
+    try:
+        with zipfile.ZipFile(ZIP) as archive:
+            return sorted(
+                n for n in archive.namelist()
+                if n.lower().endswith(".psd")
+                and not n.startswith("__MACOSX")
+                and not Path(n).name.startswith("._")
+            )
+    except Exception:  # noqa: BLE001
+        return []

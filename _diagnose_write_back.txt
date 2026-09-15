@@ -1,0 +1,12 @@
+[webapp] code build stamp: 2026-09-15 16:15:43 (auto-reload on unless FLASK_RELOAD=0)
+staged staged-1080x1080.psd 1080x1080
+  template BEFORE any run:
+     logo           kind=pixel  effects=['DropShadow', 'Stroke']
+     product        kind=pixel  effects=['OuterGlow']
+     header         kind=type   effects=['DropShadow']
+  template AFTER the write-back:
+     logo           kind=pixel  effects=['DropShadow', 'Stroke']
+     product        kind=pixel  effects=['OuterGlow']
+     header         kind=type   effects=['DropShadow']
+mean difference between the two runs: 4.49 (test allows 2)
+wrote _diagnose/run1.png, run2.png, run_difference.png

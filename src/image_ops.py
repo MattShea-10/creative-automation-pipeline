@@ -1752,7 +1752,64 @@ def get_psd_visible_layers(psd_path: Union[str, Path]) -> set:
     }
 
 
-def get_psd_layer_stack(psd_path: Union[str, Path]) -> Optional[List[Tuple[str, Image.Image]]]:
+def _layer_with_own_effects(layer, isolated: Image.Image) -> Image.Image:
+    """`isolated` -- one layer alone on a transparent canvas -- with that
+    layer's own Photoshop effects drawn under it.
+
+    psd-tools composites pixels, not layer styles, so a header carrying a
+    drop shadow comes back as bare glyphs. Photoshop's own flattened
+    preview has the shadow in it, which is why the results page showed a
+    shadow and a PSD rebuilt from this stack did not: the download opened
+    looking flatter than the creative it was a copy of.
+    """
+    try:
+        effects = _psd_layer_effects(layer)
+    except Exception:  # noqa: BLE001
+        return isolated
+    if not effects:
+        return isolated
+    # Work on a window around the layer, not the whole canvas -- the same
+    # rule _add_layer_effects() follows below, and for the same reason: a
+    # 4K document blurred full-frame once per layer costs seconds a
+    # layer, and a batch pays it for every size.
+    try:
+        x0, y0, x1, y1 = layer.bbox
+    except Exception:  # noqa: BLE001
+        return Image.alpha_composite(
+            _stacked_effects(isolated, effects), isolated
+        )
+    if x1 <= x0 or y1 <= y0:
+        return isolated
+    reach = 0.0
+    for effect in effects.values():
+        reach = max(
+            reach,
+            float(effect.get("distance", 0) or 0) + 2 * float(effect.get("size", 0) or 0),
+        )
+    pad = int(math.ceil(reach)) + 2
+    wx0, wy0 = max(0, x0 - pad), max(0, y0 - pad)
+    wx1, wy1 = min(isolated.width, x1 + pad), min(isolated.height, y1 + pad)
+    if wx1 <= wx0 or wy1 <= wy0:
+        return isolated
+    window = isolated.crop((wx0, wy0, wx1, wy1))
+    drawn = Image.alpha_composite(_stacked_effects(window, effects), window)
+    out = isolated.copy()
+    out.paste(drawn, (wx0, wy0))
+    return out
+
+
+def _stacked_effects(layer_rgba: Image.Image, effects: dict) -> Image.Image:
+    """The layer's effect images stacked on a transparent canvas of the
+    same size, ready for the layer itself to go on top."""
+    canvas = Image.new("RGBA", layer_rgba.size, (0, 0, 0, 0))
+    for under in _layer_effect_images(layer_rgba, effects):
+        canvas = Image.alpha_composite(canvas, under)
+    return canvas
+
+
+def get_psd_layer_stack(
+    psd_path: Union[str, Path], with_effects: bool = False
+) -> Optional[List[Tuple[str, Image.Image]]]:
     """Return every top-level layer in `psd_path` as its own canvas-sized
     RGBA image (transparent everywhere except where that one layer
     itself draws, its own real alpha preserved), in the same back-to-
@@ -1778,6 +1835,13 @@ def get_psd_layer_stack(psd_path: Union[str, Path]) -> Optional[List[Tuple[str, 
     off, one at a time, and psd.composite() is called for the whole
     document -- already canvas-sized and correctly positioned, text
     included, with everything else transparent.
+
+    `with_effects=True` also draws each layer's own Photoshop effects
+    (drop shadow, outer glow, stroke) into its image. Off by default,
+    because a caller reading the stack to inspect a layer's own pixels
+    wants them as they are; a caller rebuilding something meant to LOOK
+    like the creative wants the effects, since Photoshop's flattened
+    preview has them and a bare recomposite does not.
 
     Returns None if `psd-tools` isn't installed, the file can't be
     opened, or it isn't a layered PSD -- callers should treat that as
@@ -1817,7 +1881,10 @@ def get_psd_layer_stack(psd_path: Union[str, Path]) -> Optional[List[Tuple[str, 
                 continue
             if composite is None:
                 continue
-            stack.append((target.name.strip(), composite.convert("RGBA")))
+            isolated = composite.convert("RGBA")
+            if with_effects:
+                isolated = _layer_with_own_effects(target, isolated)
+            stack.append((target.name.strip(), isolated))
     finally:
         for layer, visible in original_visibility:
             layer.visible = visible

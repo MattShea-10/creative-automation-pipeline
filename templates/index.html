@@ -1279,7 +1279,7 @@
                   <input type="checkbox" id="layer_{{ layer }}_hidden" name="layer_{{ layer }}_hidden" value="1"
                          data-role="layer-hide" data-layer="{{ layer }}"
                          {% if forced_off %}checked disabled data-forced-off="1"{% elif prefill.get('layer_' ~ layer ~ '_hidden') %}checked{% endif %}>
-                  {% if forced_off %}<input type="hidden" name="layer_{{ layer }}_hidden" value="1">{% endif %}
+                  {% if forced_off %}<input type="hidden" name="layer_{{ layer }}_hidden" value="locked">{% endif %}
                   {{ layer }}
                 </label>
               {% endfor %}

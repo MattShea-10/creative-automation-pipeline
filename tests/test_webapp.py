@@ -13,6 +13,7 @@ import shutil
 import struct
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
@@ -25,6 +26,51 @@ from PIL import Image, ImageDraw
 import webapp
 
 
+def _is_set_aside(path: Path) -> bool:
+    """Finder's shadow files, and anything a person has parked in an
+    _aside folder -- real .psd bytes, but not what a test should pick up
+    as "the template this project ships"."""
+    return any(
+        part in {"__MACOSX", "_aside"} or part.startswith("._")
+        for part in path.parts
+    )
+
+
+def _extract_pristine(name, tmp_dir):
+    """A shipped template as a file the caller may modify.
+
+    tests/template_fixture.py already owns getting one out of the
+    committed default_templates.zip -- the loose copies under
+    default_templates/ moved into per-campaign subfolders that are
+    gitignored, so the zip is the only copy a fresh clone has. This
+    copies it into `tmp_dir` because that module hands out one shared
+    extraction and callers that write to it would corrupt each other.
+    """
+    from template_fixture import template
+
+    source = template(name)
+    if source is None:
+        return None
+    target = Path(tmp_dir) / f"pristine-{Path(name).name}"
+    shutil.copy(source, target)
+    return target
+
+
+def _find_shipped_template(name):
+    """The project's own copy of `name`, wherever it now sits under
+    default_templates/. The templates used to be loose in that folder
+    and are now filed per campaign and product, so this searches rather
+    than assuming a path. None when the project has no such file."""
+    root = Path("default_templates")
+    if not root.is_dir():
+        return None
+    for candidate in sorted(root.rglob(name)):
+        if _is_set_aside(candidate):
+            continue
+        return candidate
+    return None
+
+
 def _pristine_template(name, tmp_dir):
     """The project template as committed -- the app rewrites the working
     copy in default_templates/ run after run (that is the point of the
@@ -33,19 +79,26 @@ def _pristine_template(name, tmp_dir):
     the working copy without git; None when neither is there."""
     import subprocess
 
-    working = Path("default_templates") / name
-    try:
-        blob = subprocess.run(
-            ["git", "show", f"HEAD:default_templates/{name}"],
-            capture_output=True, check=True, timeout=30,
-        ).stdout
-        if blob[:4] == b"8BPS":
-            target = Path(tmp_dir) / f"pristine-{name}"
-            target.write_bytes(blob)
-            return target
-    except Exception:  # noqa: BLE001
-        pass
-    return working if working.is_file() else None
+    working = _find_shipped_template(name)
+    if working is not None:
+        try:
+            blob = subprocess.run(
+                ["git", "show", f"HEAD:{working.as_posix()}"],
+                capture_output=True, check=True, timeout=30,
+            ).stdout
+            if blob[:4] == b"8BPS":
+                target = Path(tmp_dir) / f"pristine-{Path(name).name}"
+                target.write_bytes(blob)
+                return target
+        except Exception:  # noqa: BLE001
+            pass
+    # No git here (the project folder is not always a checkout), so the
+    # shipped zip is the baseline rather than the working copy -- which
+    # by now says whatever the last real run wrote into it.
+    from_zip = _extract_pristine(Path(name).name, tmp_dir)
+    if from_zip is not None:
+        return from_zip
+    return working
 
 
 def _own_card_html(page: str) -> str:
@@ -256,6 +309,62 @@ class WebAppSmokeTest(unittest.TestCase):
         buf = io.BytesIO(header + color_mode_data + image_resources + layer_mask_info + image_data)
         buf.seek(0)
         return buf
+
+    def _counting_provider(self, calls):
+        """A generator that records every call and returns a plain image.
+
+        The assertion that matters is whether an image was generated at
+        all -- not what the results page says about it. A page can say
+        anything; a call to generate() is nine paid images.
+
+        That this rule is not simply an off switch is covered by the
+        many runs elsewhere in this file that leave the generator on
+        with no hero supplied -- they fail if it stops generating.
+        """
+        class _Counted:
+            name = "mock"
+            cost_per_image = 0.0
+            supports_negative_prompt = False
+            supports_style_reference = False
+            supports_render_mode = False
+
+            def generate(self, prompt, width=1024, height=1024, **kwargs):
+                calls.append(prompt)
+                return Image.new("RGB", (width, height), (40, 40, 220))
+
+        return _Counted()
+
+    def test_a_supplied_hero_wins_over_a_generator_left_on_from_another_campaign(self):
+        """Tick "custom hero image" and nothing is generated -- whatever
+        else the form posts.
+
+        The generator and "generate the whole ad" are remembered per
+        product, and the page unticks only some of them, only on click.
+        So a campaign where Ideogram had been used once kept generating
+        for the next one, over artwork that had just been supplied, at
+        nine paid images a run. Posting the contradictory state directly
+        is the point: this passes only if the server refuses it, not if
+        the browser happened to tidy up first.
+        """
+        calls = []
+        with mock.patch.object(webapp, "get_provider", return_value=self._counting_provider(calls)):
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost Sports Drink",
+                "campaign_name": "Summer Refresh 2026",
+                "market": "Mexico",
+                "audience": "Young adults",
+                "campaign_message": "Feel the Fresh.",
+                "hero_image": (self._sample_image_bytes(color=(9, 240, 9)), "hero.png"),
+                "upload_custom_hero_enabled": "1",
+                # ...and every generative switch still on underneath.
+                "upload_ai_enabled": "1",
+                "upload_ai_full_ad": "1",
+                "upload_ai_provider": "mock",
+                "upload_ai_prompt": "a runner mid-stride",
+                "header": "", "description": "",
+            }, content_type="multipart/form-data")
+        self.assertEqual(r.status_code, 200, r.data[:400])
+        self.assertEqual(calls, [], "an image was generated over the hero that was supplied")
 
     def test_index_loads(self):
         r = self.client.get("/")
@@ -6622,16 +6731,111 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         webapp.TEMPLATE_BACKUPS_DIR = self._orig_template_backups_dir
         shutil.rmtree(self.tmp_default_templates_dir, ignore_errors=True)
 
+    # The layers this class's tests reach for by name, so a template
+    # that simply hasn't got them can't masquerade as the app losing
+    # one. (Whether the background layer has any PIXELS is a separate
+    # matter -- none of the shipped ones do; see _background_box.)
+    NEEDED_LAYERS = frozenset({"background", "logo", "product", "cta", "description", "header"})
+
+    @staticmethod
+    def _top_level_layers(path):
+        from psd_tools import PSDImage
+
+        try:
+            return {(layer.name or "").strip().lower() for layer in PSDImage.open(path)}
+        except Exception:  # noqa: BLE001
+            return set()
+
+    @staticmethod
+    def _composite_like_photoshop(psd):
+        """The PSD's visible layers stacked with Pillow, onto white.
+
+        psd-tools' composite() draws a layer's soft alpha as a solid
+        slab -- a header with a drop shadow comes out as a black brick.
+        Confirmed against Photoshop, which opens the same file and draws
+        the shadow correctly, so the fault is in that compositor and not
+        in the file.
+
+        Measuring the download's fidelity through psd-tools therefore
+        measures psd-tools. This reads the layers back out and stacks
+        them with Pillow, which is faithful -- so the assertion is about
+        what a designer opens rather than about a library's limitations.
+        White, because that is what psd-tools composited onto and what
+        these templates' own flattened previews carry.
+        """
+        canvas = Image.new("RGBA", (psd.width, psd.height), (255, 255, 255, 255))
+        for layer in psd:
+            if not layer.visible:
+                continue
+            try:
+                pixels = layer.topil()
+            except Exception:  # noqa: BLE001
+                continue
+            if pixels is None:
+                continue
+            patch = Image.new("RGBA", canvas.size, (0, 0, 0, 0))
+            patch.paste(pixels.convert("RGBA"), (layer.left, layer.top))
+            canvas = Image.alpha_composite(canvas, patch)
+        return canvas
+
+    def _background_box(self, template_path, size):
+        """Where a background override actually lands for this template.
+
+        Every template this project ships has a `background` layer with
+        no pixels in it -- named, visible, bbox (0,0,0,0) -- and
+        webapp.py has a rule for precisely that: "No background layer, or
+        one emptied in Photoshop, means no box of its own: the hero fills
+        the canvas." So for these templates the canvas IS the box.
+
+        These tests were written against a template with a real
+        background box, and read its absence as the app losing the layer.
+        The rule is the app's actual contract, and the one every shipped
+        template exercises, so the test follows the rule.
+        """
+        from src.image_ops import get_psd_layer_boxes
+
+        box = get_psd_layer_boxes(template_path).get("background")
+        width, height = size
+        if box is None or (box[2] - box[0]) * (box[3] - box[1]) < 0.01 * width * height:
+            return (0, 0, width, height)
+        return box
+
     def _find_real_layered_template(self):
+        # The shipped baseline first. The working copies under
+        # default_templates/ are rewritten by every real run, so they now
+        # carry translated headers and a restructured layer stack -- a
+        # background nested into a group, copy from somebody's campaign.
+        # Asserting against those is asserting against the last run.
+        from template_fixture import names
+
+        for name in names():
+            pristine = _extract_pristine(name, self.tmp_dir)
+            if pristine is None:
+                continue
+            if self.NEEDED_LAYERS <= self._top_level_layers(pristine):
+                return pristine
+            pristine.unlink(missing_ok=True)
         if not self.REAL_TEMPLATES_DIR.is_dir():
             return None
-        for path in sorted(self.REAL_TEMPLATES_DIR.glob("*.psd")):
+        # No zip: fall back to the working copies. They live in
+        # per-campaign/per-product folders now
+        # (default_templates/<campaign>/<product>/tester-WxH.psd), so this
+        # searches rather than assuming they sit loose in the folder --
+        # the non-recursive glob it replaces is why this class quietly
+        # skipped itself, 60 tests reporting a pass by never running.
+        for path in sorted(self.REAL_TEMPLATES_DIR.rglob("*.psd")):
             # Not one of the app's own exports someone dropped back into
             # the folder: those carry hidden "(rendered)" twins and a
             # switched-off CTA, and are not what these tests are about.
             if "source-template" in path.name.lower():
                 continue
-            return path
+            if _is_set_aside(path):
+                continue
+            # Same standard as the zip: a template missing the layers
+            # these tests reach for produces failures about the app that
+            # are really failures about the fixture.
+            if self.NEEDED_LAYERS <= self._top_level_layers(path):
+                return path
         return None
 
     def _stage_real_template(self):
@@ -6675,10 +6879,21 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
             self.assertIn("disabled", box.group(0))
             # A disabled checkbox posts nothing, so the true value has to
             # travel some other way or the run would record the layer as
-            # visible when it wasn't.
+            # visible when it wasn't. It travels as "locked" rather than
+            # "1", and the difference is load-bearing: "1" is a person
+            # asking to hide a layer, "locked" is the template saying the
+            # layer is already off. Told apart, a lock reports without
+            # wiping; conflated, uploading a corrected template that
+            # switches the layer back ON still carried the stale lock and
+            # the run wiped the layer the upload was restoring.
             self.assertRegex(
                 page,
+                r'<input type="hidden" name="layer_%s_hidden" value="locked">' % layer,
+            )
+            self.assertNotRegex(
+                page,
                 r'<input type="hidden" name="layer_%s_hidden" value="1">' % layer,
+                "a lock must not post the same value as a person's own tick",
             )
 
     def test_a_visible_layer_keeps_an_editable_hide_box(self):
@@ -7302,10 +7517,11 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
 
         rendered = Image.open(job / f"HydroBoost_campaign1_{w}x{h}.png").convert("RGB")
         psd = PSDImage.open(job / f"HydroBoost_campaign1_{w}x{h}.psd")
-        # force=True composites the LAYERS rather than handing back the
-        # snapshot cached in the file -- this has to be true of what
-        # Photoshop draws, not just of the preview.
-        layered = psd.composite(force=True).convert("RGB").resize(rendered.size)
+        # The LAYERS, not the snapshot cached in the file -- this has to
+        # be true of what Photoshop draws, not just of the preview. Read
+        # back and stacked by Pillow rather than by psd-tools; see
+        # _composite_like_photoshop for why that distinction matters.
+        layered = self._composite_like_photoshop(psd).convert("RGB").resize(rendered.size)
 
         total = sum(
             abs(a - b)
@@ -7677,7 +7893,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         _webapp.get_provider = lambda name: _Ideogramish()
         try:
             data = {
-                "product_name": "HydroBoost", "upload_ai_enabled": "1",
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_send_references": "1",
                 "upload_ai_reference": (io.BytesIO(png), "moodboard.png"),
                 "header": "", "description": "",
             }
@@ -7695,6 +7911,123 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         page = r.data.decode()
         self.assertIn("Styled after the reference image moodboard.png", page)
         self.assertIn("sent to Ideogram as a style reference", page)
+
+    def test_uploading_a_template_that_turns_a_layer_back_on_works_on_that_run(self):
+        """The run that fixes a template must be the run that shows it.
+
+        A layer switched off in the saved templates gets its hide box
+        ticked and DISABLED, and because a disabled checkbox posts
+        nothing a hidden input carries the value. But that lock is worked
+        out when the page renders, from the templates as they were before
+        the run. Upload a corrected PSD with the layer switched back on
+        and the same submission still carried the old lock, so the run
+        wiped the very layer the upload was there to restore -- twice
+        reported as "I unhid it and it still doesn't render".
+        """
+        from src.image_ops import get_psd_layer_boxes
+        from src.psd_export import set_layer_visibility
+
+        (w, h), staged_path = self._stage_real_template()
+        # The saved template must have the layer OFF, or there is no lock
+        # to exercise.
+        from psd_tools import PSDImage
+
+        off_in_saved = {
+            (layer.name or "").strip().lower()
+            for layer in PSDImage.open(staged_path)
+            if (layer.name or "").strip() and not layer.visible
+        }
+        if "legal" not in off_in_saved:
+            self.skipTest("the shipped template already has legal switched on")
+
+        def run(legal_visible):
+            upload = Path(self.tmp_dir) / f"corrected-{legal_visible}.psd"
+            upload.write_bytes(staged_path.read_bytes())
+            set_layer_visibility(upload, {"legal": legal_visible})
+            response = self.client.post("/generate", data={
+                "product_name": "HydroBoost",
+                "upload_custom_hero_enabled": "1",
+                "psd_size_1": f"{w}x{h}",
+                "psd_file_1": (io.BytesIO(upload.read_bytes()), "corrected.psd"),
+                # Don't let the upload become the saved template: the lock
+                # this test is about comes from the saved one.
+                "psd_make_saved": "",
+                "custom_sizes": f"{w}x{h}",
+                "header": "", "description": "",
+                # Exactly what the locked box posts for a switched-off layer.
+                "layer_legal_hidden": "locked",
+            }, content_type="multipart/form-data")
+            self.assertEqual(response.status_code, 200, response.data[:400])
+            job = webapp.JOBS_DIR / re.search(rb"/download/([0-9a-f]+)", response.data).group(1).decode()
+            return Image.open(next(job.glob(f"*_{w}x{h}.png"))).convert("RGB"), response.data
+
+        box = (get_psd_layer_boxes(staged_path) or {}).get("legal")
+        self.assertIsNotNone(box, "the staged template has no legal layer to place")
+
+        shown, shown_page = run(True)
+        hidden, _ = run(False)
+
+        crop = tuple(int(v) for v in box)
+        a, b = shown.crop(crop), hidden.crop(crop)
+        different = sum(1 for pa, pb in zip(a.getdata(), b.getdata()) if pa != pb)
+        self.assertGreater(
+            different, 0.01 * a.width * a.height,
+            "the legal layer was not drawn even though the uploaded template has it switched on "
+            "-- the lock from the saved template wiped it",
+        )
+        # ...and the run does not claim it hid something the person never asked to hide.
+        self.assertNotIn(b"legal (hidden)", shown_page)
+
+    def test_a_reference_is_described_but_not_sent_unless_asked(self):
+        """The default, and the reason it is the default.
+
+        A style reference is copied whole -- layout, typography and all
+        -- so a board of finished ads comes back as a poster with
+        invented brand names on it. The app describes the look in words
+        and holds the bytes back until someone ticks "send references".
+
+        Six tests in this file asserted the opposite behaviour and went
+        green for months, because they were skipping. Nothing pinned the
+        default itself. This does.
+        """
+        import webapp as _webapp
+
+        self._stage_real_template()
+        sent = []
+
+        class _Ideogramish:
+            name = "stub"
+            supports_negative_prompt = True
+            supports_style_reference = True
+
+            def generate(self, prompt, width=None, height=None, negative_prompt=None, style_reference=None):
+                from PIL import Image as _Image
+
+                sent.append((prompt, style_reference))
+                return _Image.new("RGB", (64, 64), (10, 20, 30))
+
+        png = self._reference_png()
+        original = _webapp.get_provider
+        _webapp.get_provider = lambda name: _Ideogramish()
+        try:
+            r = self.client.post("/generate", data={
+                "product_name": "HydroBoost", "upload_ai_enabled": "1",
+                "upload_ai_reference": (io.BytesIO(png), "moodboard.png"),
+                "header": "", "description": "",
+            }, content_type="multipart/form-data")
+            self.assertEqual(r.status_code, 200)
+        finally:
+            _webapp.get_provider = original
+
+        self.assertEqual(len(sent), 1)
+        prompt, reference = sent[0]
+        self.assertIsNone(
+            reference,
+            "the mood board went to the model as a style reference without anyone asking for it",
+        )
+        # ...and its look still reaches the model, in words.
+        self.assertIn("in the look of the reference picture", prompt)
+        self.assertIn("navy", prompt)
 
     def test_a_provider_that_cannot_take_the_picture_still_gets_its_look_in_words(self):
         # Pollinations only takes a web address for a reference, which a
@@ -7721,7 +8054,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         _webapp.get_provider = lambda name: _Plain()
         try:
             data = {
-                "product_name": "HydroBoost", "upload_ai_enabled": "1",
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_send_references": "1",
                 "upload_ai_provider": "pollinations",
                 "upload_ai_reference": (io.BytesIO(self._reference_png()), "moodboard.png"),
                 "header": "", "description": "",
@@ -7776,7 +8109,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         try:
             with mock.patch("requests.get", fake_get):
                 r = self.client.post("/generate", data={
-                    "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                    "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_send_references": "1", "header": "", "description": "",
                     "upload_ai_reference_url": "https://example.com/looks/sunset-board.png",
                 }, content_type="multipart/form-data")
             self.assertEqual(r.status_code, 200)
@@ -8142,7 +8475,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         try:
             r = self.client.post("/generate", data={
                 "product_name": "HydroBoost", "market": "UK", "audience": "runners 25-34",
-                "campaign_message": "Rehydrate now", "upload_ai_enabled": "1", "upload_ai_full_ad": "1",
+                "campaign_message": "Rehydrate now", "upload_ai_enabled": "1", "upload_ai_send_references": "1", "upload_ai_full_ad": "1",
                 "upload_ai_provider": "ideogram", "upload_ai_speed": "QUALITY", "layer_cta_text": "Shop now",
                 "header": "", "description": "",
                 "upload_ai_reference": (io.BytesIO(self._reference_png()), "moodboard.png"),
@@ -8422,7 +8755,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         _webapp.get_provider = lambda name, rendering_speed=None: _Ideogramish()
         try:
             r = self.client.post("/generate", data={
-                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_send_references": "1", "header": "", "description": "",
                 "upload_ai_reference_data": "data:image/png;base64," + base64.b64encode(png).decode(),
                 "upload_ai_reference_data_name": "moodboard from desk.png",
             }, content_type="multipart/form-data")
@@ -8515,7 +8848,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         _webapp.get_provider = lambda name, rendering_speed=None: _Ideogramish()
         try:
             r = self.client.post("/generate", data={
-                "product_name": "HydroBoost", "upload_ai_enabled": "1", "header": "", "description": "",
+                "product_name": "HydroBoost", "upload_ai_enabled": "1", "upload_ai_send_references": "1", "header": "", "description": "",
                 "upload_ai_reference": [(io.BytesIO(clip.read_bytes()), "beach.mov"), (io.BytesIO(tif.getvalue()), "scan.tif")],
             }, content_type="multipart/form-data")
             self.assertEqual(r.status_code, 200, r.data[:300])
@@ -9221,9 +9554,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         from src.image_ops import get_psd_layer_boxes, get_psd_layer_foreground
 
-        box = get_psd_layer_boxes(staged_path).get("background")
-        self.assertIsNotNone(box, "staged real template has no 'background' layer -- can't verify placement")
-        x0, y0, x1, y1 = box
+        x0, y0, x1, y1 = self._background_box(staged_path, (w, h))
 
         foreground = get_psd_layer_foreground(staged_path, "background")
         self.assertIsNotNone(foreground)
@@ -9341,8 +9672,7 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         job_id = re.search(rb"/download/([0-9a-f]+)", r.data).group(1).decode()
         from src.image_ops import get_psd_layer_boxes, get_psd_layer_foreground
 
-        box = get_psd_layer_boxes(staged_path).get("background")
-        x0, y0, x1, y1 = box
+        x0, y0, x1, y1 = self._background_box(staged_path, (w, h))
         # Sample a point that's genuinely background-only (not also
         # covered by another layer -- e.g. a logo/product positioned
         # near the box's center, see test_background_override_fills_its_
@@ -9454,8 +9784,11 @@ class LayerOverrideIntegrationTest(unittest.TestCase):
         from psd_tools import PSDImage
         from src.image_ops import get_psd_layer_boxes
 
+        # The shipped templates' background layers are empty, so they
+        # have no box and do not appear here. That is the normal case,
+        # not a missing layer: the override lands on the whole canvas.
+        # What this test is about is the OTHER layers surviving it.
         original_layer_names = {name.lower() for name in get_psd_layer_boxes(staged_path)}
-        self.assertIn("background", original_layer_names)
         untouched_names = original_layer_names - {"background"}
         self.assertTrue(untouched_names, "staged real template has no other layers to verify against")
 
@@ -10505,6 +10838,62 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
             return "FR " + text.replace("\n", " "), True
         return fake_translate
 
+    # --- what this template actually says -------------------------------
+    #
+    # These tests used to spell the template's English out in the
+    # assertions ("REHYDRATE WITH A NEW SUMMER"). The fixture is
+    # default_templates.zip, and the copy in it has since been through a
+    # Spanish run, so that English exists nowhere any more -- on disk, in
+    # the zip, or in the repo -- and five tests failed the moment they
+    # stopped skipping. The contract they are actually here to check is
+    # "the template's OWN words are what gets translated and drawn", so
+    # the words come from the template.
+
+    def _own_header_lines(self):
+        """The header this template carries, line by line."""
+        from src.image_ops import get_psd_layer_text_style
+
+        style = get_psd_layer_text_style(self.template, "header") or {}
+        lines = [line["text"] for line in style.get("lines", []) if line.get("text")]
+        if not lines:
+            self.skipTest("the shipped template has no header type layer to read")
+        return lines
+
+    def _own_cta_words(self):
+        """The CTA's label -- it lives inside the group, so it is read
+        the way the app reads it."""
+        from src.image_ops import get_psd_group_text
+
+        words = get_psd_group_text(self.template, "cta")
+        if not words:
+            self.skipTest("the shipped template has no CTA label to read")
+        return words.strip()
+
+    def _updated_layers(self, page_bytes, size="1080x1080"):
+        """The layer names that run says it redrew, as a set.
+
+        Asserting the exact sentence pinned the fixture's contents: this
+        template's description carries Lorem ipsum, an earlier one's did
+        not, so "-- header, cta." became "-- header, description, cta."
+        and a test about the HEADER failed. Which other layers a
+        template happens to carry is the template's business; what the
+        test is entitled to insist on is that the layer it is about got
+        redrawn.
+        """
+        found = re.search(
+            rb"%s: updated layer\(s\) -- ([^<.]+)\." % size.encode(), page_bytes
+        )
+        self.assertIsNotNone(found, f"no 'updated layer(s)' note for {size}")
+        return {name.strip() for name in found.group(1).decode().split(",")}
+
+    @staticmethod
+    def _as_page(text):
+        """`text` as the page will carry it -- Jinja's escaping, which
+        writes &#34; and &#39; where html.escape writes &quot;/&#x27;."""
+        from markupsafe import escape
+
+        return str(escape(text)).encode()
+
     def test_the_templates_own_header_is_drawn_in_the_language(self):
         shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
         calls = []
@@ -10515,11 +10904,23 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
                 content_type="multipart/form-data",
             )
         self.assertEqual(r.status_code, 200, r.data[:400])
-        self.assertTrue(any(t.startswith("REHYDRATE WITH A NEW SUMMER") and lang == "fr" for t, lang in calls), calls)
-        self.assertIn(b"French copy -- the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER", r.data)
+        own_lines = self._own_header_lines()
+        own_cta = self._own_cta_words()
+        # Every line of the template's own header went to the translator
+        # for the chosen language -- and nothing else was invented.
+        for line in own_lines:
+            self.assertIn((line, "fr"), calls, (line, calls))
+        self.assertIn(
+            b"French copy -- the template&#39;s header: &#34;" + self._as_page(" / ".join(own_lines)),
+            r.data,
+        )
         # The CTA's label lives inside its group; it gets the language too.
-        self.assertIn(b"French copy -- the template&#39;s cta: &#34;click&#34; -&gt; &#34;FR click&#34;.", r.data)
-        self.assertIn(b"1080x1080: updated layer(s) -- header, cta.", r.data)
+        self.assertIn(
+            b"French copy -- the template&#39;s cta: &#34;" + self._as_page(own_cta)
+            + b"&#34; -&gt; &#34;" + self._as_page("FR " + own_cta) + b"&#34;.",
+            r.data,
+        )
+        self.assertLessEqual({"header", "cta"}, self._updated_layers(r.data))
         # The same words are listed once, even though the header would be
         # translated again for every size that shares the template.
         self.assertEqual(r.data.count(b"French copy -- the template&#39;s header:"), 1)
@@ -10531,7 +10932,7 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         live = next((webapp.JOBS_DIR / job_id).glob("*_1080x1080_source-template.psd"))
         header = next(l for l in PSDImage.open(live) if l.name.lower() == "header")
         self.assertEqual(header.kind, "type")
-        self.assertTrue(header.text.startswith("FR REHYDRATE WITH A NEW SUMMER"), header.text)
+        self.assertTrue(header.text.startswith("FR " + own_lines[0]), header.text)
         before = get_psd_layer_text_style(self.template, "header")
         after = get_psd_layer_text_style(live, "header")
         self.assertEqual(after["font_name"], before["font_name"])
@@ -10540,18 +10941,24 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         # The header was set as two lines at two sizes. It was translated
         # line by line, drawn line by line at those sizes, and the live
         # type layer keeps a run per line -- the layout it had in English.
-        self.assertEqual([l["text"] for l in before["lines"]], ["REHYDRATE WITH A NEW SUMMER", "REFRESHING DRINK"])
+        # Set as more than one line, at more than one size: that is what
+        # makes the line-by-line assertion below mean anything.
+        self.assertGreaterEqual(len(before["lines"]), 2, before["lines"])
         self.assertEqual(
             [(l["text"], l["font_size"]) for l in after["lines"]],
             [("FR " + l["text"], l["font_size"]) for l in before["lines"]],
         )
         self.assertIn(b"1080x1080: header drawn line by line at the template&#39;s own sizes -- ", r.data)
-        self.assertIn(b"the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER / REFRESHING DRINK&#34; -&gt; &#34;FR REHYDRATE WITH A NEW SUMMER / FR REFRESHING DRINK&#34;", r.data)
+        self.assertIn(
+            b"the template&#39;s header: &#34;" + self._as_page(" / ".join(own_lines))
+            + b"&#34; -&gt; &#34;" + self._as_page(" / ".join("FR " + line for line in own_lines)) + b"&#34;",
+            r.data,
+        )
         # The CTA group keeps its rectangle; only its label says it in French.
         cta = next(l for l in PSDImage.open(live) if l.name.lower() == "cta")
         self.assertTrue(cta.is_group())
         labels = [c.text for c in cta if c.kind == "type"]
-        self.assertEqual(labels, ["FR click"])
+        self.assertEqual(labels, ["FR " + own_cta])
 
     def test_switching_back_to_english_restores_the_english_behind_an_exported_translation(self):
         # An export from a French run, re-uploaded as the template: its
@@ -10559,6 +10966,7 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         # English those words came from; set to Spanish, it translates
         # from that English rather than from the French.
         shutil.copy(self.template, webapp.DEFAULT_TEMPLATES_DIR / "tester-1080x1080.psd")
+        own_lines = self._own_header_lines()
         calls = []
         with mock.patch.object(webapp, "localize_message", side_effect=self._fake(calls)):
             r = self.client.post(
@@ -10589,16 +10997,25 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         from psd_tools import PSDImage
         english = run("en")
         self.assertEqual(english.status_code, 200, english.data[:400])
-        self.assertIn(b"is a translation this app made (&#34;FR REHYDRATE WITH A NEW SUMMER / FR REFRESHING DRINK&#34;); working from the English behind it: &#34;REHYDRATE WITH A NEW SUMMER / REFRESHING DRINK&#34;", english.data)
-        self.assertIn(b"1080x1080: updated layer(s) -- header.", english.data)
+        self.assertIn(
+            b"is a translation this app made (&#34;"
+            + self._as_page(" / ".join("FR " + line for line in own_lines))
+            + b"&#34;); working from the English behind it: &#34;"
+            + self._as_page(" / ".join(own_lines)) + b"&#34;",
+            english.data,
+        )
+        self.assertIn("header", self._updated_layers(english.data))
         job = re.search(rb"/download/([0-9a-f]{32})", english.data).group(1).decode()
         live = next((webapp.JOBS_DIR / job).glob("*_1080x1080_source-template.psd"))
         header = next(l for l in PSDImage.open(live) if l.name.lower() == "header")
-        self.assertEqual(header.text, "REHYDRATE WITH A NEW SUMMER\rREFRESHING DRINK")
+        self.assertEqual(header.text, "\r".join(own_lines))
 
         spanish = run("es")
         self.assertEqual(spanish.status_code, 200)
-        self.assertIn(b"&#34;ES REHYDRATE WITH A NEW SUMMER / ES REFRESHING DRINK&#34;", spanish.data)
+        self.assertIn(
+            b"&#34;" + self._as_page(" / ".join("ES " + line for line in own_lines)) + b"&#34;",
+            spanish.data,
+        )
         self.assertNotIn(b"ES FR ", spanish.data)
 
     def test_text_is_never_redrawn_unless_its_words_change(self):
@@ -10621,7 +11038,18 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         self.assertNotIn(b"1080x1080: updated layer(s)", r.data, "nothing changed, nothing redrawn")
         self.assertNotIn(b"drawn from the template", r.data)
         # A language that changes the words redraws them, and only them.
-        with mock.patch.object(webapp, "localize_message", side_effect=lambda t, l: ("ES " + t, True)):
+        # The translator here changes ONLY the header's words -- the two
+        # lines this test typed in above. A fake that prefixed everything
+        # made every type layer in the file change, so "and only them"
+        # was never actually exercised: the message listed whatever else
+        # the template happened to carry, and the assertion below only
+        # held while that was nothing.
+        header_words = {"RÉHYDRATER", "BOISSON FRAÎCHE"}
+
+        def only_the_header(text, language):
+            return ("ES " + text, True) if text.strip() in header_words else (text, True)
+
+        with mock.patch.object(webapp, "localize_message", side_effect=only_the_header):
             r = self.client.post(
                 "/generate",
                 data={"upload_custom_hero_enabled": "1", "copy_language": "es", "header": "", "description": "",
@@ -11132,6 +11560,23 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
         self.assertIn("Stroke", kinds)
         self.assertEqual(float(kinds["Stroke"].size), 12.0)
 
+    def _header_coverage(self, page_bytes):
+        """{layer name: fraction of its picture that is not transparent}
+        for the header layers in the live-text PSD of that run."""
+        _, live = self._live_header(page_bytes)
+        out = {}
+        for layer in live:
+            if layer.name.lower() not in ("header", "header (rendered)"):
+                continue
+            pixels = layer.topil()
+            alpha = pixels.getchannel("A")
+            # A pixel layer psd-tools authored in an RGB document keeps
+            # its transparency as a layer mask.
+            if layer.mask is not None and layer.mask.size == pixels.size:
+                alpha = layer.mask.topil().convert("L")
+            out[layer.name] = sum(1 for a in alpha.getdata() if a > 8) / float(alpha.width * alpha.height)
+        return out
+
     def test_a_type_layers_picture_is_the_words_alone(self):
         # A background box behind the description is this form's
         # setting. Stored inside the type layer it travelled into every
@@ -11145,20 +11590,32 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
             "layer_header_background_opacity": "60",
         }, content_type="multipart/form-data")
         self.assertEqual(r.status_code, 200, r.data[:400])
-        _, live = self._live_header(r.data)
-        seen = 0
-        for layer in live:
-            if layer.name.lower() in ("header", "header (rendered)"):
-                seen += 1
-                pixels = layer.topil()
-                alpha = pixels.getchannel("A")
-                # A pixel layer psd-tools authored in an RGB document
-                # keeps its transparency as a layer mask.
-                if layer.mask is not None and layer.mask.size == pixels.size:
-                    alpha = layer.mask.topil().convert("L")
-                covered = sum(1 for a in alpha.getdata() if a > 8) / float(alpha.width * alpha.height)
-                self.assertLess(covered, 0.7, f"{layer.name}: a box fills its picture ({covered:.0%})")
-        self.assertEqual(seen, 2)
+        with_box = self._header_coverage(r.data)
+        self.assertEqual(len(with_box), 2, with_box)
+
+        # The same run without the background box. Comparing the two is
+        # what makes this test mean something: a fixed threshold was
+        # really a measurement of one template's header box, and it
+        # failed at 73% the moment the fixture changed -- while a box
+        # baked into the picture, the bug this is here for, fills it
+        # near-completely. The gap between these two runs is the bug;
+        # the absolute number is the template's business.
+        bare = self.client.post("/generate", data={
+            "upload_custom_hero_enabled": "1", "custom_sizes": "1080x1080", "header": "", "description": "",
+            "upload_hero_image": (self._png((10, 10, 200)), "hero.png"),
+            "layer_header_text": "Short words",
+        }, content_type="multipart/form-data")
+        self.assertEqual(bare.status_code, 200, bare.data[:400])
+        without_box = self._header_coverage(bare.data)
+        self.assertEqual(len(without_box), 2, without_box)
+
+        for name, covered in with_box.items():
+            self.assertIn(name, without_box)
+            self.assertLessEqual(
+                covered, without_box[name] + 0.05,
+                f"{name}: the form's background box is inside the type layer's own picture "
+                f"({covered:.0%} with it, {without_box[name]:.0%} without)",
+            )
 
     def test_an_as_uploaded_size_with_a_hero_on_the_form_still_wipes_the_old_words(self):
         # The exact setup that showed every size with two headers: a
@@ -11257,8 +11714,12 @@ class TemplateCopyLocalizationTest(unittest.TestCase):
             )
         self.assertEqual(r.status_code, 200, r.data[:400])
         self.assertIn(b"1080x1080 used your uploaded PSD exactly as uploaded", r.data)
-        self.assertIn(b"French copy -- the template&#39;s header: &#34;REHYDRATE WITH A NEW SUMMER", r.data)
-        self.assertIn(b"1080x1080: updated layer(s) -- header.", r.data)
+        self.assertIn(
+            b"French copy -- the template&#39;s header: &#34;"
+            + self._as_page(" / ".join(self._own_header_lines())),
+            r.data,
+        )
+        self.assertIn("header", self._updated_layers(r.data))
         # The typed header was translated (it's copy) but not drawn: the
         # as-uploaded size draws only its own words.
         self.assertNotIn(b"the template&#39;s header: &#34;TYPED", r.data)
@@ -11615,35 +12076,72 @@ class BriefSlugIsNotRewrittenTest(unittest.TestCase):
         self.assertIn("a comment that must survive", text)
 
 
-class HeroSourceIsNeverBothTest(unittest.TestCase):
-    """A card must not open with both ways of supplying a hero ticked.
+class DeepLUsageIsNotOnTheRenderPathTest(unittest.TestCase):
+    """The DeepL allowance is shown on the form, and asking DeepL for it
+    used to happen inside the context processor -- on every page render,
+    over the network, with a 20 second timeout. A vendor having a slow
+    morning made the whole app look broken, and nothing caught it
+    because the test that would have was skipping.
 
-    Custom hero and the AI generator are alternatives for the same slot,
-    and the page pairs them -- but only on "change". A card drawn with
-    both already ticked (the custom-hero box is also ticked by a hero
-    file carried over from an earlier run, while the generator box comes
-    back from the product's remembered settings) fired no handler, posted
-    both, and the generator won. The symptom was a campaign rendering an
-    Ideogram backdrop over the file someone had just supplied.
+    The figure is remembered between renders now and refreshed off the
+    request, so a page draws at the same speed whatever DeepL is doing.
     """
 
     def setUp(self):
-        self.template = (Path(webapp.__file__).parent / "templates" / "index.html").read_text()
+        webapp.app.config["TESTING"] = True
+        self.client = webapp.app.test_client()
+        self._saved = dict(webapp._DEEPL_USAGE)
+        webapp._DEEPL_USAGE.update({"at": 0.0, "used": None, "limit": None})
 
-    def test_the_pairing_runs_when_the_card_is_drawn(self):
-        pairing = "if (customHeroToggle && customHeroToggle.checked && aiEnabled.checked)"
-        self.assertIn(pairing, self.template)
+    def tearDown(self):
+        webapp._DEEPL_USAGE.update(self._saved)
 
-    def test_the_supplied_file_wins_over_the_generator(self):
-        """Not arbitrary: the file is what the person actually put there,
-        and a generated backdrop is one click away."""
-        start = self.template.index("if (customHeroToggle && customHeroToggle.checked && aiEnabled.checked)")
-        block = self.template[start:start + 400]
-        self.assertIn("aiEnabled.checked = false", block)
-        self.assertNotIn("customHeroToggle.checked = false", block)
+    def test_a_slow_deepl_does_not_slow_the_page_down(self):
+        """The page comes back while DeepL is still thinking.
 
-    def test_the_click_pairing_is_still_there(self):
-        """The render-time check is an addition, not a replacement -- both
-        boxes must still untick each other when clicked."""
-        self.assertIn('customHeroToggle.addEventListener("change"', self.template)
-        self.assertIn('aiEnabled.addEventListener("change"', self.template)
+        This is timed rather than mocked-and-asserted because the thing
+        that was wrong was a wait, and a wait is only visible on a
+        clock. Against the old code this takes two seconds; the budget
+        below is one.
+        """
+        asked = []
+
+        def slow_get(*args, **kwargs):
+            asked.append(args[0] if args else kwargs.get("url", ""))
+            time.sleep(2)
+            raise RuntimeError("DeepL is having a slow morning")
+
+        with mock.patch.dict(os.environ, {"DEEPL_API_KEY": "x" * 32 + ":fx"}), \
+                mock.patch("requests.get", side_effect=slow_get):
+            started = time.monotonic()
+            response = self.client.get("/")
+            elapsed = time.monotonic() - started
+            # Let the background refresh finish while the patch is still
+            # up, so this test never reaches the real DeepL with a
+            # made-up key.
+            deadline = time.monotonic() + 15
+            while webapp._DEEPL_USAGE_REFRESHING and time.monotonic() < deadline:
+                time.sleep(0.05)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertLess(elapsed, 1.0, f"the page waited {elapsed:.1f}s for DeepL to answer")
+        # ...and it genuinely still asks. A page that is fast because the
+        # feature quietly stopped working is not the fix.
+        self.assertTrue(asked, "the month's allowance was never asked for at all")
+        self.assertTrue(all("deepl" in (url or "") for url in asked), asked)
+
+    def test_a_known_figure_is_drawn_without_asking_again(self):
+        """Inside the remembered period the render touches no network at
+        all, and the number still reaches the page."""
+        webapp._DEEPL_USAGE.update({"at": time.time(), "used": 1234, "limit": 500000})
+        with mock.patch.dict(os.environ, {"DEEPL_API_KEY": "x" * 32 + ":fx"}), \
+                mock.patch("requests.get", side_effect=AssertionError("asked DeepL during a render")):
+            page = self.client.get("/").get_data(as_text=True)
+        self.assertIn("1,234 of 500,000 characters used this month", page)
+
+    def test_no_key_means_no_thread_and_no_figure(self):
+        """Nothing is asked, and nothing is claimed, without a key."""
+        with mock.patch.dict(os.environ, {"DEEPL_API_KEY": ""}), \
+                mock.patch("requests.get", side_effect=AssertionError("asked DeepL without a key")):
+            page = self.client.get("/").get_data(as_text=True)
+        self.assertNotIn("characters used this month", page)

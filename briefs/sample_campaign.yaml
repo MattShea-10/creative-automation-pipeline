@@ -7,8 +7,8 @@ campaign:
   brand:
     logo: "assets/brand/logo.png"
     colors:
-      - "#0057B8"  # brand blue
-      - "#FFD100"  # brand yellow
+    - "#0057B8"    # brand blue
+    - "#FFD100"    # brand yellow
 
   # Optional: sizes to render. Each entry is a preset name (default |
   # web-top7 | broadcast), a "WIDTHxHEIGHT" string, or a {width, height}
@@ -43,13 +43,11 @@ campaign:
   # show_header: true
 
   products:
-    - name: "HydroBoost Sports Drink"
-      slug: "hydroboost"
-      prompt_hint: >
-        Professional studio product photo of a chilled blue sports drink
-        bottle with condensation droplets, dynamic splash of water behind it,
-        clean bright background, commercial advertising photography
-      # Optional: point this product at a specific existing file instead of
+  - name: "HydroBoost Sports Drink"
+    slug: "hydroboost"
+    prompt_hint: >-
+      a runner mid-stride
+     # Optional: point this product at a specific existing file instead of
       # the assets/<slug>.png naming convention -- handy for dropping in a
       # design made elsewhere (a Photoshop export, a client-supplied JPEG,
       # a product video, etc.) without having to rename it. Accepts
@@ -71,9 +69,9 @@ campaign:
       # priority over the campaign-wide `headline` above, which in turn
       # takes priority over the product name).
       # headline: "New: HydroBoost Zero Sugar"
-    - name: "FreshGlow Body Wash"
-      slug: "freshglow"
-      prompt_hint: >
-        Professional studio product photo of a green body wash bottle
-        surrounded by fresh mint leaves and water droplets, clean bright
-        background, commercial advertising photography
+  - name: "FreshGlow Body Wash"
+    slug: "freshglow"
+    prompt_hint: >
+      Professional studio product photo of a green body wash bottle
+      surrounded by fresh mint leaves and water droplets, clean bright
+      background, commercial advertising photography
